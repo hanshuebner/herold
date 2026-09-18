@@ -169,7 +169,7 @@ type testSpamAdapter struct {
 	st     store.Store
 }
 
-func (a *testSpamAdapter) Classify(ctx context.Context, principalID store.PrincipalID, msg mailparse.Message) spam.Classification {
+func (a *testSpamAdapter) Classify(ctx context.Context, principalID store.PrincipalID, msg mailparse.Message, _ string) spam.Classification {
 	clsCtx, categorisationEnabled := a.buildClassifyContext(ctx, principalID)
 	cls := spam.Classification{Verdict: spam.Unclassified, Score: -1}
 	if a.cls != nil {
@@ -178,7 +178,7 @@ func (a *testSpamAdapter) Classify(ctx context.Context, principalID store.Princi
 		// "<class>: <detail>" string spam.Classifier.Classify already
 		// set) so RecordVerdict below can persist it, mirroring
 		// internal/admin/imap_import_spam.go's real adapter.
-		cls, err = a.cls.Classify(ctx, msg, nil, a.plugin, clsCtx, nil)
+		cls, err = a.cls.Classify(ctx, msg, nil, a.plugin, clsCtx, spam.OwnAddressInfo{})
 		if err != nil {
 			cls = spam.Classification{Verdict: spam.Unclassified, Score: -1, Reason: cls.Reason}
 		}
@@ -210,7 +210,7 @@ func (a *testSpamAdapter) buildClassifyContext(ctx context.Context, principalID 
 	return base, true
 }
 
-func (a *testSpamAdapter) RecordVerdict(ctx context.Context, principalID store.PrincipalID, messageID store.MessageID, _ mailparse.Message, classification spam.Classification) {
+func (a *testSpamAdapter) RecordVerdict(ctx context.Context, principalID store.PrincipalID, messageID store.MessageID, _ mailparse.Message, classification spam.Classification, _ string) {
 	// re #326: only the "no plugin configured, no attempt made" case
 	// (Unclassified with no Reason) stays unrecorded; an
 	// attempted-and-failed Unclassified outcome (Reason set) IS

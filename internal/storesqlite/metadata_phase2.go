@@ -2844,6 +2844,31 @@ func (m *metadata) SetLLMClassification(ctx context.Context, rec store.LLMClassi
 	})
 }
 
+// CorrectLLMClassificationVerdict implements store.Metadata (re #396,
+// third round repair path): a direct UPDATE, not an upsert, since
+// SetLLMClassification's COALESCE-on-NULL semantics can never null a
+// previously-set spam_model_verdict back out.
+func (m *metadata) CorrectLLMClassificationVerdict(ctx context.Context, msgID store.MessageID, verdict string) error {
+	return m.runTx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx,
+			`UPDATE llm_classifications
+			   SET spam_verdict = ?, spam_model_verdict = NULL
+			 WHERE message_id = ?`,
+			verdict, int64(msgID))
+		if err != nil {
+			return mapErr(err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("storesqlite: CorrectLLMClassificationVerdict rows affected: %w", err)
+		}
+		if n == 0 {
+			return store.ErrNotFound
+		}
+		return nil
+	})
+}
+
 // marshalOptStringList JSON-encodes list into a *string for a nullable
 // TEXT column, matching the pattern jmap_categorisation_config.derived_
 // categories_json already uses: a nil or empty list stores SQL NULL

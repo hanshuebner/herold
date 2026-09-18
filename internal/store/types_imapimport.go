@@ -155,9 +155,77 @@ type IMAPImportAccount struct {
 	// raise-horizon no-op). Lets a user opt an upstream folder such as a
 	// spam-only mailbox out of import entirely (re #303/#305).
 	ExcludedFolders []string
+	// OwnAddresses is an operator-configured list of extra addresses the
+	// upstream mailbox is known to accept mail at that herold cannot
+	// derive from the account's owning Identity (re #396, third round):
+	// a shared organisational mailbox's info@ or vorstand@ alias, for
+	// example. Set via the admin REST API or `herold imapimport
+	// own-addresses set`. Folded into spam.ResolveOwnAddresses alongside
+	// LearnedAddresses so the recipient_not_own spam signal
+	// (internal/spam/classifier.go) does not fire on mail to one of
+	// these addresses.
+	OwnAddresses []string
+	// LearnedAddresses is the set of addresses herold has observed in
+	// the Delivered-To/X-Original-To headers of messages this account
+	// has imported (re #396, third round): the same evidence
+	// OwnAddresses records manually, discovered automatically. Populated
+	// incrementally on each fresh ingest and, once per account, by a
+	// startup backfill pass over already-imported mail
+	// (internal/imapimport/ownaddresses.go). Nil until the first
+	// learning pass runs for this account -- see AddressesLearnedAt and
+	// OwnAddressesComplete.
+	LearnedAddresses []string
+	// AddressesLearnedAt is the instant the learning pass (incremental
+	// or backfill) last wrote LearnedAddresses, or nil if it has never
+	// run for this account. A non-nil value marks this account's
+	// own-address set "known complete" for OwnAddressesComplete
+	// regardless of whether LearnedAddresses ended up empty -- "we
+	// looked and found nothing more" is a complete answer; "we have
+	// never looked" is not.
+	AddressesLearnedAt *time.Time
 	// CreatedAt / UpdatedAt are the row lifecycle timestamps.
 	CreatedAt time.Time
 	UpdatedAt time.Time
+}
+
+// OwnAddressesComplete reports whether this account's own-address set is
+// known complete for spam.Classifier's decisive-signal resolution (re
+// #396, third round): true once an operator has configured at least one
+// extra address (OwnAddresses) or the learning pass has run at least
+// once for this account (AddressesLearnedAt non-nil), even if it found
+// nothing. False means the account's upstream may accept mail at
+// addresses herold has not yet discovered, so a message's
+// recipient_not_own fact must never, by itself or combined with another
+// signal, resolve a Ham verdict to Spam for this account.
+func (a IMAPImportAccount) OwnAddressesComplete() bool {
+	return len(a.OwnAddresses) > 0 || a.AddressesLearnedAt != nil
+}
+
+// NormalizeOwnAddresses lower-cases, trims, and deduplicates an
+// operator-supplied own-address list (re #396, third round), rejecting
+// any entry that does not look like an email address (contains no "@"
+// after trimming). Order of first occurrence is preserved. Shared by the
+// admin REST handler (internal/protoadmin/imap_import.go) and the
+// `herold imapimport own-addresses set` CLI so both apply the same
+// validation.
+func NormalizeOwnAddresses(in []string) ([]string, error) {
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, a := range in {
+		trimmed := strings.ToLower(strings.TrimSpace(a))
+		if trimmed == "" {
+			return nil, fmt.Errorf("own_addresses entries must not be empty")
+		}
+		if !strings.Contains(trimmed, "@") {
+			return nil, fmt.Errorf("own_addresses entry %q does not look like an email address", a)
+		}
+		if _, dup := seen[trimmed]; dup {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		out = append(out, trimmed)
+	}
+	return out, nil
 }
 
 // IMAPImportAccountCreate carries the fields needed to create a new
@@ -184,6 +252,10 @@ type IMAPImportAccountCreate struct {
 	// ExcludedFolders is the initial no-sync folder list (see
 	// IMAPImportAccount.ExcludedFolders). Nil/empty means none.
 	ExcludedFolders []string
+	// OwnAddresses is the initial configured own-address list (see
+	// IMAPImportAccount.OwnAddresses, re #396, third round). Nil/empty
+	// means none.
+	OwnAddresses []string
 }
 
 // IMAPImportAccountUpdate carries the fields that may be changed on an
@@ -219,6 +291,12 @@ type IMAPImportAccountUpdate struct {
 	// IMAPImportAccount.ExcludedFolders). Always written (nil/empty clears
 	// it), matching the other plain-value fields on this struct.
 	ExcludedFolders []string
+	// OwnAddresses replaces the stored configured own-address list (see
+	// IMAPImportAccount.OwnAddresses, re #396, third round). Always
+	// written (nil/empty clears it), matching ExcludedFolders. Never
+	// touches LearnedAddresses/AddressesLearnedAt -- those are updated
+	// only via SetIMAPImportLearnedAddresses.
+	OwnAddresses []string
 }
 
 // IMAPImportFolderMapEntry is one row in the imapimport_folder_map

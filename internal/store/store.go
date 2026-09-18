@@ -2171,6 +2171,20 @@ type Metadata interface {
 	// atomically).
 	SetLLMClassification(ctx context.Context, rec LLMClassificationRecord) error
 
+	// CorrectLLMClassificationVerdict overwrites msgID's stored
+	// spam_verdict with verdict and clears spam_model_verdict to NULL
+	// (re #396, third round repair path,
+	// internal/admin/spam_undo_recipient_only.go). Unlike
+	// SetLLMClassification's COALESCE-on-NULL upsert -- which can only
+	// ever add or replace a field, never null one back out -- this is a
+	// direct correction for a record whose applied verdict is being
+	// walked back because the decisive-signal rule that produced it (a
+	// standalone recipient_not_own match) no longer exists: the applied
+	// and model verdicts now agree, so the divergence field is cleared,
+	// not left stale. A no-op returning ErrNotFound when msgID has no
+	// classification row.
+	CorrectLLMClassificationVerdict(ctx context.Context, msgID MessageID, verdict string) error
+
 	// GetLLMClassification returns the classification record for msgID,
 	// or ErrNotFound when no record exists (e.g. the classifier was not
 	// run, or the message pre-dates this feature).
@@ -3153,6 +3167,20 @@ type Metadata interface {
 	// worker calls this once, when it first enables the account and
 	// creates the label. Returns ErrNotFound when id is absent.
 	SetIMAPImportProvenanceMailbox(ctx context.Context, id string, mailboxID MailboxID) error
+
+	// SetIMAPImportLearnedAddresses replaces id's learned own-address set
+	// (IMAPImportAccount.LearnedAddresses, re #396, third round) with
+	// addresses, deduplicated and sorted, and stamps AddressesLearnedAt
+	// with the current time regardless of whether addresses is empty --
+	// an empty result still means the learning pass ran and found
+	// nothing more, which is what marks the account's own-address set
+	// "known complete" (IMAPImportAccount.OwnAddressesComplete). Called
+	// both incrementally, by the import worker whenever a freshly
+	// ingested message reveals a new Delivered-To/X-Original-To address,
+	// and once by the startup backfill pass over an account's
+	// already-imported mail (internal/imapimport/ownaddresses.go).
+	// Returns ErrNotFound when id is absent.
+	SetIMAPImportLearnedAddresses(ctx context.Context, id string, addresses []string) error
 
 	// ListIMAPImportMessageStatesByAccount returns every message_state row
 	// owned by accountID. Used by the account-removal purge to enumerate

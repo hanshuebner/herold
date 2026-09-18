@@ -2679,6 +2679,26 @@ func (m *metadata) SetLLMClassification(ctx context.Context, rec store.LLMClassi
 	})
 }
 
+// CorrectLLMClassificationVerdict implements store.Metadata (re #396,
+// third round repair path). See storesqlite's implementation for why
+// this is a direct UPDATE rather than SetLLMClassification's upsert.
+func (m *metadata) CorrectLLMClassificationVerdict(ctx context.Context, msgID store.MessageID, verdict string) error {
+	return m.runTx(ctx, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx,
+			`UPDATE llm_classifications
+			   SET spam_verdict = $1, spam_model_verdict = NULL
+			 WHERE message_id = $2`,
+			verdict, int64(msgID))
+		if err != nil {
+			return mapErr(err)
+		}
+		if tag.RowsAffected() == 0 {
+			return store.ErrNotFound
+		}
+		return nil
+	})
+}
+
 // pgMarshalOptStringList mirrors storesqlite's marshalOptStringList: a
 // nil/empty list stores SQL NULL so an unset field never clobbers the
 // other sub-record's independent upsert via COALESCE.

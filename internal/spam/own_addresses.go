@@ -20,8 +20,10 @@ import (
 // of addresses that belong to principal pid: its canonical email, every
 // non-expired alias that routes to it, the primary address of each of
 // its verified Identities together with that Identity's alias addresses
-// (re #387), and the addresses of its configured IMAP-import accounts
-// (resolved via each account's owning Identity, decision 10). An
+// (re #387), and the addresses of its configured IMAP-import accounts:
+// each account's owning Identity address (decision 10), its
+// operator-configured OwnAddresses, and its learned LearnedAddresses
+// (re #396, third round -- see internal/imapimport/ownaddresses.go). An
 // Identity's own alias addresses are included only when the Identity
 // itself is verified: an unverified Identity carries no confirmation
 // the principal actually controls the address, so neither its primary
@@ -106,13 +108,29 @@ func resolveOwnAddresses(ctx context.Context, meta store.Metadata, pid store.Pri
 		if acc.IdentityID != "" {
 			if idn, ierr := meta.GetJMAPIdentity(ctx, acc.IdentityID); ierr == nil {
 				add(idn.Email)
-				continue
+			} else {
+				add(acc.Username)
 			}
+		} else {
+			// Legacy rows that predate decision 10's mandatory per-identity
+			// scope carry no IdentityID; Username is the best-effort address
+			// for those (it is the upstream login, often the address itself).
+			add(acc.Username)
 		}
-		// Legacy rows that predate decision 10's mandatory per-identity
-		// scope carry no IdentityID; Username is the best-effort address
-		// for those (it is the upstream login, often the address itself).
-		add(acc.Username)
+		// OwnAddresses (operator-configured) and LearnedAddresses
+		// (learned from Delivered-To/X-Original-To headers of messages
+		// the upstream already accepted into this account, re #396,
+		// third round) cover addresses the upstream mailbox receives at
+		// that herold cannot derive from the owning Identity alone -- a
+		// shared organisational mailbox's info@/vorstand@ aliases, for
+		// example. See internal/imapimport/ownaddresses.go for how
+		// LearnedAddresses is populated.
+		for _, a := range acc.OwnAddresses {
+			add(a)
+		}
+		for _, a := range acc.LearnedAddresses {
+			add(a)
+		}
 	}
 
 	out := make([]string, 0, len(set))

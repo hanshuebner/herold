@@ -27,6 +27,7 @@ func newIMAPImportCmd() *cobra.Command {
 	}
 	c.AddCommand(newIMAPImportStatusCmd())
 	c.AddCommand(newIMAPImportRepairOrphansCmd())
+	c.AddCommand(newIMAPImportOwnAddressesCmd())
 	return c
 }
 

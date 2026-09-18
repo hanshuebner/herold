@@ -150,7 +150,12 @@ func reclassifySpam(
 			continue
 		}
 
-		cl, err := cls.Classify(ctx, parsed, auth, pluginName, spam.ClassifyContext{}, ownAddresses)
+		// Complete: true (re #396, third round) -- reclassify's ownAddresses
+		// is spam.ResolveOwnAddresses's full principal-wide set, the same
+		// as SMTP delivery; see internal/protosmtp/deliver.go's Classify
+		// call site for the parallel reasoning.
+		cl, err := cls.Classify(ctx, parsed, auth, pluginName, spam.ClassifyContext{},
+			spam.OwnAddressInfo{Addresses: ownAddresses, Complete: true})
 		if err != nil {
 			sum.Errors++
 			continue
@@ -315,6 +320,7 @@ func recordReclassifyVerdict(
 	req := spam.BuildRequest(parsed, auth)
 	req.OwnAddresses = ownAddresses
 	req.RecipientNotOwn = spam.RecipientNotOwn(parsed, ownAddresses)
+	req.OwnAddressesComplete = true // re #396, third round: see the Classify call site above.
 	if raw, err := req.Canonical(); err == nil {
 		s := string(raw)
 		rec.SpamPromptApplied = &s

@@ -1085,8 +1085,21 @@ type IMAPImportAccountRow struct {
 	// ExcludedFoldersJSON is the JSON array of no-sync upstream folder
 	// names, added by migration 0103 (issue #303/#305). "[]" means none.
 	ExcludedFoldersJSON string `json:"excluded_folders_json"`
-	CreatedAt           int64  `json:"created_at"`
-	UpdatedAt           int64  `json:"updated_at"`
+	// OwnAddressesJSON is the JSON array of operator-configured extra
+	// own addresses, added by migration 0113 (re #396, third round).
+	// "[]" means none.
+	OwnAddressesJSON string `json:"own_addresses_json"`
+	// LearnedAddressesJSON is the JSON array of addresses learned from
+	// Delivered-To/X-Original-To headers, added by migration 0113 (re
+	// #396, third round). NULL means the learning pass has never run
+	// for this account; "[]" means it ran and found nothing more.
+	LearnedAddressesJSON *string `json:"learned_addresses_json,omitempty" nullable:"true"`
+	// AddressesLearnedAt is the unix-micros instant the learning pass
+	// last wrote LearnedAddressesJSON, added by migration 0113. NULL
+	// until it has run once.
+	AddressesLearnedAt *int64 `json:"addresses_learned_at,omitempty"`
+	CreatedAt          int64  `json:"created_at"`
+	UpdatedAt          int64  `json:"updated_at"`
 }
 
 // IMAPImportFolderMapRow mirrors one row of the imapimport_folder_map

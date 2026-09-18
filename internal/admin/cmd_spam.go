@@ -395,6 +395,33 @@ func emitSpamUndoVerdictsSummary(stdout, stderr io.Writer, g *globalOptions, dry
 	return nil
 }
 
+// emitSpamUndoRecipientOnlySummary renders a SpamUndoRecipientOnlySummary
+// (re #396, third round, `spam reclassify --undo-recipient-only`),
+// mirroring emitSpamUndoVerdictsSummary's shape.
+func emitSpamUndoRecipientOnlySummary(stdout, stderr io.Writer, g *globalOptions, dryRun bool, sum SpamUndoRecipientOnlySummary) error {
+	mode := "repair"
+	if dryRun {
+		mode = "dry-run"
+	}
+	if g.jsonOut {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(struct {
+			Mode string `json:"mode"`
+			SpamUndoRecipientOnlySummary
+		}{Mode: mode, SpamUndoRecipientOnlySummary: sum})
+	}
+	if g.quiet {
+		return nil
+	}
+	fmt.Fprintf(stderr, "spam reclassify --undo-recipient-only: done (%s)\n", mode)
+	fmt.Fprintf(stderr, "  scanned:  %d\n", sum.Scanned)
+	fmt.Fprintf(stderr, "  repaired: %d\n", sum.Repaired)
+	fmt.Fprintf(stderr, "  skipped:  %d\n", sum.Skipped)
+	fmt.Fprintf(stderr, "  errors:   %d\n", sum.Errors)
+	return nil
+}
+
 // newSpamReclassifyCmd builds `herold spam reclassify`, the online
 // counterpart to `herold spam apply-verdicts` (issue #318): a
 // store-backed maintenance command in the same family (opens the store
@@ -408,7 +435,7 @@ func emitSpamUndoVerdictsSummary(stdout, stderr io.Writer, g *globalOptions, dry
 // apply-verdicts.
 func newSpamReclassifyCmd() *cobra.Command {
 	var since, engine, undoLogPath, undoPath string
-	var unclassifiedOnly, dryRun bool
+	var unclassifiedOnly, dryRun, undoRecipientOnly bool
 	var limit int
 	c := &cobra.Command{
 		Use:   "reclassify <email-or-id>",
@@ -436,7 +463,17 @@ place; ham is left untouched. delivery_disposition is never touched.
 previous mailbox ids, in the same format ` + "`spam apply-verdicts --undo-log`" + ` writes;
 pass --undo <path> in a later invocation (of either command) to restore
 those memberships. --dry-run reports the summary without writing the
-classification record, moving anything, or writing --undo-log.`,
+classification record, moving anything, or writing --undo-log.
+
+--undo-recipient-only (re #396, third round) is a distinct repair mode
+that ignores --since/--engine/--unclassified-only/--undo/--undo-log:
+for every message whose applied verdict is spam, recorded model verdict
+is ham, and whose stored spam_signals name recipient_not_own but no
+longer match today's decisive-signal rules (the shape the second
+round's now-retired standalone recipient_not_own rule produced), it
+moves the message out of Junk into the principal's Inbox and corrects
+the stored verdict to ham. --dry-run reports the candidate count
+without writing anything.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			g := globals(cmd.Context())
@@ -455,6 +492,18 @@ classification record, moving anything, or writing --undo-log.`,
 			p, err := resolveStorePrincipal(ctx, st, args[0])
 			if err != nil {
 				return err
+			}
+
+			if undoRecipientOnly {
+				rules := cfg.Spam.DecisiveSpamSignals
+				if len(rules) == 0 {
+					rules = spam.DefaultDecisiveSpamSignals
+				}
+				sum, err := undoRecipientOnlyOverrides(ctx, st, p.ID, rules, dryRun)
+				if err != nil {
+					return err
+				}
+				return emitSpamUndoRecipientOnlySummary(cmd.OutOrStdout(), cmd.ErrOrStderr(), g, dryRun, sum)
 			}
 
 			if undoPath != "" {
@@ -578,6 +627,7 @@ classification record, moving anything, or writing --undo-log.`,
 	c.Flags().BoolVar(&dryRun, "dry-run", false, "report the summary without writing anything")
 	c.Flags().StringVar(&undoLogPath, "undo-log", "", "write an undo log (message id + previous mailbox ids) before each move")
 	c.Flags().StringVar(&undoPath, "undo", "", "restore memberships from a previously written --undo-log instead of reclassifying")
+	c.Flags().BoolVar(&undoRecipientOnly, "undo-recipient-only", false, "repair messages resolved to spam solely on a now-retired standalone recipient_not_own match (re #396, third round); ignores --since/--engine/--unclassified-only/--undo/--undo-log")
 	return c
 }
 

@@ -96,7 +96,7 @@ func TestClassify_ReturnsSpamVerdict(t *testing.T) {
 	})
 	c := New(invoker, silentLogger(), clock.NewFake(time.Now()))
 	msg := buildMessage(t, canonMsg)
-	r, err := c.Classify(context.Background(), msg, newAuth(mailauth.AuthPass, mailauth.AuthPass, mailauth.AuthPass, mailauth.AuthNone, "example.com"), "my-spam", ClassifyContext{}, nil)
+	r, err := c.Classify(context.Background(), msg, newAuth(mailauth.AuthPass, mailauth.AuthPass, mailauth.AuthPass, mailauth.AuthNone, "example.com"), "my-spam", ClassifyContext{}, OwnAddressInfo{})
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestClassify_TimeoutReturnsUnclassified(t *testing.T) {
 	c := New(invoker, silentLogger(), clock.NewFake(time.Now()))
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	r, err := c.Classify(ctx, buildMessage(t, canonMsg), nil, "slow", ClassifyContext{}, nil)
+	r, err := c.Classify(ctx, buildMessage(t, canonMsg), nil, "slow", ClassifyContext{}, OwnAddressInfo{})
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
@@ -163,7 +163,7 @@ func TestClassify_BudgetCutoff_FakeClock(t *testing.T) {
 	}
 	resultCh := make(chan outcome, 1)
 	go func() {
-		r, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "slow", ClassifyContext{}, nil)
+		r, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "slow", ClassifyContext{}, OwnAddressInfo{})
 		resultCh <- outcome{r, err}
 	}()
 
@@ -190,7 +190,7 @@ func TestClassify_PluginErrorReturnsUnclassified(t *testing.T) {
 		return nil, errors.New("plugin crashed")
 	})
 	c := New(invoker, silentLogger(), clock.NewFake(time.Now()))
-	r, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "broken", ClassifyContext{}, nil)
+	r, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "broken", ClassifyContext{}, OwnAddressInfo{})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -202,7 +202,7 @@ func TestClassify_PluginErrorReturnsUnclassified(t *testing.T) {
 func TestClassify_PluginNotRegistered(t *testing.T) {
 	invoker := newFakeInvoker()
 	c := New(invoker, silentLogger(), clock.NewFake(time.Now()))
-	r, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "missing", ClassifyContext{}, nil)
+	r, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "missing", ClassifyContext{}, OwnAddressInfo{})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -217,7 +217,7 @@ func TestClassify_UnparseableVerdict(t *testing.T) {
 		return json.RawMessage(`{"verdict":"maybe","confidence":0.5}`), nil
 	})
 	c := New(invoker, silentLogger(), clock.NewFake(time.Now()))
-	r, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "odd", ClassifyContext{}, nil)
+	r, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "odd", ClassifyContext{}, OwnAddressInfo{})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -240,7 +240,7 @@ func TestClassify_PropagatesTimeoutMsFromDeadline(t *testing.T) {
 	})
 	fc := clock.NewFake(time.Now())
 	c := New(invoker, silentLogger(), fc).WithTimeout(5 * time.Second)
-	_, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "my-spam", ClassifyContext{}, nil)
+	_, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "my-spam", ClassifyContext{}, OwnAddressInfo{})
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
@@ -273,7 +273,7 @@ func TestClassify_PropagatesTimeoutMsFromCallerDeadline(t *testing.T) {
 	c := New(invoker, silentLogger(), clock.NewReal())
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_, err := c.Classify(ctx, buildMessage(t, canonMsg), nil, "my-spam", ClassifyContext{}, nil)
+	_, err := c.Classify(ctx, buildMessage(t, canonMsg), nil, "my-spam", ClassifyContext{}, OwnAddressInfo{})
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
@@ -297,7 +297,7 @@ func TestClassify_MailClassifyPropagatesTimeoutMs(t *testing.T) {
 	})
 	fc := clock.NewFake(time.Now())
 	c := New(invoker, silentLogger(), fc).WithTimeout(3 * time.Second)
-	_, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "my-classifier", ClassifyContext{}, nil)
+	_, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "my-classifier", ClassifyContext{}, OwnAddressInfo{})
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
@@ -652,7 +652,7 @@ func TestClassify_AppliesDefaultTimeout(t *testing.T) {
 		return json.RawMessage(`{"verdict":"ham","score":0.1}`), nil
 	})
 	c := New(invoker, silentLogger(), clock.NewReal()).WithTimeout(10 * time.Millisecond)
-	_, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "p", ClassifyContext{}, nil)
+	_, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "p", ClassifyContext{}, OwnAddressInfo{})
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
@@ -675,7 +675,7 @@ func TestClassify_WithLLMReplayer(t *testing.T) {
 	msg := buildMessage(t, canonMsg)
 	r, err := c.Classify(context.Background(), msg,
 		newAuth(mailauth.AuthPass, mailauth.AuthPass, mailauth.AuthPass, mailauth.AuthNone, "example.com"),
-		"herold-spam-llm", ClassifyContext{}, nil)
+		"herold-spam-llm", ClassifyContext{}, OwnAddressInfo{})
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
@@ -693,7 +693,7 @@ func TestClassify_ReplayerMissingFixtureError(t *testing.T) {
 	replayer := llmtest.NewReplayer(llmtest.KindSpamClassify, nil)
 	c := New(replayer, silentLogger(), clock.NewFake(time.Now()))
 	msg := buildMessage(t, canonMsg)
-	_, err := c.Classify(context.Background(), msg, nil, "herold-spam-llm", ClassifyContext{}, nil)
+	_, err := c.Classify(context.Background(), msg, nil, "herold-spam-llm", ClassifyContext{}, OwnAddressInfo{})
 	if err == nil {
 		t.Fatal("expected ErrFixtureMissing, got nil")
 	}
@@ -751,7 +751,7 @@ func TestClassify_PasswordResetDMARCPassMessageShape(t *testing.T) {
 		return json.RawMessage(`{"verdict":"ham","score":0.05,"reason":"legitimate password-reset notification from a DMARC-aligned sender"}`), nil
 	})
 	c := New(invoker, silentLogger(), clock.NewFake(time.Now()))
-	r, err := c.Classify(context.Background(), msg, auth, "herold-spam-llm", ClassifyContext{}, nil)
+	r, err := c.Classify(context.Background(), msg, auth, "herold-spam-llm", ClassifyContext{}, OwnAddressInfo{})
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
@@ -795,7 +795,7 @@ func TestClassify_OwnAddressNotSpamSignal(t *testing.T) {
 		return json.RawMessage(`{"verdict":"ham","score":0.04,"reason":"recipient is one of the owner's own addresses, not scraped"}`), nil
 	})
 	c := New(invoker, silentLogger(), clock.NewFake(time.Now()))
-	r, err := c.Classify(context.Background(), msg, nil, "herold-spam-llm", ClassifyContext{}, own)
+	r, err := c.Classify(context.Background(), msg, nil, "herold-spam-llm", ClassifyContext{}, OwnAddressInfo{Addresses: own, Complete: true})
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
@@ -876,7 +876,7 @@ func TestClassify_ColdMarketingPitchWithSpamSignalsIsSpam(t *testing.T) {
 		return json.RawMessage(`{"verdict":"spam","score":0.85,"reason":"unsolicited commercial pitch from an unknown sender despite passing authentication and a List-Unsubscribe header","spam_signals":["unsolicited_bulk_marketing"],"ham_signals":["passing_authentication","list_unsubscribe_present"]}`), nil
 	})
 	c := New(invoker, silentLogger(), clock.NewFake(time.Now()))
-	r, err := c.Classify(context.Background(), msg, auth, "herold-spam-llm", ClassifyContext{}, nil)
+	r, err := c.Classify(context.Background(), msg, auth, "herold-spam-llm", ClassifyContext{}, OwnAddressInfo{})
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
@@ -912,7 +912,7 @@ func TestClassify_HamVerdictWithDecisiveSpamSignalResolvedToSpam(t *testing.T) {
 		return json.RawMessage(`{"verdict":"ham","score":0.15,"reason":"promotional content with an unsubscribe link and passing authentication","spam_signals":["unsolicited_bulk_marketing"],"ham_signals":[]}`), nil
 	})
 	c := New(invoker, silentLogger(), clock.NewFake(time.Now()))
-	r, err := c.Classify(context.Background(), msg, auth, "herold-spam-llm", ClassifyContext{}, nil)
+	r, err := c.Classify(context.Background(), msg, auth, "herold-spam-llm", ClassifyContext{}, OwnAddressInfo{})
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
@@ -937,7 +937,7 @@ func TestClassify_HamVerdictWithNonDecisiveSpamSignalOnlyFlagged(t *testing.T) {
 		return json.RawMessage(`{"verdict":"ham","score":0.4,"reason":"a little pushy but plausible","spam_signals":["urgency_pressure"],"ham_signals":["known_correspondent"]}`), nil
 	})
 	c := New(invoker, silentLogger(), clock.NewFake(time.Now()))
-	r, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "p", ClassifyContext{}, nil)
+	r, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "p", ClassifyContext{}, OwnAddressInfo{})
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
@@ -960,7 +960,7 @@ func TestClassify_HamVerdictNoSpamSignalsNotInconsistent(t *testing.T) {
 		return json.RawMessage(`{"verdict":"ham","score":0.05,"reason":"known correspondent","ham_signals":["known_correspondent"]}`), nil
 	})
 	c := New(invoker, silentLogger(), clock.NewFake(time.Now()))
-	r, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "p", ClassifyContext{}, nil)
+	r, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "p", ClassifyContext{}, OwnAddressInfo{})
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
@@ -978,6 +978,14 @@ func TestClassify_HamVerdictNoSpamSignalsNotInconsistent(t *testing.T) {
 // adds "recipient_not_own" to its own spam_signals must have that
 // resolved to Spam here exactly as a model-supplied decisive signal
 // would be; Classify does not care which side added the name.
+//
+// Third round (#396, required outcome 4): recipient_not_own alone is no
+// longer decisive (see TestClassify_RecipientNotOwnAloneNeverDecisive) --
+// this message still resolves to Spam because it also carries List-Id
+// and Precedence: list, which Classify reads as the server-computed
+// "bulk_list_relay" signal (hasBulkListHeaders) and appends alongside
+// recipient_not_own; own (Complete: true here) models an import account
+// whose own-address set is known complete.
 func TestClassify_RecipientNotOwnAppendedByPluginResolvesHamToSpam(t *testing.T) {
 	const raw = "From: Jamestown <no-reply@jamestown.example>\r\n" +
 		"To: 3rc@xxdz88.com\r\n" +
@@ -998,18 +1006,24 @@ func TestClassify_RecipientNotOwnAppendedByPluginResolvesHamToSpam(t *testing.T)
 		return json.RawMessage(`{"verdict":"ham","score":0.08,"reason":"automated acknowledgment from a legitimate business","spam_signals":["recipient_not_own"],"ham_signals":[]}`), nil
 	})
 	c := New(invoker, silentLogger(), clock.NewFake(time.Now()))
-	r, err := c.Classify(context.Background(), msg, nil, "herold-spam-llm", ClassifyContext{}, own)
+	r, err := c.Classify(context.Background(), msg, nil, "herold-spam-llm", ClassifyContext{}, OwnAddressInfo{Addresses: own, Complete: true})
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
 	if !gotReq.RecipientNotOwn {
 		t.Fatalf("request recipient_not_own = false, want true: To is 3rc@xxdz88.com, own_addresses is %v", own)
 	}
+	if !gotReq.OwnAddressesComplete {
+		t.Fatalf("request own_addresses_complete = false, want true")
+	}
 	if r.Verdict != Spam {
-		t.Fatalf("verdict = %v, want Spam (recipient_not_own is a decisive signal)", r.Verdict)
+		t.Fatalf("verdict = %v, want Spam (recipient_not_own + bulk_list_relay is decisive on a complete own-address set)", r.Verdict)
 	}
 	if r.ModelVerdict != Ham {
 		t.Fatalf("ModelVerdict = %v, want Ham", r.ModelVerdict)
+	}
+	if !HasSignal(r.SpamSignals, "bulk_list_relay") {
+		t.Fatalf("SpamSignals = %v, want it to include the server-computed bulk_list_relay signal (List-Id + Precedence: list present)", r.SpamSignals)
 	}
 }
 
@@ -1039,13 +1053,88 @@ func TestClassify_RequestCarriesRecipientNotOwn(t *testing.T) {
 				return json.RawMessage(`{"verdict":"ham","score":0.05,"reason":"x"}`), nil
 			})
 			c := New(invoker, silentLogger(), clock.NewFake(time.Now()))
-			if _, err := c.Classify(context.Background(), msg, nil, "p", ClassifyContext{}, tc.own); err != nil {
+			if _, err := c.Classify(context.Background(), msg, nil, "p", ClassifyContext{}, OwnAddressInfo{Addresses: tc.own, Complete: true}); err != nil {
 				t.Fatalf("Classify: %v", err)
 			}
 			if gotReq.RecipientNotOwn != tc.want {
 				t.Fatalf("RecipientNotOwn = %v, want %v", gotReq.RecipientNotOwn, tc.want)
 			}
 		})
+	}
+}
+
+// TestClassify_RecipientNotOwnAloneNeverDecisive is the #396 third-round
+// regression test for required outcome 2's first half: a Ham verdict
+// whose only reported spam_signals entry is recipient_not_own -- with no
+// other decisive signal, and no mailing-list headers to produce
+// bulk_list_relay -- must never be resolved to Spam, even when the
+// own-address set is known complete. This is the exact shape the second
+// round's now-retired standalone "recipient_not_own" rule mis-resolved:
+// a transactional order-status mail delivered to an upstream account's
+// unrecognised alias.
+func TestClassify_RecipientNotOwnAloneNeverDecisive(t *testing.T) {
+	const raw = "From: order-status@wir-machen-druck.de\r\n" +
+		"To: info@classic-computing.de\r\n" +
+		"Subject: Your order has shipped\r\n" +
+		"Date: Thu, 17 Sep 2026 09:16:00 +0000\r\n" +
+		"Content-Type: text/plain; charset=utf-8\r\n" +
+		"\r\n" +
+		"Your print order status has been updated.\r\n"
+	msg := buildMessage(t, raw)
+	own := []string{"vorsitz@classic-computing.de"}
+
+	invoker := newFakeInvoker()
+	invoker.handle("herold-spam-llm", ClassifyMethod, func(_ context.Context, _ any) (json.RawMessage, error) {
+		return json.RawMessage(`{"verdict":"ham","score":0.05,"reason":"order status notification, DKIM pass, known business sender","spam_signals":["recipient_not_own"],"ham_signals":["passing_dkim","order_details"]}`), nil
+	})
+	c := New(invoker, silentLogger(), clock.NewFake(time.Now()))
+	r, err := c.Classify(context.Background(), msg, nil, "herold-spam-llm", ClassifyContext{},
+		OwnAddressInfo{Addresses: own, Complete: true})
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if r.Verdict != Ham {
+		t.Fatalf("verdict = %v, want Ham (recipient_not_own alone must never be decisive)", r.Verdict)
+	}
+	if r.ModelVerdict != Unclassified {
+		t.Fatalf("ModelVerdict = %v, want Unclassified (no resolution should have happened)", r.ModelVerdict)
+	}
+	// Inconsistent still fires -- the plugin's own reported spam_signals
+	// contradicts its Ham verdict -- flagging is independent of whether
+	// the signal is decisive.
+	if !r.Inconsistent {
+		t.Fatalf("Inconsistent = false, want true")
+	}
+}
+
+// TestClassify_IncompleteOwnAddressSetNeverDecisiveForRecipientNotOwn is
+// the #396 third-round regression test for required outcome 2's second
+// half: recipient_not_own must never contribute to a decisive match --
+// not even combined with bulk_list_relay -- when the own-address set is
+// known incomplete (OwnAddressInfo.Complete: false, modelling an
+// IMAP-import account with no configured list and no completed learning
+// pass).
+func TestClassify_IncompleteOwnAddressSetNeverDecisiveForRecipientNotOwn(t *testing.T) {
+	msg := buildMessage(t, "From: no-reply@jamestown.example\r\n"+
+		"To: 3rc@xxdz88.com\r\nList-Id: <3rc.xxdz88.com>\r\nPrecedence: list\r\n"+
+		"Subject: Ihr Anliegen\r\n\r\nVielen Dank fuer Ihre Anfrage.\r\n")
+	own := []string{"hans@huebner.org"}
+
+	invoker := newFakeInvoker()
+	invoker.handle("herold-spam-llm", ClassifyMethod, func(_ context.Context, _ any) (json.RawMessage, error) {
+		return json.RawMessage(`{"verdict":"ham","score":0.08,"reason":"automated acknowledgment","spam_signals":["recipient_not_own"],"ham_signals":[]}`), nil
+	})
+	c := New(invoker, silentLogger(), clock.NewFake(time.Now()))
+	r, err := c.Classify(context.Background(), msg, nil, "herold-spam-llm", ClassifyContext{},
+		OwnAddressInfo{Addresses: own, Complete: false})
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if r.Verdict != Ham {
+		t.Fatalf("verdict = %v, want Ham (an incomplete own-address set must block recipient_not_own's contribution even combined with bulk_list_relay)", r.Verdict)
+	}
+	if r.ModelVerdict != Unclassified {
+		t.Fatalf("ModelVerdict = %v, want Unclassified (no resolution should have happened)", r.ModelVerdict)
 	}
 }
 
@@ -1063,7 +1152,7 @@ func TestClassify_SuspectBelowConfidenceDowngradesDecisiveResolution(t *testing.
 		invoker := newFakeInvoker()
 		invoker.handle("p", ClassifyMethod, respond(0.1))
 		c := New(invoker, silentLogger(), clock.NewFake(time.Now())).WithSuspectBelowConfidence(0.3)
-		r, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "p", ClassifyContext{}, nil)
+		r, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "p", ClassifyContext{}, OwnAddressInfo{})
 		if err != nil {
 			t.Fatalf("Classify: %v", err)
 		}
@@ -1075,7 +1164,7 @@ func TestClassify_SuspectBelowConfidenceDowngradesDecisiveResolution(t *testing.
 		invoker := newFakeInvoker()
 		invoker.handle("p", ClassifyMethod, respond(0.5))
 		c := New(invoker, silentLogger(), clock.NewFake(time.Now())).WithSuspectBelowConfidence(0.3)
-		r, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "p", ClassifyContext{}, nil)
+		r, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "p", ClassifyContext{}, OwnAddressInfo{})
 		if err != nil {
 			t.Fatalf("Classify: %v", err)
 		}
@@ -1094,7 +1183,7 @@ func TestClassify_WithDecisiveSpamSignalsEmptyDisablesResolution(t *testing.T) {
 		return json.RawMessage(`{"verdict":"ham","score":0.1,"reason":"x","spam_signals":["unsolicited_bulk_marketing"]}`), nil
 	})
 	c := New(invoker, silentLogger(), clock.NewFake(time.Now())).WithDecisiveSpamSignals(nil)
-	r, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "p", ClassifyContext{}, nil)
+	r, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "p", ClassifyContext{}, OwnAddressInfo{})
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}

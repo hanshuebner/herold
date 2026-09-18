@@ -1180,6 +1180,168 @@ func TestIMAPImport_ExcludedFolders_ValidationError(t *testing.T) {
 	}
 }
 
+// ---- own_addresses (re #396, third round) ----------------------------------
+
+// TestIMAPImport_OwnAddresses_CreateEcho verifies that own_addresses
+// supplied on create is lower-cased, trimmed, deduplicated, and echoed
+// back on the create response, on a subsequent list, and in the stored
+// row (required outcome 1: admin REST API to set/list the account's
+// configured own-address list).
+func TestIMAPImport_OwnAddresses_CreateEcho(t *testing.T) {
+	ih := newIMAPHarness(t, nil)
+	body := minimalCreateBody()
+	body["own_addresses"] = []string{" Info@Classic-Computing.de ", "vorstand@classic-computing.de", "info@classic-computing.de"}
+
+	res, buf := ih.do("POST", ih.listPath(), ih.adminKey, body)
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create: %d: %s", res.StatusCode, buf)
+	}
+	var created struct {
+		ID           string   `json:"id"`
+		OwnAddresses []string `json:"own_addresses"`
+	}
+	if err := json.Unmarshal(buf, &created); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	want := []string{"info@classic-computing.de", "vorstand@classic-computing.de"}
+	if !equalStringSlices(created.OwnAddresses, want) {
+		t.Fatalf("create own_addresses = %v, want %v", created.OwnAddresses, want)
+	}
+
+	row, err := ih.fs.Meta().GetIMAPImportAccount(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("GetIMAPImportAccount: %v", err)
+	}
+	if !equalStringSlices(row.OwnAddresses, want) {
+		t.Fatalf("store own_addresses = %v, want %v", row.OwnAddresses, want)
+	}
+	if !row.OwnAddressesComplete() {
+		t.Fatalf("OwnAddressesComplete() = false, want true (a configured own-address list makes the set complete)")
+	}
+
+	res2, buf2 := ih.do("GET", ih.listPath(), ih.adminKey, nil)
+	if res2.StatusCode != http.StatusOK {
+		t.Fatalf("list: %d: %s", res2.StatusCode, buf2)
+	}
+	var listOut struct {
+		Items []struct {
+			ID           string   `json:"id"`
+			OwnAddresses []string `json:"own_addresses"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(buf2, &listOut); err != nil {
+		t.Fatalf("unmarshal list: %v", err)
+	}
+	if len(listOut.Items) != 1 || !equalStringSlices(listOut.Items[0].OwnAddresses, want) {
+		t.Fatalf("list own_addresses = %v, want %v", listOut.Items[0].OwnAddresses, want)
+	}
+}
+
+// TestIMAPImport_OwnAddresses_Patch verifies that PATCH replaces the
+// stored own_addresses list, that omitting the field preserves the
+// existing value, and that an explicit empty array clears it -- the same
+// semantics TestIMAPImport_ExcludedFolders_Patch verifies for
+// excluded_folders.
+func TestIMAPImport_OwnAddresses_Patch(t *testing.T) {
+	ih := newIMAPHarness(t, nil)
+	res, buf := ih.do("POST", ih.listPath(), ih.adminKey, minimalCreateBody())
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create: %d: %s", res.StatusCode, buf)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(buf, &created); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	res2, buf2 := ih.do("PATCH", ih.accountPath(created.ID), ih.adminKey, map[string]any{
+		"own_addresses": []string{"info@classic-computing.de"},
+	})
+	if res2.StatusCode != http.StatusOK {
+		t.Fatalf("patch: %d: %s", res2.StatusCode, buf2)
+	}
+	var patched struct {
+		OwnAddresses []string `json:"own_addresses"`
+	}
+	if err := json.Unmarshal(buf2, &patched); err != nil {
+		t.Fatalf("patch unmarshal: %v", err)
+	}
+	want := []string{"info@classic-computing.de"}
+	if !equalStringSlices(patched.OwnAddresses, want) {
+		t.Fatalf("patch own_addresses = %v, want %v", patched.OwnAddresses, want)
+	}
+
+	res3, buf3 := ih.do("PATCH", ih.accountPath(created.ID), ih.adminKey, map[string]any{
+		"account_name": "Still named",
+	})
+	if res3.StatusCode != http.StatusOK {
+		t.Fatalf("patch without own_addresses: %d: %s", res3.StatusCode, buf3)
+	}
+	var patched3 struct {
+		OwnAddresses []string `json:"own_addresses"`
+	}
+	if err := json.Unmarshal(buf3, &patched3); err != nil {
+		t.Fatalf("patch3 unmarshal: %v", err)
+	}
+	if !equalStringSlices(patched3.OwnAddresses, want) {
+		t.Fatalf("preserved own_addresses = %v, want %v", patched3.OwnAddresses, want)
+	}
+
+	res4, buf4 := ih.do("PATCH", ih.accountPath(created.ID), ih.adminKey, map[string]any{
+		"own_addresses": []string{},
+	})
+	if res4.StatusCode != http.StatusOK {
+		t.Fatalf("patch clear: %d: %s", res4.StatusCode, buf4)
+	}
+	row, err := ih.fs.Meta().GetIMAPImportAccount(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("GetIMAPImportAccount: %v", err)
+	}
+	if len(row.OwnAddresses) != 0 {
+		t.Fatalf("own_addresses after clear = %v, want empty", row.OwnAddresses)
+	}
+}
+
+// TestIMAPImport_OwnAddresses_ValidationError verifies that an entry not
+// shaped like an email address is rejected with a problem+json 400 on
+// both create and PATCH.
+func TestIMAPImport_OwnAddresses_ValidationError(t *testing.T) {
+	ih := newIMAPHarness(t, nil)
+
+	body := minimalCreateBody()
+	body["own_addresses"] = []string{"info@classic-computing.de", "not-an-address"}
+	res, buf := ih.do("POST", ih.listPath(), ih.adminKey, body)
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("create with invalid entry: want 400, got %d: %s", res.StatusCode, buf)
+	}
+	ct := res.Header.Get("Content-Type")
+	if !strings.Contains(ct, "application/problem+json") {
+		t.Fatalf("Content-Type = %q, want application/problem+json", ct)
+	}
+
+	res2, buf2 := ih.do("POST", ih.listPath(), ih.adminKey, minimalCreateBody())
+	if res2.StatusCode != http.StatusCreated {
+		t.Fatalf("create baseline: %d: %s", res2.StatusCode, buf2)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(buf2, &created); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	res3, buf3 := ih.do("PATCH", ih.accountPath(created.ID), ih.adminKey, map[string]any{
+		"own_addresses": []string{"not-an-address"},
+	})
+	if res3.StatusCode != http.StatusBadRequest {
+		t.Fatalf("patch with invalid entry: want 400, got %d: %s", res3.StatusCode, buf3)
+	}
+	ct3 := res3.Header.Get("Content-Type")
+	if !strings.Contains(ct3, "application/problem+json") {
+		t.Fatalf("patch Content-Type = %q, want application/problem+json", ct3)
+	}
+}
+
 // equalStringSlices compares two string slices for equality (order matters).
 func equalStringSlices(a, b []string) bool {
 	if len(a) != len(b) {

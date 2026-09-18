@@ -69,7 +69,7 @@ func newIMAPImportSpamAdapter(cls *spam.Classifier, plugin string, st store.Stor
 // applied here too, so the returned Classification.Category is already
 // the fully-resolved value the import worker keywords the message with
 // (resolveImportSpamTarget).
-func (a *imapImportSpamAdapter) Classify(ctx context.Context, principalID store.PrincipalID, msg mailparse.Message) spam.Classification {
+func (a *imapImportSpamAdapter) Classify(ctx context.Context, principalID store.PrincipalID, msg mailparse.Message, accountID string) spam.Classification {
 	clsCtx, categorisationEnabled := a.buildClassifyContext(ctx, principalID)
 	// cls starts as the "no plugin verdict" default and is overwritten by
 	// a successful classifier call below. A nil Classifier, a Classify
@@ -102,7 +102,8 @@ func (a *imapImportSpamAdapter) Classify(ctx context.Context, principalID store.
 				slog.String("err", oerr.Error()))
 		}
 		// authResults: REQ-IMAP-IMP-33, no re-verification on import.
-		cls, clsErr = a.cls.Classify(ctx, msg, nil, a.plugin, clsCtx, ownAddresses)
+		cls, clsErr = a.cls.Classify(ctx, msg, nil, a.plugin, clsCtx,
+			spam.OwnAddressInfo{Addresses: ownAddresses, Complete: a.ownAddressesComplete(ctx, accountID)})
 		elapsed = time.Since(start)
 		if clsErr != nil {
 			// spam.Classifier.Classify already logs a warn with the plugin
@@ -217,7 +218,7 @@ func (a *imapImportSpamAdapter) buildClassifyContext(ctx context.Context, princi
 // Persist failures are logged at warn and otherwise swallowed -- the
 // import must never fail because the transparency record could not be
 // written.
-func (a *imapImportSpamAdapter) RecordVerdict(ctx context.Context, principalID store.PrincipalID, messageID store.MessageID, msg mailparse.Message, classification spam.Classification) {
+func (a *imapImportSpamAdapter) RecordVerdict(ctx context.Context, principalID store.PrincipalID, messageID store.MessageID, msg mailparse.Message, classification spam.Classification, accountID string) {
 	if (classification.Verdict == spam.Unclassified && classification.Reason == "") || messageID == 0 {
 		return
 	}
@@ -285,6 +286,7 @@ func (a *imapImportSpamAdapter) RecordVerdict(ctx context.Context, principalID s
 			slog.Uint64("principal_id", uint64(principalID)),
 			slog.String("err", oerr.Error()))
 	}
+	req.OwnAddressesComplete = a.ownAddressesComplete(ctx, accountID)
 	if b, jerr := req.Canonical(); jerr == nil {
 		s := string(b)
 		rec.SpamPromptApplied = &s
@@ -302,4 +304,25 @@ func (a *imapImportSpamAdapter) RecordVerdict(ctx context.Context, principalID s
 			slog.String("err", err.Error()),
 		)
 	}
+}
+
+// ownAddressesComplete reports whether accountID's own-address set is
+// known complete (re #396, third round, store.IMAPImportAccount.
+// OwnAddressesComplete): false for an empty accountID (a caller that
+// somehow has no account context -- conservative, since an unscoped
+// caller cannot verify anything) and false when the account lookup
+// itself fails (the account row is the source of truth; a failure to
+// read it is not evidence of completeness).
+func (a *imapImportSpamAdapter) ownAddressesComplete(ctx context.Context, accountID string) bool {
+	if accountID == "" {
+		return false
+	}
+	acc, err := a.st.Meta().GetIMAPImportAccount(ctx, accountID)
+	if err != nil {
+		a.logger.WarnContext(ctx, "imap-import spam: resolve account own-address completeness",
+			slog.String("account_id", accountID),
+			slog.String("err", err.Error()))
+		return false
+	}
+	return acc.OwnAddressesComplete()
 }

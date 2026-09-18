@@ -1258,6 +1258,154 @@ func testIMAPImport_ExcludedFolders(t *testing.T, s store.Store) {
 	}
 }
 
+// testIMAPImport_OwnAddresses verifies that OwnAddresses (re #396, third
+// round) round-trips through Create/Get exactly like ExcludedFolders,
+// that Update replaces it, that an explicit empty slice clears it, and
+// that OwnAddressesComplete() reflects it.
+func testIMAPImport_OwnAddresses(t *testing.T, s store.Store) {
+	t.Helper()
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "imap-ownaddr@example.com")
+
+	acc, err := s.Meta().CreateIMAPImportAccount(ctx, store.IMAPImportAccountCreate{
+		PrincipalID:      p.ID,
+		AccountName:      "Own",
+		Host:             "imap.example.com",
+		Port:             993,
+		TLSMode:          store.IMAPImportTLSModeImplicit,
+		Username:         "user",
+		AuthMethod:       store.IMAPImportAuthMethodPassword,
+		CredentialCT:     []byte("v1:pw"),
+		State:            store.IMAPImportAccountStateEnabled,
+		DeletePropagates: true,
+		OwnAddresses:     []string{"info@example.com", "vorstand@example.com"},
+	})
+	if err != nil {
+		t.Fatalf("CreateIMAPImportAccount: %v", err)
+	}
+	if len(acc.OwnAddresses) != 2 || acc.OwnAddresses[0] != "info@example.com" || acc.OwnAddresses[1] != "vorstand@example.com" {
+		t.Errorf("create-returned OwnAddresses = %v; want [info@example.com vorstand@example.com]", acc.OwnAddresses)
+	}
+	if !acc.OwnAddressesComplete() {
+		t.Error("OwnAddressesComplete() = false; want true for a configured own-address list")
+	}
+
+	got, err := s.Meta().GetIMAPImportAccount(ctx, acc.ID)
+	if err != nil {
+		t.Fatalf("GetIMAPImportAccount: %v", err)
+	}
+	if len(got.OwnAddresses) != 2 {
+		t.Errorf("Get OwnAddresses = %v; want 2 entries", got.OwnAddresses)
+	}
+
+	// An account created without OwnAddresses round-trips to nil/empty
+	// and is not "complete" absent a learning pass.
+	acc2 := mustCreateIMAPImportAccount(t, s, p.ID, "NoOwnAddresses")
+	if len(acc2.OwnAddresses) != 0 {
+		t.Errorf("OwnAddresses on a plain create = %v; want empty", acc2.OwnAddresses)
+	}
+	if acc2.OwnAddressesComplete() {
+		t.Error("OwnAddressesComplete() = true; want false with no configured list and no learning pass")
+	}
+
+	// Update replaces the list.
+	upd, err := s.Meta().UpdateIMAPImportAccount(ctx, store.IMAPImportAccountUpdate{
+		ID:               acc.ID,
+		PrincipalID:      p.ID,
+		AccountName:      got.AccountName,
+		Host:             got.Host,
+		Port:             got.Port,
+		TLSMode:          got.TLSMode,
+		Username:         got.Username,
+		AuthMethod:       got.AuthMethod,
+		State:            got.State,
+		DeletePropagates: got.DeletePropagates,
+		OwnAddresses:     []string{"single@example.com"},
+	})
+	if err != nil {
+		t.Fatalf("UpdateIMAPImportAccount: %v", err)
+	}
+	if len(upd.OwnAddresses) != 1 || upd.OwnAddresses[0] != "single@example.com" {
+		t.Errorf("updated OwnAddresses = %v; want [single@example.com]", upd.OwnAddresses)
+	}
+
+	// Update with an explicit empty slice clears it.
+	upd2, err := s.Meta().UpdateIMAPImportAccount(ctx, store.IMAPImportAccountUpdate{
+		ID:               acc.ID,
+		PrincipalID:      p.ID,
+		AccountName:      got.AccountName,
+		Host:             got.Host,
+		Port:             got.Port,
+		TLSMode:          got.TLSMode,
+		Username:         got.Username,
+		AuthMethod:       got.AuthMethod,
+		State:            got.State,
+		DeletePropagates: got.DeletePropagates,
+		OwnAddresses:     []string{},
+	})
+	if err != nil {
+		t.Fatalf("UpdateIMAPImportAccount (clear): %v", err)
+	}
+	if len(upd2.OwnAddresses) != 0 {
+		t.Errorf("cleared OwnAddresses = %v; want empty", upd2.OwnAddresses)
+	}
+}
+
+// testIMAPImport_LearnedAddresses verifies SetIMAPImportLearnedAddresses
+// (re #396, third round): AddressesLearnedAt is nil before the first
+// call regardless of OwnAddresses, becomes non-nil after any call
+// (marking OwnAddressesComplete() true) even when the learned set is
+// empty, and LearnedAddresses is sorted and deduplicated.
+func testIMAPImport_LearnedAddresses(t *testing.T, s store.Store) {
+	t.Helper()
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "imap-learnedaddr@example.com")
+	acc := mustCreateIMAPImportAccount(t, s, p.ID, "Learned")
+
+	if acc.AddressesLearnedAt != nil {
+		t.Fatalf("AddressesLearnedAt on a plain create = %v; want nil", acc.AddressesLearnedAt)
+	}
+	if acc.OwnAddressesComplete() {
+		t.Error("OwnAddressesComplete() = true before any learning pass; want false")
+	}
+
+	// A pass that finds nothing still marks the set complete.
+	if err := s.Meta().SetIMAPImportLearnedAddresses(ctx, acc.ID, nil); err != nil {
+		t.Fatalf("SetIMAPImportLearnedAddresses (empty): %v", err)
+	}
+	got, err := s.Meta().GetIMAPImportAccount(ctx, acc.ID)
+	if err != nil {
+		t.Fatalf("GetIMAPImportAccount: %v", err)
+	}
+	if got.AddressesLearnedAt == nil {
+		t.Fatal("AddressesLearnedAt = nil after SetIMAPImportLearnedAddresses; want non-nil")
+	}
+	if len(got.LearnedAddresses) != 0 {
+		t.Errorf("LearnedAddresses after an empty pass = %v; want empty (not nil-vs-empty ambiguous)", got.LearnedAddresses)
+	}
+	if !got.OwnAddressesComplete() {
+		t.Error("OwnAddressesComplete() = false after a completed (empty) learning pass; want true")
+	}
+
+	// A later pass replaces the list, deduplicated and sorted.
+	if err := s.Meta().SetIMAPImportLearnedAddresses(ctx, acc.ID,
+		[]string{"vorstand@example.com", "info@example.com", "info@example.com"}); err != nil {
+		t.Fatalf("SetIMAPImportLearnedAddresses: %v", err)
+	}
+	got2, err := s.Meta().GetIMAPImportAccount(ctx, acc.ID)
+	if err != nil {
+		t.Fatalf("GetIMAPImportAccount: %v", err)
+	}
+	want := []string{"info@example.com", "vorstand@example.com"}
+	if len(got2.LearnedAddresses) != len(want) || got2.LearnedAddresses[0] != want[0] || got2.LearnedAddresses[1] != want[1] {
+		t.Errorf("LearnedAddresses = %v; want %v", got2.LearnedAddresses, want)
+	}
+
+	if err := s.Meta().SetIMAPImportLearnedAddresses(ctx, "does-not-exist", nil); err == nil {
+		t.Error("SetIMAPImportLearnedAddresses on an unknown account id: want an error")
+	}
+}
+
 // testIMAPImport_MessageStateByFolderAndDelete verifies
 // ListIMAPImportMessageStatesByFolder scopes to one (account, folder) pair
 // and DeleteIMAPImportMessageState removes exactly the targeted row,

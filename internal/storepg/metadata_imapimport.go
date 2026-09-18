@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -20,7 +21,8 @@ const imapImportAccountSelectColsPG = `
 	username, auth_method, backfill_floor_date,
 	credential_ct, state, last_success_at, last_error,
 	delete_propagates, provenance_mailbox_id, debug_log,
-	excluded_folders_json, created_at, updated_at`
+	excluded_folders_json, own_addresses_json, learned_addresses_json,
+	addresses_learned_at, created_at, updated_at`
 
 // imapImportMessageStateSelectColsPG is shared by every message_state
 // read site so the copied_message_id column (migration 0104, issue
@@ -40,7 +42,9 @@ func scanIMAPImportAccountPG(row pgx.Row) (store.IMAPImportAccount, error) {
 		deletePropagates                                                       bool
 		provenanceMailboxID                                                    *int64
 		debugLog                                                               bool
-		excludedFoldersJSON                                                    string
+		excludedFoldersJSON, ownAddressesJSON                                  string
+		learnedAddressesJSON                                                   *string
+		addressesLearnedAtUs                                                   *int64
 		createdUs, updatedUs                                                   int64
 	)
 	err := row.Scan(
@@ -48,7 +52,8 @@ func scanIMAPImportAccountPG(row pgx.Row) (store.IMAPImportAccount, error) {
 		&username, &authMethod, &backfillFloorUs,
 		&credentialCT, &state, &lastSuccessUs, &lastError,
 		&deletePropagates, &provenanceMailboxID, &debugLog,
-		&excludedFoldersJSON, &createdUs, &updatedUs,
+		&excludedFoldersJSON, &ownAddressesJSON, &learnedAddressesJSON,
+		&addressesLearnedAtUs, &createdUs, &updatedUs,
 	)
 	if err != nil {
 		return store.IMAPImportAccount{}, mapErr(err)
@@ -56,6 +61,24 @@ func scanIMAPImportAccountPG(row pgx.Row) (store.IMAPImportAccount, error) {
 	excludedFolders, err := decodeExcludedFoldersPG(excludedFoldersJSON)
 	if err != nil {
 		return store.IMAPImportAccount{}, err
+	}
+	ownAddresses, err := decodeExcludedFoldersPG(ownAddressesJSON)
+	if err != nil {
+		return store.IMAPImportAccount{}, err
+	}
+	var learnedAddresses []string
+	if learnedAddressesJSON != nil {
+		learnedAddresses, err = decodeExcludedFoldersPG(*learnedAddressesJSON)
+		if err != nil {
+			return store.IMAPImportAccount{}, err
+		}
+		if learnedAddresses == nil {
+			// A non-NULL learned_addresses_json means the learning pass
+			// ran (see AddressesLearnedAt below); keep the distinction
+			// between "ran, found nothing" and "never ran" visible on
+			// LearnedAddresses itself rather than collapsing both to nil.
+			learnedAddresses = []string{}
+		}
 	}
 	acc := store.IMAPImportAccount{
 		ID:                  id,
@@ -74,6 +97,8 @@ func scanIMAPImportAccountPG(row pgx.Row) (store.IMAPImportAccount, error) {
 		DeletePropagates:    deletePropagates,
 		DebugLog:            debugLog,
 		ExcludedFolders:     excludedFolders,
+		OwnAddresses:        ownAddresses,
+		LearnedAddresses:    learnedAddresses,
 		CreatedAt:           fromMicros(createdUs),
 		UpdatedAt:           fromMicros(updatedUs),
 	}
@@ -84,6 +109,10 @@ func scanIMAPImportAccountPG(row pgx.Row) (store.IMAPImportAccount, error) {
 	if lastSuccessUs != nil {
 		t := fromMicros(*lastSuccessUs)
 		acc.LastSuccessAt = &t
+	}
+	if addressesLearnedAtUs != nil {
+		t := fromMicros(*addressesLearnedAtUs)
+		acc.AddressesLearnedAt = &t
 	}
 	return acc, nil
 }
@@ -132,20 +161,25 @@ func (m *metadata) CreateIMAPImportAccount(ctx context.Context, create store.IMA
 	if err != nil {
 		return store.IMAPImportAccount{}, err
 	}
+	ownAddressesJSON, err := encodeExcludedFoldersPG(create.OwnAddresses)
+	if err != nil {
+		return store.IMAPImportAccount{}, err
+	}
 	err = m.runTx(ctx, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `
 			INSERT INTO imapimport_account
 			  (id, identity_id, principal_id, account_name, host, port, tls_mode,
 			   username, auth_method, backfill_floor_date,
 			   credential_ct, state, last_success_at, last_error,
-			   delete_propagates, excluded_folders_json, created_at, updated_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NULL,'',$13,$14,$15,$16)`,
+			   delete_propagates, excluded_folders_json, own_addresses_json,
+			   created_at, updated_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NULL,'',$13,$14,$15,$16,$17)`,
 			id, nullStringOrNilPG(create.IdentityID), int64(create.PrincipalID),
 			create.AccountName, create.Host, create.Port,
 			string(create.TLSMode), create.Username, string(create.AuthMethod),
 			nullOrMicrosPG(create.BackfillFloorDate),
 			create.CredentialCT, string(state),
-			create.DeletePropagates, excludedFoldersJSON, nowUs, nowUs,
+			create.DeletePropagates, excludedFoldersJSON, ownAddressesJSON, nowUs, nowUs,
 		)
 		return mapErr(err)
 	})
@@ -164,6 +198,7 @@ func (m *metadata) CreateIMAPImportAccount(ctx context.Context, create store.IMA
 		AuthMethod:        create.AuthMethod,
 		BackfillFloorDate: create.BackfillFloorDate,
 		ExcludedFolders:   create.ExcludedFolders,
+		OwnAddresses:      create.OwnAddresses,
 		CredentialCT:      create.CredentialCT,
 		State:             state,
 		LastError:         "",
@@ -185,6 +220,10 @@ func (m *metadata) UpdateIMAPImportAccount(ctx context.Context, update store.IMA
 	if err != nil {
 		return store.IMAPImportAccount{}, err
 	}
+	ownAddressesJSON, err := encodeExcludedFoldersPG(update.OwnAddresses)
+	if err != nil {
+		return store.IMAPImportAccount{}, err
+	}
 	err = m.runTx(ctx, func(tx pgx.Tx) error {
 		// Build the query dynamically: always-present columns first, then
 		// optional columns (credential_ct, debug_log) appended only when
@@ -195,18 +234,19 @@ func (m *metadata) UpdateIMAPImportAccount(ctx context.Context, update store.IMA
 			nullOrMicrosPG(update.BackfillFloorDate),
 			string(update.State), update.DeletePropagates, nowUs,
 			nullStringOrNilPG(update.IdentityID),
-			excludedFoldersJSON,
+			excludedFoldersJSON, ownAddressesJSON,
 		}
 		// $1..$7 are the always-present non-credential columns, $8=state,
 		// $9=delete_propagates, $10=updated_at, $11=identity_id,
-		// $12=excluded_folders_json.
+		// $12=excluded_folders_json, $13=own_addresses_json.
 		setParts := `
 			  account_name = $1, host = $2, port = $3, tls_mode = $4,
 			  username = $5, auth_method = $6,
 			  backfill_floor_date = $7,
 			  state = $8, delete_propagates = $9, updated_at = $10,
-			  identity_id = $11, excluded_folders_json = $12`
-		n := 12 // count of args so far
+			  identity_id = $11, excluded_folders_json = $12,
+			  own_addresses_json = $13`
+		n := 13 // count of args so far
 		if len(update.CredentialCT) > 0 {
 			n++
 			setParts += fmt.Sprintf(", credential_ct = $%d", n)
@@ -338,6 +378,31 @@ func (m *metadata) SetIMAPImportProvenanceMailbox(ctx context.Context, id string
 	})
 }
 
+// SetIMAPImportLearnedAddresses implements store.Metadata (re #396, third
+// round). See storesqlite's implementation for the "never NULL once
+// written" contract.
+func (m *metadata) SetIMAPImportLearnedAddresses(ctx context.Context, id string, addresses []string) error {
+	learnedJSON, err := encodeExcludedFoldersPG(dedupeSortedAddressesPG(addresses))
+	if err != nil {
+		return err
+	}
+	return m.runTx(ctx, func(tx pgx.Tx) error {
+		now := usMicros(m.s.clock.Now().UTC())
+		tag, err := tx.Exec(ctx,
+			`UPDATE imapimport_account
+			   SET learned_addresses_json = $1, addresses_learned_at = $2, updated_at = $3
+			 WHERE id = $4`,
+			learnedJSON, now, now, id)
+		if err != nil {
+			return mapErr(err)
+		}
+		if tag.RowsAffected() == 0 {
+			return store.ErrNotFound
+		}
+		return nil
+	})
+}
+
 func (m *metadata) ListIMAPImportMessageStatesByAccount(ctx context.Context, accountID string) ([]store.IMAPImportMessageState, error) {
 	rows, err := m.s.pool.Query(ctx,
 		`SELECT `+imapImportMessageStateSelectColsPG+`
@@ -383,6 +448,21 @@ func collectIMAPImportMessageStateRowsPG(rows pgx.Rows) ([]store.IMAPImportMessa
 		out = append(out, s)
 	}
 	return out, rows.Err()
+}
+
+// dedupeSortedAddressesPG mirrors storesqlite's dedupeSortedAddresses.
+func dedupeSortedAddressesPG(addresses []string) []string {
+	seen := make(map[string]struct{}, len(addresses))
+	out := make([]string, 0, len(addresses))
+	for _, a := range addresses {
+		if _, ok := seen[a]; ok {
+			continue
+		}
+		seen[a] = struct{}{}
+		out = append(out, a)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // int64Deref returns 0 when p is nil, otherwise *p.

@@ -42,7 +42,7 @@ type fakeSpamClassifier struct {
 	lastRecordedMID  store.MessageID
 }
 
-func (f *fakeSpamClassifier) Classify(context.Context, store.PrincipalID, mailparse.Message) spam.Classification {
+func (f *fakeSpamClassifier) Classify(context.Context, store.PrincipalID, mailparse.Message, string) spam.Classification {
 	i := f.classifyCalls.Add(1) - 1
 	if len(f.verdicts) == 0 {
 		return spam.Classification{Verdict: spam.Unclassified, Score: -1}
@@ -57,7 +57,7 @@ func (f *fakeSpamClassifier) Classify(context.Context, store.PrincipalID, mailpa
 // when classification.Verdict is spam.Unclassified (the real adapter,
 // internal/admin/imap_import_spam.go, applies the same gate before writing
 // the llm_classifications row).
-func (f *fakeSpamClassifier) RecordVerdict(_ context.Context, principalID store.PrincipalID, messageID store.MessageID, _ mailparse.Message, classification spam.Classification) {
+func (f *fakeSpamClassifier) RecordVerdict(_ context.Context, principalID store.PrincipalID, messageID store.MessageID, _ mailparse.Message, classification spam.Classification, _ string) {
 	if classification.Verdict == spam.Unclassified {
 		return
 	}

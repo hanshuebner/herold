@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/hanshuebner/herold/internal/store"
@@ -19,7 +20,8 @@ const imapImportAccountSelectCols = `
 	username, auth_method, backfill_floor_date,
 	credential_ct, state, last_success_at, last_error,
 	delete_propagates, provenance_mailbox_id, debug_log,
-	excluded_folders_json, created_at, updated_at`
+	excluded_folders_json, own_addresses_json, learned_addresses_json,
+	addresses_learned_at, created_at, updated_at`
 
 // imapImportMessageStateSelectCols is shared by every message_state read
 // site so the copied_message_id column (migration 0104, issue #227)
@@ -39,7 +41,9 @@ func scanIMAPImportAccount(row rowLike) (store.IMAPImportAccount, error) {
 		deletePropagates                                                       int64
 		provenanceMailboxID                                                    sql.NullInt64
 		debugLog                                                               int64
-		excludedFoldersJSON                                                    string
+		excludedFoldersJSON, ownAddressesJSON                                  string
+		learnedAddressesJSON                                                   sql.NullString
+		addressesLearnedAtUs                                                   sql.NullInt64
 		createdUs, updatedUs                                                   int64
 	)
 	err := row.Scan(
@@ -47,7 +51,8 @@ func scanIMAPImportAccount(row rowLike) (store.IMAPImportAccount, error) {
 		&username, &authMethod, &backfillFloorUs,
 		&credentialCT, &state, &lastSuccessUs, &lastError,
 		&deletePropagates, &provenanceMailboxID, &debugLog,
-		&excludedFoldersJSON, &createdUs, &updatedUs,
+		&excludedFoldersJSON, &ownAddressesJSON, &learnedAddressesJSON,
+		&addressesLearnedAtUs, &createdUs, &updatedUs,
 	)
 	if err != nil {
 		return store.IMAPImportAccount{}, mapErr(err)
@@ -55,6 +60,26 @@ func scanIMAPImportAccount(row rowLike) (store.IMAPImportAccount, error) {
 	excludedFolders, err := decodeExcludedFolders(excludedFoldersJSON)
 	if err != nil {
 		return store.IMAPImportAccount{}, err
+	}
+	ownAddresses, err := decodeExcludedFolders(ownAddressesJSON)
+	if err != nil {
+		return store.IMAPImportAccount{}, err
+	}
+	var learnedAddresses []string
+	if learnedAddressesJSON.Valid {
+		learnedAddresses, err = decodeExcludedFolders(learnedAddressesJSON.String)
+		if err != nil {
+			return store.IMAPImportAccount{}, err
+		}
+		if learnedAddresses == nil {
+			// decodeExcludedFolders returns nil for "" and for "[]"
+			// alike; a non-NULL learned_addresses_json column means the
+			// learning pass ran (see AddressesLearnedAt below), so an
+			// empty result must stay a non-nil empty slice, not nil,
+			// or callers could not tell "ran, found nothing" apart from
+			// "never ran" by inspecting LearnedAddresses alone.
+			learnedAddresses = []string{}
+		}
 	}
 	acc := store.IMAPImportAccount{
 		ID:                  id,
@@ -73,6 +98,8 @@ func scanIMAPImportAccount(row rowLike) (store.IMAPImportAccount, error) {
 		DeletePropagates:    deletePropagates != 0,
 		DebugLog:            debugLog != 0,
 		ExcludedFolders:     excludedFolders,
+		OwnAddresses:        ownAddresses,
+		LearnedAddresses:    learnedAddresses,
 		CreatedAt:           fromMicros(createdUs),
 		UpdatedAt:           fromMicros(updatedUs),
 	}
@@ -83,6 +110,10 @@ func scanIMAPImportAccount(row rowLike) (store.IMAPImportAccount, error) {
 	if lastSuccessUs.Valid {
 		t := fromMicros(lastSuccessUs.Int64)
 		acc.LastSuccessAt = &t
+	}
+	if addressesLearnedAtUs.Valid {
+		t := fromMicros(addressesLearnedAtUs.Int64)
+		acc.AddressesLearnedAt = &t
 	}
 	return acc, nil
 }
@@ -135,20 +166,25 @@ func (m *metadata) CreateIMAPImportAccount(ctx context.Context, create store.IMA
 	if err != nil {
 		return store.IMAPImportAccount{}, err
 	}
+	ownAddressesJSON, err := encodeExcludedFolders(create.OwnAddresses)
+	if err != nil {
+		return store.IMAPImportAccount{}, err
+	}
 	err = m.runTx(ctx, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO imapimport_account
 			  (id, identity_id, principal_id, account_name, host, port, tls_mode,
 			   username, auth_method, backfill_floor_date,
 			   credential_ct, state, last_success_at, last_error,
-			   delete_propagates, excluded_folders_json, created_at, updated_at)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,NULL,'',?,?,?,?)`,
+			   delete_propagates, excluded_folders_json, own_addresses_json,
+			   created_at, updated_at)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,NULL,'',?,?,?,?,?)`,
 			id, nullStringOrNil(create.IdentityID), int64(create.PrincipalID),
 			create.AccountName, create.Host, create.Port,
 			string(create.TLSMode), create.Username, string(create.AuthMethod),
 			nullOrMicros(ptrTimeOrZero(create.BackfillFloorDate)),
 			create.CredentialCT, string(state),
-			deletePropagates, excludedFoldersJSON, nowUs, nowUs,
+			deletePropagates, excludedFoldersJSON, ownAddressesJSON, nowUs, nowUs,
 		)
 		return mapErr(err)
 	})
@@ -167,6 +203,7 @@ func (m *metadata) CreateIMAPImportAccount(ctx context.Context, create store.IMA
 		AuthMethod:        create.AuthMethod,
 		BackfillFloorDate: create.BackfillFloorDate,
 		ExcludedFolders:   create.ExcludedFolders,
+		OwnAddresses:      create.OwnAddresses,
 		CredentialCT:      create.CredentialCT,
 		State:             state,
 		LastError:         "",
@@ -191,6 +228,10 @@ func (m *metadata) UpdateIMAPImportAccount(ctx context.Context, update store.IMA
 	if err != nil {
 		return store.IMAPImportAccount{}, err
 	}
+	ownAddressesJSON, err := encodeExcludedFolders(update.OwnAddresses)
+	if err != nil {
+		return store.IMAPImportAccount{}, err
+	}
 	err = m.runTx(ctx, func(tx *sql.Tx) error {
 		// Build args in query column order so positional ? placeholders align.
 		args := []any{
@@ -198,7 +239,7 @@ func (m *metadata) UpdateIMAPImportAccount(ctx context.Context, update store.IMA
 			update.AccountName, update.Host, update.Port,
 			string(update.TLSMode), update.Username, string(update.AuthMethod),
 			nullOrMicros(ptrTimeOrZero(update.BackfillFloorDate)),
-			excludedFoldersJSON,
+			excludedFoldersJSON, ownAddressesJSON,
 		}
 		var credExpr string
 		if len(update.CredentialCT) > 0 {
@@ -225,7 +266,7 @@ func (m *metadata) UpdateIMAPImportAccount(ctx context.Context, update store.IMA
 			  account_name = ?, host = ?, port = ?, tls_mode = ?,
 			  username = ?, auth_method = ?,
 			  backfill_floor_date = ?,
-			  excluded_folders_json = ?,
+			  excluded_folders_json = ?, own_addresses_json = ?,
 			  `+credExpr+debugLogExpr+`
 			  state = ?, delete_propagates = ?, updated_at = ?
 			WHERE id = ? AND principal_id = ?`,
@@ -352,6 +393,36 @@ func (m *metadata) SetIMAPImportProvenanceMailbox(ctx context.Context, id string
 		n, err := res.RowsAffected()
 		if err != nil {
 			return fmt.Errorf("storesqlite: SetIMAPImportProvenanceMailbox rows affected: %w", err)
+		}
+		if n == 0 {
+			return store.ErrNotFound
+		}
+		return nil
+	})
+}
+
+// SetIMAPImportLearnedAddresses implements store.Metadata (re #396, third
+// round). Always writes both learned_addresses_json (never NULL once
+// written, even for an empty result) and addresses_learned_at, so a
+// caller cannot distinguish "learning ran, found nothing" from "learning
+// never ran" -- see store.IMAPImportAccount.OwnAddressesComplete.
+func (m *metadata) SetIMAPImportLearnedAddresses(ctx context.Context, id string, addresses []string) error {
+	learnedJSON, err := encodeExcludedFolders(dedupeSortedAddresses(addresses))
+	if err != nil {
+		return err
+	}
+	return m.runTx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx,
+			`UPDATE imapimport_account
+			   SET learned_addresses_json = ?, addresses_learned_at = ?, updated_at = ?
+			 WHERE id = ?`,
+			learnedJSON, usMicros(m.s.clock.Now().UTC()), usMicros(m.s.clock.Now().UTC()), id)
+		if err != nil {
+			return mapErr(err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("storesqlite: SetIMAPImportLearnedAddresses rows affected: %w", err)
 		}
 		if n == 0 {
 			return store.ErrNotFound
@@ -644,6 +715,25 @@ func (m *metadata) DeleteIMAPImportMessageState(ctx context.Context, accountID, 
 		}
 		return nil
 	})
+}
+
+// dedupeSortedAddresses returns addresses deduplicated and sorted, used by
+// SetIMAPImportLearnedAddresses (re #396, third round) so a caller that
+// merges an incremental sighting into an existing list (or a backfill
+// pass that revisits the same header value across several messages)
+// never persists a repeated entry.
+func dedupeSortedAddresses(addresses []string) []string {
+	seen := make(map[string]struct{}, len(addresses))
+	out := make([]string, 0, len(addresses))
+	for _, a := range addresses {
+		if _, ok := seen[a]; ok {
+			continue
+		}
+		seen[a] = struct{}{}
+		out = append(out, a)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // nullStringOrNil returns nil when s is empty (so the column is written as

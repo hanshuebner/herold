@@ -65,13 +65,23 @@ type SpamClassifier interface {
 	// applied, dropped for a spam verdict) -- see
 	// internal/admin/imap_import_spam.go, which builds the same
 	// spam.ClassifyContext protosmtp.classifyMessage does.
-	Classify(ctx context.Context, principalID store.PrincipalID, msg mailparse.Message) spam.Classification
+	//
+	// accountID identifies the specific imapimport_account importing msg
+	// (re #396, third round): the adapter uses it to look up that
+	// account's own-address configuration/learning state so
+	// spam.OwnAddressInfo.Complete reflects THIS account, not just
+	// whether some other account of the same principal is complete.
+	Classify(ctx context.Context, principalID store.PrincipalID, msg mailparse.Message, accountID string) spam.Classification
 
 	// RecordVerdict persists the classification for principalID/messageID
 	// (REQ-FILT-66), once the message id is known post-insert. A no-op
-	// when classification.Verdict is spam.Unclassified. Never returns an
-	// error; implementations log failures themselves and proceed.
-	RecordVerdict(ctx context.Context, principalID store.PrincipalID, messageID store.MessageID, msg mailparse.Message, classification spam.Classification)
+	// when classification.Verdict is spam.Unclassified. accountID
+	// identifies the importing account, mirroring Classify, so the
+	// persisted "prompt as applied" request records the correct
+	// own_addresses_complete for THIS account (re #396, third round).
+	// Never returns an error; implementations log failures themselves
+	// and proceed.
+	RecordVerdict(ctx context.Context, principalID store.PrincipalID, messageID store.MessageID, msg mailparse.Message, classification spam.Classification, accountID string)
 }
 
 // noopSpamClassifier is a SpamClassifier that never classifies. It is the
@@ -81,11 +91,11 @@ type SpamClassifier interface {
 // accountWorkerOpts directly without going through Pool.
 type noopSpamClassifier struct{}
 
-func (noopSpamClassifier) Classify(context.Context, store.PrincipalID, mailparse.Message) spam.Classification {
+func (noopSpamClassifier) Classify(context.Context, store.PrincipalID, mailparse.Message, string) spam.Classification {
 	return spam.Classification{Verdict: spam.Unclassified, Score: -1}
 }
 
-func (noopSpamClassifier) RecordVerdict(context.Context, store.PrincipalID, store.MessageID, mailparse.Message, spam.Classification) {
+func (noopSpamClassifier) RecordVerdict(context.Context, store.PrincipalID, store.MessageID, mailparse.Message, spam.Classification, string) {
 }
 
 // importSpamTarget is the routing decision resolveImportSpamTarget returns.

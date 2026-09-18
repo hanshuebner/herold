@@ -899,7 +899,15 @@ const CurrentBackupVersion = 1
 //	happened, including every row classified before this migration.
 //	spam_verdict itself now holds the verdict herold actually applied.
 //	No new table; LLMClassificationRow gains the one field.
-const CurrentSchemaVersion = 112
+//
+// 113 (re #396, third round): imapimport_account gains three columns --
+//
+//	own_addresses_json (operator-configured extra own-address list),
+//	learned_addresses_json (addresses learned from Delivered-To/
+//	X-Original-To headers of imported mail, NULL until the learning
+//	pass has run once), and addresses_learned_at (NULL until then).
+//	No new table; IMAPImportAccountRow gains the three fields.
+const CurrentSchemaVersion = 113
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

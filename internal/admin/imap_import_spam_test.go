@@ -66,7 +66,7 @@ func TestIMAPImportSpamAdapter_Classify(t *testing.T) {
 	adapter := newIMAPImportSpamAdapter(cls, "spam-plug", st, clk, slog.Default())
 
 	msg := buildSpamTestMessage(t)
-	got := adapter.Classify(context.Background(), store.PrincipalID(1), msg)
+	got := adapter.Classify(context.Background(), store.PrincipalID(1), msg, "")
 	if got.Verdict != spam.Spam {
 		t.Errorf("Verdict = %v, want spam.Spam", got.Verdict)
 	}
@@ -89,7 +89,7 @@ func TestIMAPImportSpamAdapter_Classify_DecisiveSignalResolvesHamToSpam(t *testi
 	adapter := newIMAPImportSpamAdapter(cls, "spam-plug", st, clk, slog.Default())
 
 	msg := buildSpamTestMessage(t)
-	got := adapter.Classify(context.Background(), store.PrincipalID(1), msg)
+	got := adapter.Classify(context.Background(), store.PrincipalID(1), msg, "")
 	if got.Verdict != spam.Spam {
 		t.Fatalf("Verdict = %v, want spam.Spam (decisive signal on a Ham verdict)", got.Verdict)
 	}
@@ -110,7 +110,7 @@ func TestIMAPImportSpamAdapter_ClassifyDegradesOnPluginError(t *testing.T) {
 	adapter := newIMAPImportSpamAdapter(cls, "spam-plug", st, clk, slog.Default())
 
 	msg := buildSpamTestMessage(t)
-	got := adapter.Classify(context.Background(), store.PrincipalID(1), msg)
+	got := adapter.Classify(context.Background(), store.PrincipalID(1), msg, "")
 	if got.Verdict != spam.Unclassified {
 		t.Errorf("Verdict = %v, want spam.Unclassified", got.Verdict)
 	}
@@ -135,7 +135,7 @@ func TestIMAPImportSpamAdapter_ClassifyNilClassifier(t *testing.T) {
 	adapter := newIMAPImportSpamAdapter(nil, "spam-plug", st, clk, slog.Default())
 
 	msg := buildSpamTestMessage(t)
-	got := adapter.Classify(context.Background(), store.PrincipalID(1), msg)
+	got := adapter.Classify(context.Background(), store.PrincipalID(1), msg, "")
 	if got.Verdict != spam.Unclassified {
 		t.Errorf("Verdict = %v, want spam.Unclassified", got.Verdict)
 	}
@@ -160,7 +160,7 @@ func TestIMAPImportSpamAdapter_ClassifyEmptyPluginName(t *testing.T) {
 	adapter := newIMAPImportSpamAdapter(cls, "", st, clk, slog.Default())
 
 	msg := buildSpamTestMessage(t)
-	got := adapter.Classify(context.Background(), store.PrincipalID(1), msg)
+	got := adapter.Classify(context.Background(), store.PrincipalID(1), msg, "")
 	if got.Verdict != spam.Unclassified {
 		t.Errorf("Verdict = %v, want spam.Unclassified", got.Verdict)
 	}
@@ -193,7 +193,7 @@ func TestIMAPImportSpamAdapter_ClassifyNilClassifier_StructuralFallback(t *testi
 	// PrincipalID(1) has no seeded row yet; GetCategorisationConfig
 	// auto-seeds the enabled-by-default config on first read (same as
 	// production), so categorisation is enabled here without any setup.
-	got := adapter.Classify(context.Background(), store.PrincipalID(1), msg)
+	got := adapter.Classify(context.Background(), store.PrincipalID(1), msg, "")
 	if got.Verdict != spam.Unclassified {
 		t.Errorf("Verdict = %v, want spam.Unclassified", got.Verdict)
 	}
@@ -218,7 +218,7 @@ func TestIMAPImportSpamAdapter_RecordVerdict(t *testing.T) {
 		Score:       0.87,
 		RawResponse: map[string]any{"reason": "bulk sender", "model": "test-model"},
 	}
-	adapter.RecordVerdict(ctx, p.ID, msg.ID, parsedMsg, classification)
+	adapter.RecordVerdict(ctx, p.ID, msg.ID, parsedMsg, classification, "")
 
 	rec, err := st.Meta().GetLLMClassification(ctx, msg.ID)
 	if err != nil {
@@ -264,7 +264,7 @@ func TestIMAPImportSpamAdapter_RecordVerdict_SpamModelFallsBackToPluginName(t *t
 		Score:       0.9,
 		RawResponse: map[string]any{"reason": "bulk sender"},
 	}
-	adapter.RecordVerdict(ctx, p.ID, msg.ID, parsedMsg, classification)
+	adapter.RecordVerdict(ctx, p.ID, msg.ID, parsedMsg, classification, "")
 
 	rec, err := st.Meta().GetLLMClassification(ctx, msg.ID)
 	if err != nil {
@@ -297,7 +297,7 @@ func TestIMAPImportSpamAdapter_RecordVerdict_ModelVerdictPreserved(t *testing.T)
 		SpamSignals:  []string{"unsolicited_bulk_marketing"},
 		Inconsistent: true,
 	}
-	adapter.RecordVerdict(ctx, p.ID, msg.ID, parsedMsg, classification)
+	adapter.RecordVerdict(ctx, p.ID, msg.ID, parsedMsg, classification, "")
 
 	rec, err := st.Meta().GetLLMClassification(ctx, msg.ID)
 	if err != nil {
@@ -321,7 +321,7 @@ func TestIMAPImportSpamAdapter_RecordVerdictNoopOnUnclassified(t *testing.T) {
 
 	p, msg := seedPrincipalAndMessage(t, ctx, st, "spam-record-02@example.com")
 	parsedMsg := buildSpamTestMessage(t)
-	adapter.RecordVerdict(ctx, p.ID, msg.ID, parsedMsg, spam.Classification{Verdict: spam.Unclassified, Score: -1})
+	adapter.RecordVerdict(ctx, p.ID, msg.ID, parsedMsg, spam.Classification{Verdict: spam.Unclassified, Score: -1}, "")
 
 	if _, err := st.Meta().GetLLMClassification(ctx, msg.ID); err == nil {
 		t.Errorf("GetLLMClassification succeeded for an unclassified verdict; want not-found")
@@ -346,7 +346,7 @@ func TestIMAPImportSpamAdapter_RecordVerdictPersistsUnclassifiedWithReason(t *te
 		Verdict: spam.Unclassified,
 		Score:   -1,
 		Reason:  "timeout: json-rpc error -32001: rpc deadline exceeded",
-	})
+	}, "")
 
 	rec, err := st.Meta().GetLLMClassification(ctx, msg.ID)
 	if err != nil {
@@ -396,7 +396,7 @@ func TestIMAPImportSpamAdapter_Classify_NeverSpamOverride(t *testing.T) {
 	}
 
 	msg := buildSpamTestMessage(t)
-	got := adapter.Classify(ctx, p.ID, msg)
+	got := adapter.Classify(ctx, p.ID, msg, "")
 	if got.Verdict != spam.Spam {
 		t.Fatalf("Verdict = %v, want spam.Spam", got.Verdict)
 	}
@@ -439,7 +439,7 @@ func TestIMAPImportSpamAdapter_Classify_NeverSpamOverride_FromDomain(t *testing.
 	}
 
 	msg := buildSpamTestMessage(t)
-	got := adapter.Classify(ctx, p.ID, msg)
+	got := adapter.Classify(ctx, p.ID, msg, "")
 	if got.Verdict != spam.Spam {
 		t.Fatalf("Verdict = %v, want spam.Spam", got.Verdict)
 	}
@@ -467,8 +467,222 @@ func TestIMAPImportSpamAdapter_Classify_NoNeverSpamRule_NoOverride(t *testing.T)
 	}
 
 	msg := buildSpamTestMessage(t)
-	got := adapter.Classify(ctx, p.ID, msg)
+	got := adapter.Classify(ctx, p.ID, msg, "")
 	if got.DeliveryOverride != "" {
 		t.Errorf("DeliveryOverride = %q, want empty (no never-spam rule configured)", got.DeliveryOverride)
 	}
+}
+
+// -- re #396, third round: own_addresses on the import path -----------------
+//
+// The four tests below reproduce the maintainer's hand-back on the second
+// round's fix (comment 5010): own_addresses on the IMAP-import path was
+// built only from the principal's identities/aliases, so a shared
+// organisational mailbox's info@/vorstand@ alias -- received only through
+// one specific imapimport_account -- made recipient_not_own true for every
+// message delivered there, and (once recipient_not_own alone became
+// decisive in the second round) turned legitimate transactional mail into
+// false-positive Junk moves.
+
+// newIMAPImportTestAccount inserts a principal and an imapimport_account
+// bound to it (no owning Identity -- accountEmail becomes the Username
+// fallback own_addresses.go resolves), returning both. ownAddresses, when
+// non-empty, is the account's configured own-address list (store.
+// IMAPImportAccount.OwnAddresses); pass nil for none.
+func newIMAPImportTestAccount(t *testing.T, ctx context.Context, st store.Store, principalEmail, accountEmail string, ownAddresses []string) (store.Principal, store.IMAPImportAccount) {
+	t.Helper()
+	p, err := st.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind:           store.PrincipalKindUser,
+		CanonicalEmail: principalEmail,
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal: %v", err)
+	}
+	acc, err := st.Meta().CreateIMAPImportAccount(ctx, store.IMAPImportAccountCreate{
+		PrincipalID:  p.ID,
+		AccountName:  "Test Account",
+		Host:         "imap.example.test",
+		Port:         993,
+		TLSMode:      store.IMAPImportTLSModeImplicit,
+		Username:     accountEmail,
+		AuthMethod:   store.IMAPImportAuthMethodPassword,
+		CredentialCT: []byte("v1:test"),
+		State:        store.IMAPImportAccountStateEnabled,
+		OwnAddresses: ownAddresses,
+	})
+	if err != nil {
+		t.Fatalf("CreateIMAPImportAccount: %v", err)
+	}
+	return p, acc
+}
+
+// parseImapImportSpamTestMessage parses raw as an RFC822 message for the
+// tests below (buildSpamTestMessage's body is fixed; these tests need
+// varying To/List-Id headers).
+func parseImapImportSpamTestMessage(t *testing.T, raw string) mailparse.Message {
+	t.Helper()
+	msg, err := mailparse.Parse(bytes.NewReader([]byte(raw)), mailparse.NewParseOptions())
+	if err != nil {
+		t.Fatalf("mailparse.Parse: %v", err)
+	}
+	return msg
+}
+
+// TestIMAPImportSpamAdapter_Classify_RecipientNotOwnAloneNeverDecisive is
+// the #396 third-round regression test for required outcome 2:
+// recipient_not_own alone -- even on an account whose own-address set is
+// known complete -- must never resolve a Ham verdict to Spam. Plain
+// transactional content, no mailing-list headers, so bulk_list_relay never
+// enters the picture.
+func TestIMAPImportSpamAdapter_Classify_RecipientNotOwnAloneNeverDecisive(t *testing.T) {
+	ctx := context.Background()
+	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	invoker := &fakeSpamInvoker{plugin: "spam-plug", raw: json.RawMessage(`{"verdict":"ham","score":0.05,"reason":"order confirmation","spam_signals":["recipient_not_own"],"ham_signals":["known_business_sender"]}`)}
+	cls := spam.New(invoker, slog.Default(), clk)
+	st := sqlitetest.Open(t, clk)
+	adapter := newIMAPImportSpamAdapter(cls, "spam-plug", st, clk, slog.Default())
+
+	_, acc := newIMAPImportTestAccount(t, ctx, st, "recipient-not-own-alone@example.test", "recipient-not-own-alone@example.test", nil)
+	// Mark the account's own-address set complete with nothing extra
+	// learned, mirroring what runOwnAddressBackfill does for an account
+	// whose headers never revealed another address.
+	if err := st.Meta().SetIMAPImportLearnedAddresses(ctx, acc.ID, nil); err != nil {
+		t.Fatalf("SetIMAPImportLearnedAddresses: %v", err)
+	}
+
+	msg := parseImapImportSpamTestMessage(t, "From: wir-machen-druck.de <order@wir-machen-druck.de>\r\n"+
+		"To: not-this-account@elsewhere.test\r\n"+
+		"Subject: Your order status\r\nMessage-ID: <recipient-not-own-alone@example.com>\r\n\r\n"+
+		"Your order has shipped.\r\n")
+	got := adapter.Classify(ctx, acc.PrincipalID, msg, acc.ID)
+	if got.Verdict != spam.Ham {
+		t.Fatalf("Verdict = %v, want spam.Ham (recipient_not_own alone must never be decisive)", got.Verdict)
+	}
+	if got.ModelVerdict != spam.Unclassified {
+		t.Fatalf("ModelVerdict = %v, want spam.Unclassified (no resolution should have happened)", got.ModelVerdict)
+	}
+}
+
+// TestIMAPImportSpamAdapter_Classify_IncompleteAccountNeverDecisiveForRecipientNotOwn
+// is the #396 third-round regression test for the other half of required
+// outcome 2: even recipient_not_own combined with bulk_list_relay must
+// never be decisive when the account's own-address set is known
+// incomplete (no configured list and no completed learning pass) --
+// SetIMAPImportLearnedAddresses is deliberately never called here.
+func TestIMAPImportSpamAdapter_Classify_IncompleteAccountNeverDecisiveForRecipientNotOwn(t *testing.T) {
+	ctx := context.Background()
+	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	invoker := &fakeSpamInvoker{plugin: "spam-plug", raw: json.RawMessage(`{"verdict":"ham","score":0.08,"reason":"automated acknowledgment","spam_signals":["recipient_not_own"],"ham_signals":[]}`)}
+	cls := spam.New(invoker, slog.Default(), clk)
+	st := sqlitetest.Open(t, clk)
+	adapter := newIMAPImportSpamAdapter(cls, "spam-plug", st, clk, slog.Default())
+
+	_, acc := newIMAPImportTestAccount(t, ctx, st, "incomplete-account@example.test", "incomplete-account@example.test", nil)
+
+	msg := parseImapImportSpamTestMessage(t, "From: no-reply@jamestown.example\r\n"+
+		"To: 3rc@xxdz88.com\r\nList-Id: <3rc.xxdz88.com>\r\nPrecedence: list\r\n"+
+		"Subject: Ihr Anliegen\r\nMessage-ID: <incomplete-account@example.com>\r\n\r\n"+
+		"Vielen Dank fuer Ihre Anfrage.\r\n")
+	got := adapter.Classify(ctx, acc.PrincipalID, msg, acc.ID)
+	if got.Verdict != spam.Ham {
+		t.Fatalf("Verdict = %v, want spam.Ham (an incomplete own-address set must never let recipient_not_own be decisive, even combined with bulk_list_relay)", got.Verdict)
+	}
+}
+
+// TestIMAPImportSpamAdapter_Classify_RelayedAutoReplyToNonOwnedAddressStillJunk
+// is the #396 third-round test for required outcome 4's second evaluation
+// case: on an account whose own-address set IS known complete, the
+// comment-4833 relayed-auto-reply shape (a throwaway group address,
+// List-Id, Precedence: list) must still resolve to Spam -- carried by the
+// combination of recipient_not_own and the server-computed bulk_list_relay
+// signal.
+func TestIMAPImportSpamAdapter_Classify_RelayedAutoReplyToNonOwnedAddressStillJunk(t *testing.T) {
+	ctx := context.Background()
+	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	invoker := &fakeSpamInvoker{plugin: "spam-plug", raw: json.RawMessage(`{"verdict":"ham","score":0.08,"reason":"automated acknowledgment from a legitimate business","spam_signals":["recipient_not_own"],"ham_signals":[]}`)}
+	cls := spam.New(invoker, slog.Default(), clk)
+	st := sqlitetest.Open(t, clk)
+	adapter := newIMAPImportSpamAdapter(cls, "spam-plug", st, clk, slog.Default())
+
+	_, acc := newIMAPImportTestAccount(t, ctx, st, "relayed-autoreply@example.test", "relayed-autoreply@example.test", nil)
+	if err := st.Meta().SetIMAPImportLearnedAddresses(ctx, acc.ID, nil); err != nil {
+		t.Fatalf("SetIMAPImportLearnedAddresses: %v", err)
+	}
+
+	msg := parseImapImportSpamTestMessage(t, "From: no-reply@jamestown.example\r\n"+
+		"To: 3rc@xxdz88.com\r\nList-Id: <3rc.xxdz88.com>\r\nPrecedence: list\r\n"+
+		"Subject: Ihr Anliegen\r\nMessage-ID: <relayed-autoreply@example.com>\r\n\r\n"+
+		"Vielen Dank fuer Ihre Anfrage.\r\n")
+	got := adapter.Classify(ctx, acc.PrincipalID, msg, acc.ID)
+	if got.Verdict != spam.Spam {
+		t.Fatalf("Verdict = %v, want spam.Spam (recipient_not_own + bulk_list_relay is decisive on a complete account)", got.Verdict)
+	}
+	if got.ModelVerdict != spam.Ham {
+		t.Fatalf("ModelVerdict = %v, want spam.Ham", got.ModelVerdict)
+	}
+}
+
+// TestIMAPImportSpamAdapter_Classify_ConfiguredOwnAddressAvoidsFalsePositive
+// is the #396 third-round test for required outcome 1 and the first three
+// false-positive rows in the hand-back's table (messages 3684/3691/3692,
+// print-shop order-status mail to info@classic-computing.de): once the
+// account's own-address list is configured with the upstream alias,
+// recipient_not_own is never even asserted for mail to it, so the message
+// stays Ham regardless of the decisive-signal rules.
+func TestIMAPImportSpamAdapter_Classify_ConfiguredOwnAddressAvoidsFalsePositive(t *testing.T) {
+	ctx := context.Background()
+	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	var gotReq spam.Request
+	invoker := &fakeSpamInvokerFunc{plugin: "spam-plug", fn: func(raw json.RawMessage) (json.RawMessage, error) {
+		if err := json.Unmarshal(raw, &gotReq); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		return json.RawMessage(`{"verdict":"ham","score":0.05,"reason":"order status notification, DKIM pass, known business sender"}`), nil
+	}}
+	cls := spam.New(invoker, slog.Default(), clk)
+	st := sqlitetest.Open(t, clk)
+	adapter := newIMAPImportSpamAdapter(cls, "spam-plug", st, clk, slog.Default())
+
+	_, acc := newIMAPImportTestAccount(t, ctx, st, "vorsitz@classic-computing.de", "vorsitz@classic-computing.de",
+		[]string{"info@classic-computing.de", "vorstand@classic-computing.de"})
+
+	msg := parseImapImportSpamTestMessage(t, "From: order-status@wir-machen-druck.de\r\n"+
+		"To: info@classic-computing.de\r\n"+
+		"Subject: Your print order has shipped\r\nMessage-ID: <configured-own-addr@example.com>\r\n\r\n"+
+		"Your print order status has been updated.\r\n")
+	got := adapter.Classify(ctx, acc.PrincipalID, msg, acc.ID)
+	if got.Verdict != spam.Ham {
+		t.Fatalf("Verdict = %v, want spam.Ham (info@classic-computing.de is a configured own address)", got.Verdict)
+	}
+	if gotReq.RecipientNotOwn {
+		t.Fatalf("request recipient_not_own = true, want false: info@classic-computing.de is configured in own_addresses")
+	}
+	if !gotReq.OwnAddressesComplete {
+		t.Fatalf("request own_addresses_complete = false, want true: the account has a configured own-address list")
+	}
+}
+
+// fakeSpamInvokerFunc is a spam.PluginInvoker whose Call decodes params
+// into a json.RawMessage and hands it to fn, letting a test both inspect
+// the exact wire request (params is a spam.Request/MailClassifyRequest
+// value, not raw bytes, so it is re-marshalled here) and script the
+// response, unlike fakeSpamInvoker's fixed raw response.
+type fakeSpamInvokerFunc struct {
+	plugin string
+	fn     func(json.RawMessage) (json.RawMessage, error)
+}
+
+func (f *fakeSpamInvokerFunc) Call(_ context.Context, plugin, _ string, params any, result any) error {
+	if plugin != f.plugin {
+		return errors.New("fakeSpamInvokerFunc: unexpected plugin " + plugin)
+	}
+	b, err := json.Marshal(params)
+	if err != nil {
+		return err
+	}
+	raw, err := f.fn(b)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(raw, result)
 }

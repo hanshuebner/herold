@@ -733,6 +733,24 @@ func (w *accountWorker) ingestMessage(
 		// ErrNotFound -> proceed with insert.
 	}
 
+	// Learn additional own-addresses for this account from the message's
+	// own Delivered-To/X-Original-To headers (re #396, third round): the
+	// upstream mailbox may accept mail at addresses herold never
+	// resolves via principal identities/aliases (a catch-all, an
+	// additional alias not mirrored as an Identity). Runs for every
+	// freshly inserted message -- live arrival or historical backfill,
+	// any target mailbox, not just INBOX -- merging into the account's
+	// persisted learned set (ownaddresses.go) so future recipient_not_own
+	// decisions see it. Best-effort: failures are logged and never fail
+	// the import.
+	if addrs := extractDeliveredAddresses(msg); len(addrs) > 0 {
+		if err := w.learnOwnAddresses(ctx, addrs); err != nil {
+			w.opts.log.Warn("imapimport: learn own addresses",
+				slog.String("account_id", account.ID),
+				slog.String("error", err.Error()))
+		}
+	}
+
 	// Spam classification (REQ-FILT-02, issue #300): only for a fresh
 	// insert, mapped to INBOX by the folder mapping, on a genuine live
 	// arrival. A message the source already filed in its own Junk-
@@ -747,7 +765,7 @@ func (w *accountWorker) ingestMessage(
 	var classification spam.Classification
 	classified := false
 	if liveArrival && w.opts.spamClassifier != nil && strings.EqualFold(heroldMailbox, "INBOX") {
-		classification = w.opts.spamClassifier.Classify(ctx, principalID, msg)
+		classification = w.opts.spamClassifier.Classify(ctx, principalID, msg, account.ID)
 		classified = true
 		spamTarget := resolveImportSpamTarget(classification)
 		effectiveMailbox = spamTarget.mailbox
@@ -835,7 +853,7 @@ func (w *accountWorker) ingestMessage(
 	// mirroring protosmtp's persistLLMRecord. Fire-and-forget: RecordVerdict
 	// never blocks or fails the import.
 	if classified {
-		w.opts.spamClassifier.RecordVerdict(ctx, principalID, assignedMsgID, msg, classification)
+		w.opts.spamClassifier.RecordVerdict(ctx, principalID, assignedMsgID, msg, classification, account.ID)
 	}
 
 	// Fresh insert: the message is a new member of effectiveMailbox.

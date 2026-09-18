@@ -522,6 +522,12 @@ func (w *accountWorker) attempt(ctx context.Context) error {
 	// process lifetime; best-effort.
 	w.runSeenBackfill(ctx)
 
+	// Learn this account's own-addresses from its already-imported mail
+	// (ownaddresses.go, re #396, third round). Runs once ever per
+	// account (gated on the persisted AddressesLearnedAt column, not a
+	// process-lifetime flag); best-effort.
+	w.runOwnAddressBackfill(ctx)
+
 	// 3b: drive a full sync pass for all mapped folders.
 	w.status.setPhase(PhaseSyncing, w.opts.clk.Now())
 	if err := w.syncAllFolders(ctx, conn); err != nil {

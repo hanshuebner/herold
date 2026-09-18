@@ -861,6 +861,7 @@ func (sess *session) persistLLMRecord(
 		req := spam.BuildRequest(msg, &authResults)
 		req.OwnAddresses = ownAddresses
 		req.RecipientNotOwn = spam.RecipientNotOwn(msg, ownAddresses)
+		req.OwnAddressesComplete = true // re #396, third round: see the Classify call site above.
 		if b, jerr := req.Canonical(); jerr == nil {
 			s := string(b)
 			rec.SpamPromptApplied = &s
@@ -1181,7 +1182,12 @@ func classifyMessage(ctx context.Context, srv *Server, msg mailparse.Message, au
 	if srv.spam != nil && srv.spamPlug != "" {
 		attempted = true
 		start := time.Now()
-		cls, clsErr = srv.spam.Classify(ctx, msg, auth, srv.spamPlug, clsCtx, ownAddresses)
+		// Complete: true (re #396, third round) -- SMTP delivery's
+		// ownAddresses is spam.ResolveOwnAddresses's full principal-wide
+		// identity/alias/import-account set, which has no "haven't looked
+		// yet" state the way one specific IMAP-import account can.
+		cls, clsErr = srv.spam.Classify(ctx, msg, auth, srv.spamPlug, clsCtx,
+			spam.OwnAddressInfo{Addresses: ownAddresses, Complete: true})
 		elapsed = time.Since(start)
 		if clsErr != nil {
 			// Classifier.Classify already emits a warn-level

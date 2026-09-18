@@ -281,11 +281,29 @@ type ClassifyContext struct {
 // "unauthenticated_sender+dmarc_fail" requires both together: either
 // alone is common on legitimately forwarded mail and not, by itself,
 // decisive.
+//
+// "recipient_not_own" is deliberately NOT a standalone entry (re #396,
+// third round): on the IMAP-import path own_addresses is built from the
+// principal's identities/aliases plus each import account's configured
+// and learned addresses (own_addresses.go), and an account that has
+// neither -- an upstream mailbox herold has not yet learned every
+// delivery address for -- makes recipient_not_own true for mail to any
+// address the account happens to receive at, including a legitimate one
+// (info@ or vorstand@ on a shared organisational mailbox, the false
+// positives the second round's standalone rule produced). It combines
+// with "bulk_list_relay" -- a message relayed through mailing-list
+// transport headers (List-Id / List-Unsubscribe / Precedence: bulk or
+// list) to a recipient the principal never subscribed under -- because
+// that combination cannot be produced by an incomplete own-address set
+// alone: a genuine mailing list a principal subscribed to arrives at an
+// address they own. Classify also gates recipient_not_own's
+// contribution on the own-address set being known complete (see
+// OwnAddressInfo.Complete) regardless of which rule it is paired with.
 var DefaultDecisiveSpamSignals = []string{
 	"unsolicited_bulk_marketing",
-	"recipient_not_own",
 	"unauthenticated_sender+dmarc_fail",
 	"phishing",
+	"recipient_not_own+bulk_list_relay",
 }
 
 // parseDecisiveSignals splits each raw entry on "+" into an AND-group of
@@ -336,6 +354,100 @@ func matchDecisiveSignal(signals []string, rules [][]string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// MatchesDecisiveSignal is matchDecisiveSignal's exported form, for a
+// caller that needs to recompute today's decisiveness for an
+// already-stored signal list without constructing a live Classifier
+// (re #396, third round repair path,
+// internal/admin/spam_undo_recipient_only.go): rules uses the same
+// wire/config representation as DefaultDecisiveSpamSignals /
+// sysconfig's [spam].decisive_spam_signals (a flat []string, each entry
+// optionally "+"-joined).
+func MatchesDecisiveSignal(signals []string, rules []string) (string, bool) {
+	return matchDecisiveSignal(signals, parseDecisiveSignals(rules))
+}
+
+// HasSignal reports whether name appears in signals, matched
+// case-insensitively and trimmed, mirroring matchDecisiveSignal's own
+// comparison. Exported for the repair CLI (re #396, third round).
+func HasSignal(signals []string, name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	for _, s := range signals {
+		if strings.ToLower(strings.TrimSpace(s)) == name {
+			return true
+		}
+	}
+	return false
+}
+
+// removeSignalCI returns signals with every case-insensitive occurrence
+// of name removed, preserving order. Used to strip "recipient_not_own"
+// from the set matchDecisiveSignal sees when the own-address set that
+// produced it is known incomplete (re #396, third round) -- the signal
+// stays on the persisted transparency record (cl.SpamSignals is never
+// mutated by this), it is only excluded from the decisiveness check.
+func removeSignalCI(signals []string, name string) []string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	out := make([]string, 0, len(signals))
+	for _, s := range signals {
+		if strings.ToLower(strings.TrimSpace(s)) == name {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// appendSignalIfMissing appends name to signals unless an existing entry
+// already matches it case-insensitively, mirroring
+// plugins/herold-spam-llm/main.go's helper of the same name (separate
+// package, same small contract).
+func appendSignalIfMissing(signals []string, name string) []string {
+	if HasSignal(signals, name) {
+		return signals
+	}
+	return append(signals, name)
+}
+
+// hasBulkListHeaders reports whether built carries mailing-list or bulk
+// transport headers -- List-Id, List-Unsubscribe, or a Precedence of
+// "bulk" or "list" -- the same header set REQ-FILT-214's structural
+// fallback categoriser reads, repurposed here as a spam-decisiveness
+// input (re #396, third round): combined with RecipientNotOwn, mail
+// relayed through a list to an address the principal never subscribed
+// under is a second, independent, server-computed fact that does not
+// depend on the plugin noticing or naming it. built's ListID /
+// ListUnsubscribe / Precedence fields are already extracted by
+// BuildRequest, so no re-parse of msg is needed here.
+func hasBulkListHeaders(built Request) bool {
+	if built.ListID != "" || built.ListUnsubscribe != "" {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(built.Precedence)) {
+	case "bulk", "list":
+		return true
+	default:
+		return false
+	}
+}
+
+// OwnAddressInfo carries the own-address set passed into one Classify
+// call together with whether that set is known complete (re #396, third
+// round). SMTP delivery and spam reclassify/apply-verdicts derive
+// Addresses from the principal's real identities/aliases/import-account
+// configuration (spam.ResolveOwnAddresses), which is always complete --
+// there is no "we haven't looked yet" state for those paths. The
+// IMAP-import path additionally scopes Addresses to one specific
+// upstream account; Complete is false for a message from an import
+// account that has neither a configured own-address list nor a
+// completed learning pass (own_addresses.go /
+// store.IMAPImportAccount.OwnAddressesComplete), and Classify never lets
+// a RecipientNotOwn fact from such a message contribute to a decisive
+// spam resolution, however it is combined.
+type OwnAddressInfo struct {
+	Addresses []string
+	Complete  bool
 }
 
 // RecipientNotOwn reports whether msg has at least one recipient
@@ -453,10 +565,15 @@ func (c *Classifier) WithSuspectBelowConfidence(v float64) *Classifier {
 // declared manifest type (via invoker's optional PluginTypeResolver),
 // not by clsCtx being non-zero.
 //
-// ownAddresses (re #386) is copied verbatim onto the built Request's
-// OwnAddresses field; callers resolve it via ResolveOwnAddresses (or
-// pass nil when there is no local recipient to resolve one for).
-func (c *Classifier) Classify(ctx context.Context, msg mailparse.Message, auth *mailauth.AuthResults, pluginName string, clsCtx ClassifyContext, ownAddresses []string) (Classification, error) {
+// own (re #386, re #396 third round) carries the own-address set for
+// this call and whether it is known complete (OwnAddressInfo.Complete);
+// own.Addresses is copied verbatim onto the built Request's OwnAddresses
+// field. Callers resolve Addresses via ResolveOwnAddresses (or pass nil
+// when there is no local recipient to resolve one for); SMTP delivery
+// and spam reclassify/apply-verdicts always pass Complete: true, and the
+// IMAP-import adapter computes it from the specific import account's
+// own_addresses configuration/learning state.
+func (c *Classifier) Classify(ctx context.Context, msg mailparse.Message, auth *mailauth.AuthResults, pluginName string, clsCtx ClassifyContext, own OwnAddressInfo) (Classification, error) {
 	if c.invoker == nil {
 		return Classification{Verdict: Unclassified, Score: -1, Reason: reasonText(ErrNotConfigured)}, ErrNotConfigured
 	}
@@ -476,11 +593,18 @@ func (c *Classifier) Classify(ctx context.Context, msg mailparse.Message, auth *
 
 	built := BuildRequest(msg, auth)
 	built.TimeoutMs = c.remainingBudgetMs(ctx)
-	built.OwnAddresses = ownAddresses
+	built.OwnAddresses = own.Addresses
 	// re #396 (second round): make the recipient signal impossible for
 	// the model to miss, rather than relying on it to notice a To/Cc
 	// address absent from own_addresses on its own.
-	built.RecipientNotOwn = RecipientNotOwn(msg, ownAddresses)
+	built.RecipientNotOwn = RecipientNotOwn(msg, own.Addresses)
+	// re #396 (third round): record whether own.Addresses is known
+	// complete on the transparency record itself, so a reader of the
+	// stored request can tell "recipient_not_own was true because this
+	// really isn't the principal's address" apart from "recipient_not_own
+	// was true because herold hasn't learned this import account's
+	// addresses yet".
+	built.OwnAddressesComplete = own.Complete
 
 	method := ClassifyMethod
 	var req any = built
@@ -541,6 +665,29 @@ func (c *Classifier) Classify(ctx context.Context, msg mailparse.Message, auth *
 			"activity", observe.ActivitySystem,
 			"score", cl.Score,
 			"spam_signals", cl.SpamSignals)
+		// re #396 (third round): "bulk_list_relay" is a server-computed
+		// fact (List-Id / List-Unsubscribe / Precedence: bulk|list),
+		// appended to the persisted SpamSignals -- visible on the
+		// transparency record -- whenever the plugin already reported
+		// recipient_not_own, so the combined rule below has something to
+		// match without depending on the plugin knowing this signal name
+		// exists.
+		if HasSignal(cl.SpamSignals, "recipient_not_own") && hasBulkListHeaders(built) {
+			cl.SpamSignals = appendSignalIfMissing(cl.SpamSignals, "bulk_list_relay")
+		}
+		// matchSignals is cl.SpamSignals with recipient_not_own excluded
+		// when own.Complete is false: an import account with no
+		// configured own-address list and no completed learning pass has
+		// an unreliable recipient_not_own -- the second round's
+		// standalone rule turned exactly that unreliability into false
+		// positives (info@/vorstand@ on a shared mailbox herold had not
+		// learned yet). cl.SpamSignals itself is left untouched so the
+		// persisted record still shows recipient_not_own was reported;
+		// only the decisiveness check ignores it.
+		matchSignals := cl.SpamSignals
+		if !own.Complete {
+			matchSignals = removeSignalCI(matchSignals, "recipient_not_own")
+		}
 		// re #396 (second round): flagging alone left every one of
 		// these delivered to the Inbox -- the maintainer's hand-back on
 		// the first round's fix reported this directly (29 flagged rows,
@@ -549,7 +696,7 @@ func (c *Classifier) Classify(ctx context.Context, msg mailparse.Message, auth *
 		// herold actually applies; ModelVerdict keeps the plugin's own
 		// answer for the transparency record. Non-decisive signals stay
 		// flagged-only, matching the first round's behaviour.
-		if rule, ok := matchDecisiveSignal(cl.SpamSignals, c.decisiveSignals); ok {
+		if rule, ok := matchDecisiveSignal(matchSignals, c.decisiveSignals); ok {
 			resolved := Spam
 			if c.suspectBelow > 0 && cl.Score >= 0 && cl.Score < c.suspectBelow {
 				resolved = Suspect
@@ -788,6 +935,20 @@ type Request struct {
 	// rather than relying on the model to notice an address missing from
 	// own_addresses on its own.
 	RecipientNotOwn bool `json:"recipient_not_own,omitempty"`
+	// OwnAddressesComplete records whether OwnAddresses is known complete
+	// for this message (re #396, third round, OwnAddressInfo.Complete):
+	// true for every SMTP-delivery and spam-reclassify/apply-verdicts
+	// call (own_addresses.go resolves the principal's full identity/alias
+	// set), and for an IMAP-import call from an account that has either a
+	// configured own-address list or a completed learning pass. False
+	// means RecipientNotOwn above may be a false positive caused by an
+	// import account herold has not finished learning delivery addresses
+	// for, not a reliable statement that the recipient truly isn't the
+	// principal's. Not sent to the plugin as a behavioural input -- it
+	// exists so the stored "prompt as applied" transparency record
+	// (REQ-FILT-66) states plainly whether the own-address set was
+	// complete when this message was classified.
+	OwnAddressesComplete bool `json:"own_addresses_complete"`
 	// TimeoutMs is the caller's remaining time budget for this RPC, in
 	// milliseconds, as of the moment the request was built (issue #331).
 	// The plugin SDK's per-request context wiring (plugins/sdk/sdk.go's

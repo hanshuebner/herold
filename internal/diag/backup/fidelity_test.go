@@ -668,14 +668,22 @@ func seedFidelityRows(t *testing.T, db *sql.DB) {
 		int64(2000000), int64(8000000), nil, 0,
 		nil, "pending", nil, nil)
 
-	// imapimport_account
+	// imapimport_account. imap-1 carries a populated own_addresses_json
+	// and a completed learning pass (re #396, third round); imap-2 keeps
+	// the column defaults (own_addresses_json = "[]",
+	// learned_addresses_json / addresses_learned_at NULL, i.e. the
+	// learning pass has never run for it).
 	exec(`INSERT INTO imapimport_account (id, principal_id, account_name, host, port, tls_mode,
 	        username, auth_method, backfill_floor_date, credential_ct, state,
-	        last_success_at, last_error, delete_propagates, created_at, updated_at)
-	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	        last_success_at, last_error, delete_propagates,
+	        own_addresses_json, learned_addresses_json, addresses_learned_at,
+	        created_at, updated_at)
+	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		"imap-1", 1, "Gmail", "imap.gmail.com", 993, "implicit",
 		"alice@gmail.com", "password", int64(1000000), binaryBlob, "enabled",
-		int64(2000000), "", 1, int64(1000000), int64(2000000))
+		int64(2000000), "", 1,
+		`["info@example.com"]`, `["vorstand@example.com"]`, int64(2500000),
+		int64(1000000), int64(2000000))
 	exec(`INSERT INTO imapimport_account (id, principal_id, account_name, host, port, tls_mode,
 	        username, auth_method, backfill_floor_date, credential_ct, state,
 	        last_success_at, last_error, delete_propagates, created_at, updated_at)

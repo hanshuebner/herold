@@ -47,9 +47,22 @@ type imapImportAccountDTO struct {
 	DebugLog         bool       `json:"debug_log"`
 	// ExcludedFolders lists upstream folder names the worker never syncs
 	// (re #305). See store.IMAPImportAccount.ExcludedFolders.
-	ExcludedFolders []string  `json:"excluded_folders,omitempty"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	ExcludedFolders []string `json:"excluded_folders,omitempty"`
+	// OwnAddresses is the operator-configured extra own-address list
+	// (re #396, third round). See store.IMAPImportAccount.OwnAddresses.
+	OwnAddresses []string `json:"own_addresses,omitempty"`
+	// LearnedAddresses is the read-only, automatically learned
+	// own-address list (re #396, third round). See
+	// store.IMAPImportAccount.LearnedAddresses. Absent (not an empty
+	// array) when the learning pass has never run for this account --
+	// distinguishable from "ran, found nothing" via AddressesLearnedAt.
+	LearnedAddresses []string `json:"learned_addresses,omitempty"`
+	// AddressesLearnedAt is when the learning pass last ran for this
+	// account, or absent if it never has. See
+	// store.IMAPImportAccount.AddressesLearnedAt.
+	AddressesLearnedAt *time.Time `json:"addresses_learned_at,omitempty"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
 }
 
 // imapImportFolderMapEntryDTO is one folder-mapping row.
@@ -89,6 +102,15 @@ func toImapImportDTO(a store.IMAPImportAccount) imapImportAccountDTO {
 	}
 	dto.DebugLog = a.DebugLog
 	dto.ExcludedFolders = a.ExcludedFolders
+	dto.OwnAddresses = a.OwnAddresses
+	if a.AddressesLearnedAt != nil {
+		dto.LearnedAddresses = a.LearnedAddresses
+		if dto.LearnedAddresses == nil {
+			dto.LearnedAddresses = []string{}
+		}
+		t := *a.AddressesLearnedAt
+		dto.AddressesLearnedAt = &t
+	}
 	return dto
 }
 
@@ -109,6 +131,9 @@ type createIMAPImportRequest struct {
 	// ExcludedFolders lists upstream folder names to never sync (re #305).
 	// Nil/absent means none.
 	ExcludedFolders []string `json:"excluded_folders,omitempty"`
+	// OwnAddresses is the initial configured own-address list (re #396,
+	// third round). Nil/absent means none.
+	OwnAddresses []string `json:"own_addresses,omitempty"`
 }
 
 // patchIMAPImportRequest is the body for PATCH .../imap-imports/{aid}.
@@ -136,6 +161,11 @@ type patchIMAPImportRequest struct {
 	// replaces the stored no-sync folder list (re #305). Absent preserves
 	// the existing value.
 	ExcludedFolders []string `json:"excluded_folders,omitempty"`
+	// OwnAddresses, when present (including an explicit empty array),
+	// replaces the stored configured own-address list (re #396, third
+	// round). Absent preserves the existing value. Never touches the
+	// separately-maintained LearnedAddresses.
+	OwnAddresses []string `json:"own_addresses,omitempty"`
 }
 
 // -- validation helpers -------------------------------------------------------
@@ -332,6 +362,15 @@ func (s *Server) handleCreateIMAPImport(w http.ResponseWriter, r *http.Request) 
 		}
 		excludedFolders = ef
 	}
+	var ownAddresses []string
+	if req.OwnAddresses != nil {
+		oa, oerr := store.NormalizeOwnAddresses(req.OwnAddresses)
+		if oerr != nil {
+			writeProblem(w, r, http.StatusBadRequest, "validation_failed", oerr.Error(), "")
+			return
+		}
+		ownAddresses = oa
+	}
 
 	// Validate the owning Identity (decision 10, REQ-IMAP-IMP-01/02). When
 	// supplied it must reference an Identity owned by the same principal.
@@ -403,6 +442,7 @@ func (s *Server) handleCreateIMAPImport(w http.ResponseWriter, r *http.Request) 
 		State:             state,
 		DeletePropagates:  deletePropagates,
 		ExcludedFolders:   excludedFolders,
+		OwnAddresses:      ownAddresses,
 	}
 	created, cerr := s.store.Meta().CreateIMAPImportAccount(r.Context(), create)
 	if cerr != nil {
@@ -495,6 +535,7 @@ func (s *Server) handlePatchIMAPImport(w http.ResponseWriter, r *http.Request) {
 		State:             existing.State,
 		DeletePropagates:  existing.DeletePropagates,
 		ExcludedFolders:   existing.ExcludedFolders,
+		OwnAddresses:      existing.OwnAddresses,
 		// CredentialCT nil means "keep existing"; DebugLog nil means "keep existing"
 	}
 
@@ -567,6 +608,14 @@ func (s *Server) handlePatchIMAPImport(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		upd.ExcludedFolders = ef
+	}
+	if req.OwnAddresses != nil {
+		oa, oerr := store.NormalizeOwnAddresses(req.OwnAddresses)
+		if oerr != nil {
+			writeProblem(w, r, http.StatusBadRequest, "validation_failed", oerr.Error(), "")
+			return
+		}
+		upd.OwnAddresses = oa
 	}
 
 	// Reseal credential if supplied (REQ-IMAP-IMP-70).

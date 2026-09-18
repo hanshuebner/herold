@@ -1,0 +1,47 @@
+-- 0113_imapimport_own_addresses.sql -- per-account own-address list (re
+-- #396, third round). Mirrors storepg 0113.
+--
+-- Adds three columns to imapimport_account:
+--
+--   own_addresses_json     -- operator-configured extra addresses this
+--                              account's upstream mailbox is known to
+--                              accept mail at (a shared organisational
+--                              mailbox's info@/vorstand@ alias, for
+--                              example) that herold cannot derive from
+--                              the account's owning Identity. Set via
+--                              the admin REST API or `herold imapimport
+--                              own-addresses set`. Every pre-existing
+--                              row defaults to '[]' (no configured
+--                              addresses), preserving today's behaviour.
+--
+--   learned_addresses_json -- addresses herold has observed in the
+--                              Delivered-To/X-Original-To headers of
+--                              messages this account has imported.
+--                              NULL means the learning pass has never
+--                              run for this account; '[]' means it ran
+--                              and found nothing more. This distinction
+--                              is what spam.Classifier's decisive-signal
+--                              resolution reads to decide whether the
+--                              account's own-address set is known
+--                              complete (store.IMAPImportAccount.
+--                              OwnAddressesComplete) before ever letting
+--                              a recipient_not_own fact from this
+--                              account contribute to a decisive spam
+--                              resolution.
+--
+--   addresses_learned_at   -- unix-micros instant the learning pass
+--                              last wrote learned_addresses_json, NULL
+--                              until it has run once.
+--
+-- The cause this repairs: own_addresses on the IMAP-import path was
+-- built only from the principal's identities/aliases, so an upstream
+-- mailbox that also accepts mail at addresses herold never resolves as
+-- the principal's (info@ and vorstand@ on a shared organisational
+-- mailbox) made recipient_not_own true for every message delivered to
+-- those addresses -- and, combined with the second round's now-retired
+-- standalone recipient_not_own decisive rule, turned legitimate
+-- transactional mail into false-positive Junk moves.
+
+ALTER TABLE imapimport_account ADD COLUMN own_addresses_json TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE imapimport_account ADD COLUMN learned_addresses_json TEXT;
+ALTER TABLE imapimport_account ADD COLUMN addresses_learned_at INTEGER;

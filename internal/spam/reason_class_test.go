@@ -49,7 +49,7 @@ func TestReasonClass_Table(t *testing.T) {
 func TestClassify_UnclassifiedReasonPopulated(t *testing.T) {
 	t.Run("not configured", func(t *testing.T) {
 		c := New(nil, silentLogger(), clock.NewFake(time.Now()))
-		r, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "any", ClassifyContext{}, nil)
+		r, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "any", ClassifyContext{}, OwnAddressInfo{})
 		if !errors.Is(err, ErrNotConfigured) {
 			t.Fatalf("err = %v, want ErrNotConfigured", err)
 		}
@@ -67,7 +67,7 @@ func TestClassify_UnclassifiedReasonPopulated(t *testing.T) {
 		c := New(invoker, silentLogger(), clock.NewFake(time.Now()))
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 		defer cancel()
-		r, err := c.Classify(ctx, buildMessage(t, canonMsg), nil, "slow", ClassifyContext{}, nil)
+		r, err := c.Classify(ctx, buildMessage(t, canonMsg), nil, "slow", ClassifyContext{}, OwnAddressInfo{})
 		if err == nil {
 			t.Fatal("expected timeout error")
 		}
@@ -82,7 +82,7 @@ func TestClassify_UnclassifiedReasonPopulated(t *testing.T) {
 			return nil, errors.New("plugin crashed")
 		})
 		c := New(invoker, silentLogger(), clock.NewFake(time.Now()))
-		r, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "broken", ClassifyContext{}, nil)
+		r, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "broken", ClassifyContext{}, OwnAddressInfo{})
 		if err == nil {
 			t.Fatal("expected error")
 		}
@@ -97,7 +97,7 @@ func TestClassify_UnclassifiedReasonPopulated(t *testing.T) {
 			return json.RawMessage(`{"verdict":"maybe","confidence":0.5}`), nil
 		})
 		c := New(invoker, silentLogger(), clock.NewFake(time.Now()))
-		r, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "odd", ClassifyContext{}, nil)
+		r, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "odd", ClassifyContext{}, OwnAddressInfo{})
 		if err == nil {
 			t.Fatal("expected error")
 		}
