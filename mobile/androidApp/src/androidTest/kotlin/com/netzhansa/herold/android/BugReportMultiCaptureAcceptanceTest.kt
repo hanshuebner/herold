@@ -1,5 +1,6 @@
 package com.netzhansa.herold.android
 
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
@@ -7,6 +8,8 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipe
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.UiDevice
@@ -29,9 +32,11 @@ import org.junit.runners.MethodSorters
 
 /**
  * A report that carries more than one screen (issue #424). The
- * maintainer captures a conversation, walks to the inbox, captures
- * again into the same report and sends once; the server's drop carries
- * both pictures and says which screen each was taken on.
+ * maintainer captures a conversation, walks to the inbox, taps the
+ * marker to put that screen on the same report and sends once; the
+ * server's drop carries both pictures and says which screen each was
+ * taken on. The shake and the menu entry ask first, since those may
+ * well mean a new problem.
  *
  * The last check leaves a report open on purpose:
  * `BugReportPendingReportSurvivesTest` runs after it, in its own
@@ -73,10 +78,10 @@ class BugReportMultiCaptureAcceptanceTest {
     }
 
     /**
-     * Two screens, one report. The second gesture asks what to do with
-     * the open report, adding puts the screen on its strip, and the
-     * drop the server hands back carries both pictures and both
-     * captures with their routes.
+     * Two screens, one report. The marker's tap captures the screen the
+     * maintainer walked to and puts it on the open report, and the drop
+     * the server hands back carries both pictures and both captures
+     * with their routes.
      */
     @Test
     fun t01_twoCapturesOnTwoRoutesArriveAsOneReport() = runBlocking {
@@ -99,12 +104,9 @@ class BugReportMultiCaptureAcceptanceTest {
             compose.onAllNodesWithTag("inbox-overflow").fetchSemanticsNodes().isNotEmpty()
         }
 
-        raiseTheReporterFromTheInbox()
-        compose.waitUntil(TIMEOUT_MS) {
-            compose.onAllNodesWithTag("bug-prompt").fetchSemanticsNodes().isNotEmpty()
-        }
-        compose.captureScreen("102-add-to-the-open-report-or-start-a-new-one")
-        compose.onNodeWithTag("bug-prompt-add").performClick()
+        // The marker is the way to add the screen you walked to: one
+        // tap captures it and puts it on the open report.
+        compose.onNodeWithTag("bug-pending-chip").performClick()
 
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithTag("bug-thumbnail-2").fetchSemanticsNodes().isNotEmpty()
@@ -148,12 +150,51 @@ class BugReportMultiCaptureAcceptanceTest {
     }
 
     /**
+     * The other entry points ask. A shake or "Report a problem" may
+     * well mean a new problem, so with a report open they offer both
+     * ways and the maintainer picks.
+     */
+    @Test
+    fun t02_theMenuEntryAsksBeforeJoiningTheOpenReport() {
+        store.clear()
+        openAThread()
+        raiseTheSheetFromTheThread()
+        compose.onNodeWithTag("bug-add-capture").performClick()
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("bug-pending-chip").fetchSemanticsNodes().isNotEmpty()
+        }
+        UiDevice.getInstance(InstrumentationRegistry.getInstrumentation()).pressBack()
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("inbox-overflow").fetchSemanticsNodes().isNotEmpty()
+        }
+
+        raiseTheReporterFromTheInbox()
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("bug-prompt").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.captureScreen("102-add-to-the-open-report-or-start-a-new-one")
+        compose.onNodeWithTag("bug-prompt-add").performClick()
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("bug-thumbnail-2").fetchSemanticsNodes().isNotEmpty()
+        }
+
+        // And out again: a report of several captures is not dropped by
+        // one tap.
+        compose.onNodeWithTag("bug-cancel").performClick()
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("bug-confirm-discard").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("bug-confirm-discard").performClick()
+        compose.waitUntil(TIMEOUT_MS) { store.load() == null }
+    }
+
+    /**
      * What the next process has to find: a report with a capture on it,
      * written to app storage the moment the maintainer said "Add
      * another capture".
      */
     @Test
-    fun t02_addingAnotherCaptureLeavesTheReportOnDisk() {
+    fun t03_addingAnotherCaptureLeavesTheReportOnDisk() {
         store.clear()
         openAThread()
         raiseTheSheetFromTheThread()
@@ -169,6 +210,25 @@ class BugReportMultiCaptureAcceptanceTest {
         )
         assertTrue("the held capture has no picture", held.capture.screenshots.isNotEmpty())
         compose.captureScreen("105-the-open-report-marker")
+
+        // The marker is dragged off whatever it covers, and a drag is
+        // not a tap: nothing is captured by moving it.
+        val before = compose.onNodeWithTag("bug-pending-chip").fetchSemanticsNode().boundsInRoot
+        compose.onNodeWithTag("bug-pending-chip").performTouchInput {
+            swipe(start = center, end = center + Offset(220f, -700f), durationMillis = 400)
+        }
+        compose.waitForIdle()
+        val after = compose.onNodeWithTag("bug-pending-chip").fetchSemanticsNode().boundsInRoot
+        assertTrue(
+            "the marker did not move: $before -> $after",
+            after.top < before.top - MOVED_BY_PX && after.left > before.left + MOVED_BY_PX,
+        )
+        assertTrue(
+            "dragging the marker opened the sheet",
+            compose.onAllNodesWithTag("bug-sheet").fetchSemanticsNodes().isEmpty(),
+        )
+        assertEquals("dragging the marker took a capture", 1, awaitHeldReport().captureCount)
+        compose.captureScreen("107-the-marker-dragged-clear")
     }
 
     /** The report as app storage holds it, once the write has landed. */
@@ -251,5 +311,8 @@ class BugReportMultiCaptureAcceptanceTest {
         const val DELIVERY_POLL_MS = 1_000L
         const val QUEUE_POLLS = 20
         const val QUEUE_POLL_MS = 250L
+
+        /** How far the marker has to travel for a drag to have happened. */
+        const val MOVED_BY_PX = 100f
     }
 }

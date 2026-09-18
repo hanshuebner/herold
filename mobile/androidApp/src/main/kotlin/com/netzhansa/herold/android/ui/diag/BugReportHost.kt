@@ -3,9 +3,11 @@ package com.netzhansa.herold.android.ui.diag
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BugReport
@@ -23,8 +25,14 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
 import com.netzhansa.herold.android.AppContainer
@@ -42,6 +50,7 @@ import com.netzhansa.herold.shared.diag.PendingBugReport
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.roundToInt
 
 /**
  * The reporter, mounted over every screen of the shell
@@ -51,10 +60,13 @@ import kotlinx.coroutines.withContext
  * rather than the sheet covering it.
  *
  * A report stays open across screens (issue #424): "Add another
- * capture" puts the shell back with the report held, a chip says how
- * many screens it carries, and the next gesture asks whether to add to
- * it or start again. What is held is written to app storage, so the
- * captures survive the app being killed between two of them.
+ * capture" puts the shell back with the report held and a chip says how
+ * many screens it carries. Tapping the chip captures the screen the
+ * maintainer walked to and puts it on the report; a shake or "Report a
+ * problem" asks first, since those may well mean a new problem. The
+ * chip is dragged aside when it sits on the thing being reported. What
+ * is held is written to app storage, so the captures survive the app
+ * being killed between two of them.
  *
  * Sending goes through the outbox with the undo window the user chose
  * for mail, so a report asked for by mistake is taken back the same way
@@ -78,8 +90,17 @@ fun BugReportHost(
     var confirmNew by remember { mutableStateOf<BugCapture?>(null) }
     var confirmDiscard by remember { mutableStateOf(false) }
     var capturing by remember { mutableStateOf(false) }
+    var markerTaps by remember { mutableStateOf(0) }
+    // Where the maintainer dragged the marker, held for as long as the
+    // report is: its default corner sometimes sits on the very thing
+    // the report is about.
+    var markerOffset by remember { mutableStateOf(Offset.Zero) }
+    var markerSize by remember { mutableStateOf(IntSize.Zero) }
+    var shellSize by remember { mutableStateOf(IntSize.Zero) }
+    val marginPx = with(LocalDensity.current) { MARKER_MARGIN.toPx() }
 
     fun holdReport(report: PendingBugReport?) {
+        if (report == null) markerOffset = Offset.Zero
         pending = report
         scope.launch(Dispatchers.IO) {
             if (report == null) store.clear() else store.save(report)
@@ -103,13 +124,11 @@ fun BugReportHost(
         container.requestBugReport()
     }
 
-    LaunchedEffect(requested) {
-        if (!requested || busy || capturing) return@LaunchedEffect
-        val host = activity ?: run {
-            container.bugReportRequested.value = false
-            return@LaunchedEffect
-        }
-        capturing = true
+    // The window and the app's state, taken where the user is
+    // standing. Both entry points take it the same way; what differs is
+    // what becomes of it.
+    suspend fun takeCapture(): BugCapture? {
+        val host = activity ?: return null
         val entry = navController.currentBackStackEntry
         val route = entry?.destination?.route ?: BugCapture.UNKNOWN_ROUTE
         val bundle = entry?.arguments
@@ -117,7 +136,7 @@ fun BugReportHost(
             bundle?.getString(key)?.let { key to it }
         }.toMap()
         DiagLog.i(TAG, "capturing a bug report on route $route")
-        val fresh = runCatching {
+        return runCatching {
             reporter.capture(
                 activity = host,
                 session = session,
@@ -126,34 +145,73 @@ fun BugReportHost(
                 withScreenshot = true,
             )
         }.getOrNull()
+    }
+
+    /** Puts [fresh] on the open report and shows it. */
+    fun addToTheOpenReport(held: PendingBugReport, fresh: BugCapture) {
+        holdReport(held.copy(capture = held.capture.withShot(fresh.shots.first())))
+        sheetOpen = true
+    }
+
+    /** Starts a report on [fresh] and shows it. */
+    fun startAReport(fresh: BugCapture) {
+        holdReport(
+            PendingBugReport(
+                startedAtMs = System.currentTimeMillis(),
+                submission = BugSubmission(),
+                capture = fresh,
+            ),
+        )
+        sheetOpen = true
+    }
+
+    LaunchedEffect(requested) {
+        if (!requested || busy || capturing) return@LaunchedEffect
+        if (activity == null) {
+            container.bugReportRequested.value = false
+            return@LaunchedEffect
+        }
+        capturing = true
+        val fresh = takeCapture()
         capturing = false
         container.bugReportRequested.value = false
         if (fresh == null) return@LaunchedEffect
         val open = pending?.takeIf { !it.isExpired(System.currentTimeMillis()) }
         if (open == null) {
-            holdReport(
-                PendingBugReport(
-                    startedAtMs = System.currentTimeMillis(),
-                    submission = BugSubmission(),
-                    capture = fresh,
-                ),
-            )
-            sheetOpen = true
+            startAReport(fresh)
         } else {
-            // A report is already open: the maintainer says whether
-            // this screen belongs to it (issue #424).
+            // A report is already open: the shake and the menu entry ask
+            // whether this screen belongs to it (issue #424).
             prompt = fresh
         }
     }
 
+    // The marker's own tap: the maintainer pointing at the open report
+    // means this screen goes on it, so it is captured and added with
+    // nothing to answer.
+    LaunchedEffect(markerTaps) {
+        if (markerTaps == 0 || busy || capturing) return@LaunchedEffect
+        val held = pending ?: return@LaunchedEffect
+        capturing = true
+        val fresh = takeCapture()
+        capturing = false
+        if (fresh == null) return@LaunchedEffect
+        if (held.isExpired(System.currentTimeMillis())) startAReport(fresh) else addToTheOpenReport(held, fresh)
+    }
+
     // The marker. A report the maintainer walked away from is easy to
     // forget, so the shell says it is open and how much is on it, from
-    // whatever screen they are on.
+    // whatever screen they are on, and tapping it puts that screen on
+    // the report.
     val open = pending
     if (open != null && !busy) {
-        Box(modifier = Modifier.fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .onSizeChanged { shellSize = it },
+        ) {
             AssistChip(
-                onClick = { sheetOpen = true },
+                onClick = { markerTaps++ },
                 label = { Text(markerLabel(open.captureCount)) },
                 leadingIcon = {
                     Icon(imageVector = Icons.Default.BugReport, contentDescription = null)
@@ -161,7 +219,25 @@ fun BugReportHost(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
                     .navigationBarsPadding()
-                    .padding(start = 16.dp, bottom = 16.dp)
+                    .padding(start = MARKER_MARGIN, bottom = MARKER_MARGIN)
+                    .offset { IntOffset(markerOffset.x.roundToInt(), markerOffset.y.roundToInt()) }
+                    .onSizeChanged { markerSize = it }
+                    // Dragged out of the way and kept there. The
+                    // detector waits out the touch slop, so a tap still
+                    // reaches the chip and takes a capture.
+                    .pointerInput(Unit) {
+                        detectDragGestures { change, delta ->
+                            change.consume()
+                            val room = Offset(
+                                (shellSize.width - markerSize.width - 2 * marginPx).coerceAtLeast(0f),
+                                (shellSize.height - markerSize.height - 2 * marginPx).coerceAtLeast(0f),
+                            )
+                            markerOffset = Offset(
+                                (markerOffset.x + delta.x).coerceIn(0f, room.x),
+                                (markerOffset.y + delta.y).coerceIn(-room.y, 0f),
+                            )
+                        }
+                    }
                     .testTag("bug-pending-chip"),
             )
         }
@@ -182,8 +258,7 @@ fun BugReportHost(
                 TextButton(
                     onClick = {
                         prompt = null
-                        holdReport(held.copy(capture = held.capture.withShot(fresh.shots.first())))
-                        sheetOpen = true
+                        addToTheOpenReport(held, fresh)
                     },
                     modifier = Modifier.testTag("bug-prompt-add"),
                 ) {
@@ -221,14 +296,7 @@ fun BugReportHost(
                     onClick = {
                         confirmNew = null
                         DiagLog.i(TAG, "the open bug report was dropped for a new one")
-                        holdReport(
-                            PendingBugReport(
-                                startedAtMs = System.currentTimeMillis(),
-                                submission = BugSubmission(),
-                                capture = fresh,
-                            ),
-                        )
-                        sheetOpen = true
+                        startAReport(fresh)
                     },
                     modifier = Modifier.testTag("bug-confirm-new"),
                 ) {
@@ -339,8 +407,11 @@ fun BugReportHost(
     )
 }
 
+/** How far the marker sits from the corner it rests in. */
+private val MARKER_MARGIN = 16.dp
+
 /** What the marker says, which is how many screens the open report holds. */
-private fun markerLabel(count: Int): String = "Report open: ${captures(count)}"
+private fun markerLabel(count: Int): String = "Add to report (${captures(count)})"
 
 /** How many captures, said so one of them does not read as several. */
 private fun captures(count: Int): String = if (count == 1) "1 capture" else "$count captures"
