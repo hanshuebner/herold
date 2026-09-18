@@ -30,7 +30,7 @@ class AndroidConnectivityMonitor(
     override val online: StateFlow<Boolean> = callbackFlow {
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                trySend(hasInternet())
+                trySend(usable(network))
             }
 
             override fun onLost(network: Network) {
@@ -38,7 +38,7 @@ class AndroidConnectivityMonitor(
             }
 
             override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
-                trySend(hasInternet())
+                trySend(usable(capabilities))
             }
         }
         trySend(hasInternet())
@@ -46,10 +46,24 @@ class AndroidConnectivityMonitor(
         awaitClose { runCatching { manager.unregisterNetworkCallback(callback) } }
     }.distinctUntilChanged().stateIn(scope, SharingStarted.Eagerly, hasInternet())
 
+    /**
+     * The default network as the platform last reported it. The
+     * callback names the network, and that is what is read: the
+     * process-wide `activeNetwork` answers null while the app's own
+     * network access is blocked - a restricted standby bucket, data
+     * saver - which would leave the shell saying "offline" about a
+     * connection its own requests are getting through on.
+     */
+    private fun usable(network: Network): Boolean =
+        manager.getNetworkCapabilities(network)?.let(::usable) ?: false
+
+    private fun usable(capabilities: NetworkCapabilities): Boolean =
+        capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+
+    /** What the platform says before the first callback arrives. */
     private fun hasInternet(): Boolean {
         val active = manager.activeNetwork ?: return false
-        val capabilities = manager.getNetworkCapabilities(active) ?: return false
-        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        return usable(active)
     }
 }

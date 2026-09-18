@@ -57,6 +57,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -81,6 +82,9 @@ private const val SYNC_TAG = "herold.sync"
 
 /** What the session is doing, in the diagnostic ring. */
 private const val AUTH_TAG = "herold.auth"
+
+/** What the phone's network and the client's own traffic say. */
+private const val NET_TAG = "herold.net"
 
 /**
  * Everything a signed-in session owns. It exists only while a bearer token
@@ -327,6 +331,16 @@ class AppContainer(context: Context) {
                     DiagLog.i(SYNC_TAG, "sync $status")
                 }
             }
+        }
+        // Why the indicator says what it says: the platform's network
+        // and what the client's own requests met, which are the two
+        // halves of the offline indication (REQ-AND-SYNC-30).
+        appScope.launch {
+            combine(connectivity.online, reachability.reachable) { up, reached -> up to reached }
+                .distinctUntilChanged()
+                .collect { (up, reached) ->
+                    DiagLog.i(NET_TAG, "network up=$up serverReached=$reached")
+                }
         }
         // A refusal the drain met is recorded rather than flashed: the
         // entry stays in the outbox with its reason, the status
