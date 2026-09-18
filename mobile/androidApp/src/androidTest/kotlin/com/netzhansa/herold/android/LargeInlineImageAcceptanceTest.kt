@@ -84,13 +84,30 @@ class LargeInlineImageAcceptanceTest {
         // Still the thread, in the same process: the part was read
         // without taking the app with it.
         compose.onNodeWithTag("thread-messages").assertIsDisplayed()
+
+        // And it came through the cache, which is what the row layout
+        // could not do: the part is bigger than a cursor window.
         val cached = runBlocking {
-            app.container.store.cachedBlob(seeded.accountId, seeded.attachments.first().blobId)
+            val part = awaitInlinePart(seeded.accountId, seeded.id)
+            app.container.store.cachedBlob(seeded.accountId, part)
         }
         assertTrue(
-            "the oversized part must come back out of the cache",
+            "the oversized part must come back out of the cache, saw ${cached?.bytes?.size}",
             cached != null && cached.bytes.size == photo.size,
         )
+    }
+
+    /**
+     * The blob id of the message's inline part. The list row carries no
+     * parts; they arrive with the body the thread screen loads.
+     */
+    private suspend fun awaitInlinePart(accountId: String, emailId: String): String {
+        repeat(POLLS) {
+            app.container.store.email(accountId, emailId)?.attachments?.firstOrNull()
+                ?.let { return it.blobId }
+            Thread.sleep(POLL_MS)
+        }
+        error("the message never gained its inline part in the store")
     }
 
     private fun awaitInbox(subject: String): Email = runBlocking {
