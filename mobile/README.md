@@ -66,8 +66,9 @@ phases around the radios, and the second reads what the first measured
 out of the app's own storage, so the app must not be cleared between
 them:
 
-    #t70 online: measures the list and a row while idle and while a
-         sync runs, and reads the diagnostics screen the dot opens
+    #t70 online: measures the list and a row while idle and with a
+         send waiting out its undo window, and reads the diagnostics
+         screen the dot opens
     adb shell svc data disable && adb shell svc wifi disable
     #t71 offline: the same measurements with no connection
     adb shell svc data enable && adb shell svc wifi enable
