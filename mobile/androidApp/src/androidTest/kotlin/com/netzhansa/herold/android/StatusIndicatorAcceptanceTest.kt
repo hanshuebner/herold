@@ -11,6 +11,11 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.netzhansa.herold.shared.auth.SignInResult
 import com.netzhansa.herold.shared.sync.SyncStatus
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -81,21 +86,24 @@ class StatusIndicatorAcceptanceTest {
         val idle = measure(rowTag)
         compose.captureScreen("70-inbox-status-online")
 
-        // A sync the user asked for: the dot turns and the list stays
-        // exactly where it was.
-        compose.onNodeWithTag("inbox-refresh").performClick()
-        compose.waitUntil(TIMEOUT_MS) {
-            app.container.session.value?.syncEngine?.status?.value is SyncStatus.Syncing
+        // Syncs back to back, so the in-flight state is on screen long
+        // enough to be measured rather than caught between two frames.
+        val syncs = CoroutineScope(Dispatchers.IO).launch {
+            while (isActive) {
+                app.container.session.value?.syncEngine?.syncAll()
+            }
         }
-        assertTrue(
-            "the in-flight dot is drawn while the sync runs",
-            compose.onAllNodesWithTag("status-dot-busy", useUnmergedTree = true)
-                .fetchSemanticsNodes().isNotEmpty(),
-        )
-        val syncing = measure(rowTag)
-        // No waitForIdle here: the in-flight dot animates, and an
-        // animation in flight never reaches idle.
-        captureDeviceScreen("71-inbox-status-syncing")
+        val syncing: Layout
+        try {
+            compose.waitUntil(TIMEOUT_MS) {
+                compose.onAllNodesWithTag("status-dot-busy", useUnmergedTree = true)
+                    .fetchSemanticsNodes().isNotEmpty()
+            }
+            syncing = measure(rowTag)
+            captureDeviceScreen("71-inbox-status-syncing")
+        } finally {
+            syncs.cancelAndJoin()
+        }
         assertEquals("the list does not move when a sync starts", idle, syncing)
 
         ledger.writeText("$rowTag\n${idle.listTop}\n${idle.rowTop}\n${idle.rowLeft}\n")
