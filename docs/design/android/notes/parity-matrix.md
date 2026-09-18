@@ -52,6 +52,7 @@ presentation-level and not yet built.
 | `07-search` — fielded operators, autocomplete, recent searches (`REQ-SRC-10/11/22`) | presentation | todo | — |
 | `07-search` — in-thread find (`REQ-SRC-50..53`) | presentation | todo | — |
 | `11-optimistic-ui` — optimistic action semantics | presentation | done (milestone 2a); every action writes the store and queues a durable outbox entry, so it holds with no connectivity (suite `REQ-OPT-33` drops its queue on reload; the phone's survives process death) | #351 |
+| `11-optimistic-ui` — connection status surface (`REQ-OPT-52`, `24-mobile-and-touch` `REQ-MOB-80`) | presentation | done (#421); the suite keeps a freshness indicator in its chrome and asks for a bar under the app bar on phone, the client uses one fixed-slot dot in the top app bar instead, with the detail on a diagnostics screen, because a bar that comes and goes reflows the message list | #421 |
 | `14-unsubscribe` — List-Unsubscribe handling | presentation | done (milestone 3a, #361); the thread header carries the button when a mechanism is advertised, one-click POSTs the RFC 8058 body with no cookie, referrer or bearer token, a plain HTTPS URL goes to the browser, a `mailto:` opens a prefilled compose, and a cleartext `http:` URL surfaces the suite's refusal wording | #361 |
 | `14-unsubscribe` — the "previously unsubscribed" badge and the unsubscribed-from set (`REQ-UNS-50..52`) | presentation | todo; the suite keeps the set in `localStorage` per account, the phone has no store for it yet | — |
 | `17-attachments` — inline-vs-attach (suite G8), upload progress, `maxSizeUpload` (`REQ-ATT-01..06`) | presentation | done (milestone 1c) | #329 |
@@ -108,6 +109,7 @@ matrix is a complete picture of mobile scope.
 | Home-screen widget, Quick Settings tile, app shortcuts | REQ-AND-SYS-20/21/22 | done (milestone 3b, #362); all three render from the local store |
 | Attachments through SAF and the photo picker | REQ-AND-SYS-30..34 | done (milestones 1c and 2a) |
 | Native navigation shell + predictive back | REQ-AND-05x | done (milestone 1a, phone single-pane) |
+| Diagnostics screen (connection, sync, queue, push, log ring) | REQ-AND-SYS-54 | done (#421); the status indicator and Settings both lead to it, and it reads out the same ring a bug report carries. The suite has no counterpart |
 | In-app bug reporter (shake to report, bundle posted to the server) | REQ-AND-SYS-50..53 | done (#407, #417); the phone-side counterpart of the herold-triage browser panel. The drawer, every overflow and a shake raise one sheet; the capture (window PNG, route, build, sync and outbox state, push state, log ring) is taken before the sheet opens and goes through the outbox to the account server's `POST /api/v1/bug-reports` (#416), in the drop layout `herold bug-fetch` collects for `/bug-inbox` (#408). Typing is optional: an undescribed report is named by its route and time and says so in `report.json`, and the description is added on the desktop. The suite has no counterpart - the browser panel is an extension, not Suite code |
 
 ## Server gaps the client hit

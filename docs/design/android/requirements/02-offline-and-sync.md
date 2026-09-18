@@ -40,11 +40,11 @@ disconnection and app restart.
 | REQ-AND-SYNC-25 | A visible outbox surface lists pending entries (queued sends, pending actions) with their state (queued / sending / failed), the reason a failed one gives, and a manual retry, which submits at once and keeps the entry's attempt count. |
 | REQ-AND-SYNC-26 | A send is held in the outbox for a configurable undo window (off / 5 / 10 / 20 / 30 seconds, default 5) before the drain submits it, and the message list offers to take it back for that long; an undo drops the entry and reopens the composer with the message intact. The window is the entry's not-before time, so it applies offline and with the app closed. The Suite realises undo-send server-side with `EmailSubmission.sendAt` (`../../web/requirements/11-optimistic-ui.md` REQ-OPT-11); on the phone the message has not left the device, so an undo costs no round trip and needs no connectivity. |
 
-## Connectivity indication
+## Status indication
 
 | ID | Requirement |
 |----|-------------|
-| REQ-AND-SYNC-30 | Connectivity state is surfaced non-intrusively (a bar or chip) when offline or reconnecting, matching the Suite's more-prominent-on-mobile treatment (`REQ-MOB-80`). Transient drops under a few seconds do not flash UI. |
+| REQ-AND-SYNC-30 | The client's dealings with the server are surfaced by one small indicator in the top app bar's action row, in a slot it holds in every state, so no status change moves the content column. It has four states: idle (a faint dot), an interaction in flight (a pulsing dot while a sync or an outbox drain runs), offline (a struck muted ring, described "Offline"), and failed (an accented dot after a refused sync or a refused queue entry). Transient drops under a few seconds do not reach it. Tapping it opens the diagnostics screen (`04-system-integration.md` REQ-AND-SYS-54), which is where the detail lives: no chip, no progress bar and no transient error banner occupies layout space on the message list or the conversation. The Suite's own treatment is a bar under the app bar (`REQ-MOB-80`); the phone diverges because a bar that comes and goes reflows the list under the reader. Undo offers stay snackbars: they are actions, not status. |
 | REQ-AND-SYNC-31 | Background sync (WorkManager) refreshes on a bounded schedule and on FCM wake so the local store is warm when the user opens the app, and drains the outbox under a network constraint so queued mail leaves with the app closed; it respects the platform's battery/doze constraints. A user who force-stops the app suspends this until they open it again, which is the platform's rule for a stopped package, not a client choice. |
 
 ## Out of scope

@@ -60,6 +60,18 @@ the drain phases time out; switch the probe off once per emulator:
     adb shell settings put global captive_portal_detection_enabled 0
     adb shell settings put global captive_portal_mode 0
 
+`StatusIndicatorAcceptanceTest` asserts that the status indicator
+changes state without moving anything (issue #421). It runs in two
+phases around the radios, and the second reads what the first measured
+out of the app's own storage, so the app must not be cleared between
+them:
+
+    #t70 online: measures the list and a row while idle and while a
+         sync runs, and reads the diagnostics screen the dot opens
+    adb shell svc data disable && adb shell svc wifi disable
+    #t71 offline: the same measurements with no connection
+    adb shell svc data enable && adb shell svc wifi enable
+
 `UndoSendAcceptanceTest` runs online and needs no phases.
 `t64` needs the foreign-identity seed, so start the instance with
 `HEROLD_DEV_EXTERNAL_SUBMISSION=1`.
