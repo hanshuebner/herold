@@ -3,6 +3,7 @@ package com.netzhansa.herold.android
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import com.netzhansa.herold.android.diag.CrashRecorder
 import com.netzhansa.herold.android.diag.DiagLog
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -89,7 +90,17 @@ class MainActivity : FragmentActivity() {
     private val launchRequest = MutableStateFlow<LaunchRequest?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
+        // After an abnormal exit the shell opens the inbox: the screen
+        // the app died on is the one that would kill it again, and the
+        // crash record says the last run ended in one (REQ-AND-SYS-52,
+        // issue #420). The saved state carries the navigation back
+        // stack, so dropping it is what re-opens the start destination.
+        val afterCrash = savedInstanceState != null &&
+            runCatching { container.crashRecords.consumeRestoreBlock() }.getOrDefault(false)
+        if (afterCrash) {
+            DiagLog.w(SHELL_TAG, "the last run ended in a crash; opening the inbox instead of restoring")
+        }
+        super.onCreate(if (afterCrash) null else savedInstanceState)
         enableEdgeToEdge()
         launchRequest.value = IntentRouting.resolve(intent)
         setContent {
@@ -438,6 +449,9 @@ fun HeroldApp(
             // is a window with no content and no way back (issue #405).
             // The shell puts the inbox back rather than leaving it.
             val entry by navController.currentBackStackEntryAsState()
+            // The screen a crash record names: the shell's current route,
+            // read by the uncaught-exception handler (issue #420).
+            LaunchedEffect(entry) { CrashRecorder.route = entry?.destination?.route }
             LaunchedEffect(entry) {
                 if (entry != null) return@LaunchedEffect
                 delay(EMPTY_BACK_STACK_GRACE_MS)

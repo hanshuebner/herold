@@ -2,6 +2,7 @@ package com.netzhansa.herold.android
 
 import android.content.Context
 import com.netzhansa.herold.android.diag.DiagLog
+import com.netzhansa.herold.android.diag.CrashStore
 import com.netzhansa.herold.android.diag.PendingReportStore
 import com.netzhansa.herold.shared.actions.CategoryActions
 import com.netzhansa.herold.shared.actions.FilterActions
@@ -199,6 +200,13 @@ class AppContainer(context: Context) {
      * storage so the captures outlive the process (issue #424).
      */
     val pendingBugReport = PendingReportStore(context)
+    /**
+     * The trace of a crash, waiting for the next report to carry it
+     * (issue #420). It also tells the shell that the last run ended
+     * abnormally, which is what keeps a restore off the screen the app
+     * died on.
+     */
+    val crashRecords = CrashStore(context)
 
 
     /**

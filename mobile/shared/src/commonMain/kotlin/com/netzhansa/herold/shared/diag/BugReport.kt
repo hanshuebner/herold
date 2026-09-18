@@ -210,7 +210,19 @@ object BugBundleWriter {
 
     private val json = Json { prettyPrint = true }
 
-    fun build(submission: BugSubmission, capture: BugCapture, createdAtMs: Long): BugBundle {
+    /**
+     * The drop for [submission] and [capture]. [crash] is the trace the
+     * uncaught-exception handler kept from a previous run, when there is
+     * one: it travels as `crash.txt` and as a section of `report.md`, so
+     * a report filed after a crash carries the stack without a cable
+     * (issue #420).
+     */
+    fun build(
+        submission: BugSubmission,
+        capture: BugCapture,
+        createdAtMs: Long,
+        crash: CrashRecord? = null,
+    ): BugBundle {
         val createdAt = Instant.fromEpochMilliseconds(createdAtMs).toString()
         val logs = if (submission.includeLogs) capture.logs else emptyList()
         // A picture is named by the capture it belongs to, so
@@ -221,8 +233,8 @@ object BugBundleWriter {
         } else {
             emptyList()
         }
-        val meta = reportJson(submission, capture, createdAt, logs, pictures.size)
-        val markdown = reportMarkdown(submission, capture, createdAt, logs)
+        val meta = reportJson(submission, capture, createdAt, logs, pictures.size, crash)
+        val markdown = reportMarkdown(submission, capture, createdAt, logs, crash)
 
         val files = mutableListOf(
             BugBundleFile("report.json", "application/json", (json.encodeToString(JsonObject.serializer(), meta) + "\n").encodeToByteArray()),
@@ -231,6 +243,9 @@ object BugBundleWriter {
         )
         pictures.forEach { (index, bytes) ->
             files += BugBundleFile("screenshot-$index.png", "image/png", bytes)
+        }
+        crash?.let {
+            files += BugBundleFile(CrashRecords.FILE, "text/plain", CrashRecords.text(it).encodeToByteArray())
         }
         if (submission.includeSessionDetails && capture.sessionDetails.isNotEmpty()) {
             val private = buildJsonObject {
@@ -282,6 +297,7 @@ object BugBundleWriter {
         createdAt: String,
         logs: List<LogLine>,
         screenshotCount: Int,
+        crash: CrashRecord?,
     ): JsonObject = buildJsonObject {
         put("protocol", PROTOCOL)
         put("createdAt", createdAt)
@@ -334,6 +350,18 @@ object BugBundleWriter {
             }
         }
         put("screenshotCount", screenshotCount)
+        // The crash the previous run ended in, when the report carries
+        // one; the trace itself is `crash.txt` (issue #420).
+        crash?.let { record ->
+            putJsonObject("crash") {
+                put("at", Instant.fromEpochMilliseconds(record.atMs).toString())
+                put("thread", record.threadName)
+                put("exception", record.exception)
+                put("message", record.message)
+                put("route", JsonPrimitive(record.route))
+                put("file", CrashRecords.FILE)
+            }
+        }
     }
 
     /** The version string a ticket's environment line carries. */
@@ -411,6 +439,7 @@ object BugBundleWriter {
         capture: BugCapture,
         createdAt: String,
         logs: List<LogLine>,
+        crash: CrashRecord? = null,
     ): String = buildString {
         if (!submission.descriptionEntered) append(NO_DESCRIPTION).append("\n\n")
         val heading = submission.title.trim().ifBlank {
@@ -475,6 +504,8 @@ object BugBundleWriter {
         capture.accountScope?.let { append("- Account scope: ").append(it).append("\n") }
         capture.threadId?.let { append("- Thread: ").append(it).append("\n") }
         append("\n")
+
+        crash?.let { append(CrashRecords.markdown(it)).append("\n") }
 
         append("## Logs (tail)\n\n")
         val tail = logs.takeLast(MARKDOWN_LOG_TAIL)
