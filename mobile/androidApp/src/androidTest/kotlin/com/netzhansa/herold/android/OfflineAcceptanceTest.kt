@@ -120,14 +120,15 @@ class OfflineAcceptanceTest {
         compose.onNodeWithTag("thread-swipe-${target.threadId}").performTouchInput { swipeRight() }
 
         // The archive applies to the store at once and waits in the
-        // outbox; the chip is what says so (REQ-AND-SYNC-20/30).
+        // outbox; the app bar's dot is what says so (REQ-AND-SYNC-20/30).
         compose.waitUntil(TIMEOUT_MS) {
             runBlocking { !app.container.store.email(target.accountId, target.id)!!.mailboxIds.contains(inboxId) }
         }
         compose.waitUntil(TIMEOUT_MS) {
-            compose.onAllNodesWithTag("connectivity-chip").fetchSemanticsNodes().isNotEmpty()
+            compose.onAllNodesWithTag("status-dot-offline", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
         }
-        compose.onNodeWithTag("connectivity-chip").assertIsDisplayed()
+        compose.onNodeWithTag("status-indicator").assertIsDisplayed()
         compose.captureScreen("11-offline-archive-queued")
 
         val queued = app.container.outbox.list()
