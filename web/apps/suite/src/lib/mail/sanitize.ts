@@ -786,16 +786,32 @@ function relativeLuminanceForComparison([r, g, b]: [number, number, number, numb
 const DEGENERATE_CONTRAST_THRESHOLD = 1.5;
 
 /**
- * True when `colorValue` and `bgValue` (two independently declared,
- * CSSOM-confirmed colors) resolve to practically the same paint color.
- * Colors that either parser cannot resolve, or that carry any
- * transparency (compositing a translucent color against its actual
- * backdrop needs ambient context this detached-fragment pass does not
- * have), are treated as "cannot determine" and never reported as
- * indistinguishable -- see `parseCssColorForComparison`'s doc comment on
- * why an unresolvable value must never cause a strip.
+ * WCAG AA's own minimum contrast ratio for normal-weight text. Used, unlike
+ * `DEGENERATE_CONTRAST_THRESHOLD` above, only when a lone half's effective
+ * counterpart resolves from `readingPaneTheme()` -- i.e. the sender declared
+ * NEITHER half on any ancestor NOR on `<body>`, so there is no authored pair
+ * anywhere in the message to defer to (issue #231's original scenario: a
+ * lone `background-color` on an isolated element, nothing else in the
+ * message says what text color goes on it). In that situation the sender
+ * expressed no legibility intent for this element at all, so the bar for
+ * "leave it as authored" is the same one #231's original fix applied: full
+ * WCAG AA, not merely "not the same color". A lone half that pairs with an
+ * ancestor's or `<body>`'s own declared counterpart (issue #422) still uses
+ * `DEGENERATE_CONTRAST_THRESHOLD` -- the sender DID express an intended
+ * pairing there, and only an actual near-invisible collision overrides it.
  */
-function colorsAreIndistinguishable(colorValue: string, bgValue: string): boolean {
+const WCAG_AA_CONTRAST_THRESHOLD = 4.5;
+
+/**
+ * True when `colorValue` and `bgValue` (two independently declared,
+ * CSSOM-confirmed colors) fail to clear `threshold`. Colors that either
+ * parser cannot resolve, or that carry any transparency (compositing a
+ * translucent color against its actual backdrop needs ambient context this
+ * detached-fragment pass does not have), are treated as "cannot determine"
+ * and never reported as failing -- see `parseCssColorForComparison`'s doc
+ * comment on why an unresolvable value must never cause a strip.
+ */
+function contrastBelowThreshold(colorValue: string, bgValue: string, threshold: number): boolean {
   const c = parseCssColorForComparison(colorValue);
   const b = parseCssColorForComparison(bgValue);
   if (!c || !b) return false;
@@ -803,7 +819,16 @@ function colorsAreIndistinguishable(colorValue: string, bgValue: string): boolea
   const lc = relativeLuminanceForComparison(c);
   const lb = relativeLuminanceForComparison(b);
   const ratio = (Math.max(lc, lb) + 0.05) / (Math.min(lc, lb) + 0.05);
-  return ratio < DEGENERATE_CONTRAST_THRESHOLD;
+  return ratio < threshold;
+}
+
+/**
+ * True when `colorValue` and `bgValue` resolve to practically the same
+ * paint color -- the degenerate-collision check for a pair (same-element,
+ * or lone-half-against-ancestor) the sender DID declare intentionally.
+ */
+function colorsAreIndistinguishable(colorValue: string, bgValue: string): boolean {
+  return contrastBelowThreshold(colorValue, bgValue, DEGENERATE_CONTRAST_THRESHOLD);
 }
 
 /**
@@ -1002,16 +1027,24 @@ function resolvedBodyColorStyle(raw: string): string | null {
  * resolves correctly in one top-down pass, each descendant consulting its
  * ancestors' settled style.
  *
- * A pair (declared on the same element, or a lone half against its
- * resolved ancestor/theme counterpart) is stripped only when
- * `colorsAreIndistinguishable` says the two resolve to practically the
- * same paint color (WCAG contrast ratio below `DEGENERATE_CONTRAST_
- * THRESHOLD`) -- the actual near-invisible-text defect issue #231
- * reported, e.g. `color:red; background-color:currentColor`, or a lone
- * `color:#161616` against a light-theme background that resolves to the
- * same near-black. This check is deliberately conservative: an
- * unresolvable color syntax (`oklch()`, `color-mix()`, ...) or any
- * non-opaque alpha never triggers it, so it can under-detect exotic
+ * A pair declared on the same element, or a lone half resolved against an
+ * ancestor's (or the carried-over `<body>`'s) own declared counterpart, is
+ * stripped only when the two resolve to practically the same paint color
+ * (WCAG contrast ratio below `DEGENERATE_CONTRAST_THRESHOLD`) -- the actual
+ * near-invisible-text defect issue #231 reported, e.g. `color:red;
+ * background-color:currentColor`. A lone half with NO ancestor or `<body>`
+ * counterpart at all -- nothing anywhere in the message says what the other
+ * half should be -- instead falls back to `readingPaneTheme()` and is held
+ * to the stricter `WCAG_AA_CONTRAST_THRESHOLD`, e.g. a lone `color:#161616`
+ * with no declared background anywhere resolves against the light theme's
+ * near-black background and is stripped since it fails WCAG AA, not merely
+ * because it is indistinguishable. This split is what keeps issue #422's
+ * broadened preservation scoped to lone halves the sender actually paired
+ * with something, without reopening #231's original "invisible text with no
+ * pairing intent anywhere" defect. The degenerate-collision check is
+ * deliberately conservative: an unresolvable color syntax (`oklch()`,
+ * `color-mix()`, ...) or any non-opaque alpha never triggers it, so it can
+ * under-detect exotic
  * same-color pairs but can never over-strip a sender's legitimate,
  * merely-low-contrast styling. `currentColor` is never counted as an
  * independently declared half (see `isCurrentColorKeyword`) and is
@@ -1054,13 +1087,27 @@ function sanitizeInlineColorPairs(root: Element): void {
       probe.style.removeProperty('background-color');
       probe.style.removeProperty('background');
     } else if (hasColor && !hasBackground) {
-      const effectiveBackground = resolveEffectiveBackground(el) ?? readingPaneTheme().backgroundColor;
-      if (colorsAreIndistinguishable(probe.style.color, effectiveBackground)) {
+      const ancestorBackground = resolveEffectiveBackground(el);
+      const effectiveBackground = ancestorBackground ?? readingPaneTheme().backgroundColor;
+      // An ancestor (or the carried-over <body> pair) declaring the
+      // counterpart means the sender expressed an intended pairing for
+      // this element -- only a near-invisible collision overrides it
+      // (issue #422). No ancestor/body pair at all means the sender
+      // expressed no legibility intent here, so the bar is full WCAG AA,
+      // matching issue #231's original behaviour for that scenario.
+      const threshold = ancestorBackground !== null
+        ? DEGENERATE_CONTRAST_THRESHOLD
+        : WCAG_AA_CONTRAST_THRESHOLD;
+      if (contrastBelowThreshold(probe.style.color, effectiveBackground, threshold)) {
         probe.style.removeProperty('color');
       }
     } else if (hasBackground && !hasColor) {
-      const effectiveForeground = resolveEffectiveForeground(el) ?? readingPaneTheme().color;
-      if (colorsAreIndistinguishable(effectiveForeground, probe.style.backgroundColor)) {
+      const ancestorForeground = resolveEffectiveForeground(el);
+      const effectiveForeground = ancestorForeground ?? readingPaneTheme().color;
+      const threshold = ancestorForeground !== null
+        ? DEGENERATE_CONTRAST_THRESHOLD
+        : WCAG_AA_CONTRAST_THRESHOLD;
+      if (contrastBelowThreshold(effectiveForeground, probe.style.backgroundColor, threshold)) {
         probe.style.removeProperty('background-color');
         probe.style.removeProperty('background');
       }

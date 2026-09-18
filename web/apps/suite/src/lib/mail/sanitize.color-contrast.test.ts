@@ -42,18 +42,22 @@
  * incomplete, and the parser tokenizes url(...) correctly regardless
  * of what characters its argument contains.
  *
- * Issue #422 broadened the lone-half rule: a lone half is now stripped
- * only when it actually collides (WCAG contrast below sanitize.ts's
- * `DEGENERATE_CONTRAST_THRESHOLD`, mirrored below as `NOT_DEGENERATE`)
- * with its effective inherited counterpart, not unconditionally. Fixtures
- * below that used to get stripped unconditionally and therefore always
- * rendered as `wrapInIframeDocument`'s exact theme pair now assert one of
- * two things depending on whether the fixture's own colors actually
- * collide: exact equality to the theme pair (genuine collisions, e.g. the
- * originally reported near-black-on-near-black case), or merely
- * `assertReadable` (preserved as authored, contrast at or above
- * `NOT_DEGENERATE`) for fixtures that turn out not to collide against the
- * relevant theme's foreground/background.
+ * Issue #422 broadened the lone-half rule, but only for a lone half that
+ * pairs with an ancestor's or the carried-over `<body>`'s own declared
+ * counterpart: that case is now stripped only on an actual collision
+ * (WCAG contrast below sanitize.ts's `DEGENERATE_CONTRAST_THRESHOLD`), not
+ * unconditionally. A lone half with NO ancestor/body counterpart anywhere
+ * in the message -- #231's original scenario, nothing anywhere says what
+ * the other half should be -- keeps #231's original, stricter bar: full
+ * WCAG AA (`sanitize.ts`'s `WCAG_AA_CONTRAST_THRESHOLD`, mirrored below as
+ * `WCAG_AA_MIN_CONTRAST`), so it survives only when it was already legible
+ * on its own, and is otherwise stripped to the theme's own (highly legible)
+ * pair. Every fixture in the "issue #231" describe block below is this
+ * theme-only-fallback case, so `assertReadable` asserts the full AA bar for
+ * them; the "issue #422" describe block's fixtures all declare their
+ * counterpart on an ancestor or `<body>`, so they assert exact equality to
+ * the authored color instead (that pair is preserved verbatim, not merely
+ * "readable").
  *
  * `sanitizeHtml` itself resolves the reading pane's theme via the
  * *ambient* `getComputedStyle(document.documentElement).colorScheme` at
@@ -231,17 +235,19 @@ function effectiveBackground(win: InstanceType<typeof Window>, el: HappyElement)
 }
 
 /**
- * Minimum ratio for this suite's assertions. Mirrors sanitize.ts's own
- * `DEGENERATE_CONTRAST_THRESHOLD` (1.5): since #422, a lone or complete
- * color pair is stripped only when it collides below that bar, so
- * anything the sanitizer chooses to PRESERVE is only ever guaranteed to
- * clear this bar, not full WCAG AA (4.5) -- a sender's own legitimate,
- * merely-low-contrast choice (e.g. `darkred` background with inherited
- * black text, ~1.8:1) is deliberately preserved rather than over-stripped.
- * Anything the sanitizer STRIPS falls back to Herold's own paired theme
- * colors, which clear WCAG AA by a wide margin regardless.
+ * Minimum ratio for the "issue #231" describe block's assertions. Mirrors
+ * sanitize.ts's own `WCAG_AA_CONTRAST_THRESHOLD` (4.5). Every fixture in
+ * that block is a lone half with NO ancestor or `<body>` counterpart
+ * anywhere in the message, so `sanitizeInlineColorPairs` holds it to full
+ * WCAG AA rather than the looser `DEGENERATE_CONTRAST_THRESHOLD` (1.5)
+ * used for a lone half that pairs with an ancestor/`<body>` (issue #422,
+ * asserted separately below with exact-equality checks, not this helper):
+ * a fixture here either was already legible at >= 4.5:1 as authored and
+ * survives untouched, or fails AA and is stripped to Herold's own paired
+ * theme colors, which clear AA by a wide margin -- so in both outcomes the
+ * rendered contrast this helper checks is guaranteed to be at least 4.5:1.
  */
-const NOT_DEGENERATE = 1.5;
+const WCAG_AA_MIN_CONTRAST = 4.5;
 
 function assertReadable(win: InstanceType<typeof Window>, el: HappyElement, label: string) {
   const fg = computedForeground(win, el);
@@ -249,8 +255,8 @@ function assertReadable(win: InstanceType<typeof Window>, el: HappyElement, labe
   const ratio = contrastRatio(fg, bg);
   expect(
     ratio,
-    `${label}: computed color=${win.getComputedStyle(el).color} vs effective background=rgb(${bg[0]},${bg[1]},${bg[2]}) -> contrast ${ratio.toFixed(2)}:1, want >= ${NOT_DEGENERATE}:1`,
-  ).toBeGreaterThanOrEqual(NOT_DEGENERATE);
+    `${label}: computed color=${win.getComputedStyle(el).color} vs effective background=rgb(${bg[0]},${bg[1]},${bg[2]}) -> contrast ${ratio.toFixed(2)}:1, want >= ${WCAG_AA_MIN_CONTRAST}:1`,
+  ).toBeGreaterThanOrEqual(WCAG_AA_MIN_CONTRAST);
 }
 
 // ─── Herold's own paired theme colors (wrapInIframeDocument), for exact
@@ -437,6 +443,24 @@ describe('issue #231 -- resolved paint colors are always readable', () => {
     expect(effectiveBackground(window, el)).toEqual(THEME.light.background);
   });
 
+  // Follow-up to issue #422's own fix: a lone `darkred` background with NO
+  // pair anywhere in the message (no ancestor, no <body>) is a theme-only
+  // fallback -- darkred against the light theme's near-black default text
+  // (#161616) is ~1.6:1, comfortably above `DEGENERATE_CONTRAST_THRESHOLD`
+  // (1.5) but well short of WCAG AA (4.5). An earlier version of this fix
+  // used the degenerate bar for this case too and let darkred survive
+  // un-stripped; the theme-only-fallback path must instead hold to full AA
+  // (#231's original behaviour) and strip it to the theme's own pair.
+  it('a lone darkred background with no pair anywhere is stripped in light theme (theme-only fallback holds WCAG AA)', () => {
+    withTheme('light');
+    const html = '<span style="background-color:darkred">text</span>';
+    const srcdoc = sanitizeHtml(html, { loadImages: false });
+    const { window, document } = renderSrcdoc(srcdoc, 'light');
+    const el = document.querySelector('span')!;
+    expect(parseColor(window.getComputedStyle(el).color)).toEqual(THEME.light.color);
+    expect(effectiveBackground(window, el)).toEqual(THEME.light.background);
+  });
+
   // Issue #422 dark-theme acceptance: a lone half that collides with the
   // DARK theme's own background is still stripped, exactly as the light-
   // theme case above -- the broadened rule only stops stripping colors
@@ -452,10 +476,12 @@ describe('issue #231 -- resolved paint colors are always readable', () => {
     expect(effectiveBackground(window, el)).toEqual(THEME.dark.background);
   });
 
-  // The #1a1111 fixture above collides with the LIGHT theme's near-black
-  // default text color, but not with the DARK theme's near-white default
-  // text color (contrast far above NOT_DEGENERATE) -- issue #422 preserves
-  // it as authored in dark theme instead of discarding it unconditionally.
+  // The #1a1111 fixture above fails WCAG AA against the LIGHT theme's
+  // near-black default text color, but clears it by a wide margin (~17.9:1)
+  // against the DARK theme's near-white default text color -- this
+  // theme-only-fallback lone half is preserved as authored in dark theme
+  // rather than stripped, exactly as #231's original rule intended for an
+  // already-legible color.
   it('a lone background that does NOT collide with the dark theme foreground is preserved, not force-stripped (dark)', () => {
     withTheme('dark');
     const html = '<span style="background-color:#1a1111">text</span>';
@@ -539,5 +565,22 @@ describe('issue #422 -- lone halves that pair with an ancestor background surviv
     const srcdoc = sanitizeHtml('<p style="color:#2671a6">no body tag here</p>', { loadImages: false });
     const body = /<body>([\s\S]*?)<\/body>/.exec(srcdoc)?.[1] ?? '';
     expect(body.trim().startsWith('<p')).toBe(true);
+  });
+
+  // A lone color paired with an ancestor background still uses the looser
+  // `DEGENERATE_CONTRAST_THRESHOLD` (1.5), not the theme-only fallback's
+  // stricter WCAG AA bar (4.5): white text (~3.54:1) on an ancestor's
+  // #888888 cell fails AA but is a real, legible, deliberately-paired
+  // choice, and must survive exactly as authored. This distinguishes the
+  // ancestor-pairing path (#422) from the theme-only-fallback path (#231's
+  // original scenario, see the darkred fixture in the "issue #231" block
+  // above) -- the two must not collapse onto the same threshold.
+  it('a lone color on an ancestor-provided grey background below WCAG AA but above degenerate survives', () => {
+    withTheme('light');
+    const html = '<table><tr><td style="background-color:#888888"><span style="color:#ffffff">text</span></td></tr></table>';
+    const srcdoc = sanitizeHtml(html, { loadImages: false });
+    const { window, document } = renderSrcdoc(srcdoc, 'light');
+    const el = document.querySelector('span')!;
+    expect(parseColor(window.getComputedStyle(el).color)).toEqual([255, 255, 255, 1]);
   });
 });
