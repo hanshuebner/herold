@@ -12,12 +12,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strconv"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/hanshuebner/herold/internal/cliout"
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/store"
 )
 
 func newIMAPImportCmd() *cobra.Command {
@@ -27,8 +29,98 @@ func newIMAPImportCmd() *cobra.Command {
 	}
 	c.AddCommand(newIMAPImportStatusCmd())
 	c.AddCommand(newIMAPImportRepairOrphansCmd())
+	c.AddCommand(newIMAPImportRestoreArchiveCmd())
 	c.AddCommand(newIMAPImportOwnAddressesCmd())
 	return c
+}
+
+// newIMAPImportRestoreArchiveCmd builds `herold imapimport restore-archive`
+// (re #376, second round), a store-backed maintenance command (opens the
+// store from --system-config, no admin server needed) that moves explicitly
+// named messages from INBOX back to Archive, forcing $seen on the resulting
+// membership. See imapimport_repair_archive.go for the row-level semantics
+// and why the affected message ids must be named explicitly rather than
+// discovered by a heuristic scan.
+func newIMAPImportRestoreArchiveCmd() *cobra.Command {
+	var dryRun bool
+	var messageIDs []string
+	c := &cobra.Command{
+		Use:   "restore-archive <email-or-id> --message <id> [--message <id> ...]",
+		Short: "move named messages from INBOX back to Archive, marking them seen (re #376)",
+		Long: `Reverses the "principal-sent or already-archived message resurfaced in
+Inbox" symptom (issue #376) for the explicitly named message ids: each
+message currently a member of INBOX gets an Archive membership (the
+principal's Archive mailbox is created if it does not yet exist), that
+membership is forced $seen, and the INBOX membership is removed. A message
+with no INBOX membership is left untouched and reported as
+"already-archived" -- safe to re-run.
+
+This does not restore imapimport_message_state / provenance-label history;
+it only repairs the mailbox membership and $seen state, the same scope as
+imapimport repair-orphans. --dry-run reports the intended action per message
+without writing anything.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(messageIDs) == 0 {
+				return fmt.Errorf("at least one --message <id> is required")
+			}
+			ids := make([]store.MessageID, 0, len(messageIDs))
+			for _, s := range messageIDs {
+				n, err := strconv.ParseUint(s, 10, 64)
+				if err != nil {
+					return fmt.Errorf("--message %q: not a numeric message id: %w", s, err)
+				}
+				ids = append(ids, store.MessageID(n))
+			}
+
+			g := globals(cmd.Context())
+			cfg, err := requireConfig(g)
+			if err != nil {
+				return err
+			}
+			ctx := cmd.Context()
+			st, err := openStore(ctx, cfg, discardLogger(), clock.NewReal())
+			if err != nil {
+				return err
+			}
+			defer st.Close()
+
+			p, err := resolveStorePrincipal(ctx, st, args[0])
+			if err != nil {
+				return err
+			}
+
+			results, err := restoreIMAPImportArchive(ctx, st, p.ID, ids, dryRun)
+			if err != nil {
+				return err
+			}
+			if g.jsonOut {
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetIndent("", "  ")
+				return enc.Encode(struct {
+					Mode    string                           `json:"mode"`
+					Results []IMAPImportRestoreArchiveResult `json:"results"`
+				}{Mode: modeString(dryRun), Results: results})
+			}
+			if !g.quiet {
+				fmt.Fprintf(cmd.ErrOrStderr(), "restore-archive: done (%s)\n", modeString(dryRun))
+				fmt.Fprint(cmd.OutOrStdout(), formatIMAPImportRestoreArchiveResults(results))
+			}
+			return nil
+		},
+	}
+	c.Flags().BoolVar(&dryRun, "dry-run", false, "report the intended action per message without writing anything")
+	c.Flags().StringArrayVar(&messageIDs, "message", nil, "message id to repair (repeatable)")
+	return c
+}
+
+// modeString mirrors emitIMAPImportRepairOrphansSummary's dry-run/apply
+// convention for restore-archive's own output.
+func modeString(dryRun bool) string {
+	if dryRun {
+		return "dry-run"
+	}
+	return "apply"
 }
 
 // newIMAPImportRepairOrphansCmd builds `herold imapimport repair-orphans`

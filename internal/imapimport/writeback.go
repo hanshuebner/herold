@@ -525,19 +525,30 @@ func (w *accountWorker) pushFlagsToUpstream(ctx context.Context, conn Conn, ms s
 // upstream-only-changed paths. REQ-IMAP-IMP-42.
 //
 // Returns the synced-flags value actually applied, which the caller must
-// record as LastSyncedFlags: a message in the \Sent-role mailbox never has
-// its $seen cleared by an upstream reconcile (re #316, own-sent mail has no
-// "unread from a correspondent" meaning; herold's $seen is authoritative for
-// it), so the effective value can diverge from the raw upstreamSynced the
-// caller fetched. Recording anything other than the effective value would
+// record as LastSyncedFlags: a message the principal sent never has its
+// $seen cleared by an upstream reconcile, on ANY of its memberships (re
+// #316, extended to every membership and every importer path in #376's
+// second round -- own-sent mail has no "unread from a correspondent"
+// meaning; herold's $seen is authoritative for it), so the effective value
+// can diverge from the raw upstreamSynced the caller fetched. Recording
+// anything other than the effective value for the addressed membership would
 // reintroduce the durability bug: the next reconcile would see herold's
-// forced $seen as a spurious conflict against a stale upstream-only
-// baseline and clear it right back.
+// forced $seen as a spurious conflict against a stale upstream-only baseline
+// and clear it right back.
 func (w *accountWorker) applyUpstreamFlagsToHerold(ctx context.Context, ms store.IMAPImportMessageState, upstreamSynced store.IMAPImportSyncedFlags, heroldMsg store.Message) store.IMAPImportSyncedFlags {
 	log := w.opts.log
 	account := w.opts.account
+	principalID := store.PrincipalID(account.PrincipalID)
 
-	if mb, mbErr := w.opts.store.Meta().GetMailboxByID(ctx, ms.HeroldMailboxID); mbErr == nil && mb.Attributes&store.MailboxAttrSent != 0 {
+	// The first round of #316/#376 scoped the $seen exclusion to "the
+	// membership named by this state row lives in a \Sent-role mailbox",
+	// which left every OTHER membership of the same message (a dedup-added
+	// INBOX copy, the provenance label) exposed to exactly the durability
+	// bug the original #316 fix closed for Sent. Scope it to the message
+	// instead: any current membership in a \Sent-role mailbox, or a From
+	// naming one of the principal's own identities.
+	principalSent := w.messageIsPrincipalSent(ctx, principalID, heroldMsg)
+	if principalSent {
 		upstreamSynced |= store.IMAPImportFlagSeen
 	}
 
@@ -554,45 +565,78 @@ func (w *accountWorker) applyUpstreamFlagsToHerold(ctx context.Context, ms store
 		flagClear |= store.MessageFlagFlagged
 	}
 
-	// Nothing to do when both herold-now and upstream agree (no-op delta).
-	if flagAdd == 0 && flagClear == 0 {
-		return upstreamSynced
-	}
-	// Compute actual delta against herold-current flags to avoid spurious writes.
-	currentSeen := heroldMsg.Flags&store.MessageFlagSeen != 0
-	currentFlagged := heroldMsg.Flags&store.MessageFlagFlagged != 0
-	desiredSeen := upstreamSynced.HasSeen()
-	desiredFlagged := upstreamSynced.HasFlagged()
-
-	var realAdd, realClear store.MessageFlags
-	if desiredSeen && !currentSeen {
-		realAdd |= store.MessageFlagSeen
-	} else if !desiredSeen && currentSeen {
-		realClear |= store.MessageFlagSeen
-	}
-	if desiredFlagged && !currentFlagged {
-		realAdd |= store.MessageFlagFlagged
-	} else if !desiredFlagged && currentFlagged {
-		realClear |= store.MessageFlagFlagged
-	}
-	if realAdd == 0 && realClear == 0 {
-		return upstreamSynced
+	// The membership this state row addresses: ms.HeroldMailboxID when the
+	// message still carries it (the common case), else the representative
+	// membership GetMessage returned (heroldMsg.MailboxID/Flags) as a
+	// fallback for a state row whose membership has since moved.
+	targetMailboxID := heroldMsg.MailboxID
+	currentFlags := heroldMsg.Flags
+	for _, mm := range heroldMsg.Mailboxes {
+		if mm.MailboxID == ms.HeroldMailboxID {
+			targetMailboxID = mm.MailboxID
+			currentFlags = mm.Flags
+			break
+		}
 	}
 
-	if _, err := w.opts.store.Meta().UpdateMessageFlags(
-		ctx,
-		heroldMsg.ID,
-		heroldMsg.MailboxID,
-		realAdd, realClear,
-		nil, nil,
-		0, // no UNCHANGEDSINCE constraint
-	); err != nil {
-		log.Warn("imapimport: write-back: UpdateMessageFlags (herold) failed",
-			slog.String("account_id", account.ID),
-			slog.Uint64("msg_id", uint64(heroldMsg.ID)),
-			slog.String("error", err.Error()),
-		)
+	if flagAdd != 0 || flagClear != 0 {
+		// Compute actual delta against herold-current flags to avoid
+		// spurious writes.
+		currentSeen := currentFlags&store.MessageFlagSeen != 0
+		currentFlagged := currentFlags&store.MessageFlagFlagged != 0
+		desiredSeen := upstreamSynced.HasSeen()
+		desiredFlagged := upstreamSynced.HasFlagged()
+
+		var realAdd, realClear store.MessageFlags
+		if desiredSeen && !currentSeen {
+			realAdd |= store.MessageFlagSeen
+		} else if !desiredSeen && currentSeen {
+			realClear |= store.MessageFlagSeen
+		}
+		if desiredFlagged && !currentFlagged {
+			realAdd |= store.MessageFlagFlagged
+		} else if !desiredFlagged && currentFlagged {
+			realClear |= store.MessageFlagFlagged
+		}
+		if realAdd != 0 || realClear != 0 {
+			if _, err := w.opts.store.Meta().UpdateMessageFlags(
+				ctx,
+				heroldMsg.ID,
+				targetMailboxID,
+				realAdd, realClear,
+				nil, nil,
+				0, // no UNCHANGEDSINCE constraint
+			); err != nil {
+				log.Warn("imapimport: write-back: UpdateMessageFlags (herold) failed",
+					slog.String("account_id", account.ID),
+					slog.Uint64("msg_id", uint64(heroldMsg.ID)),
+					slog.String("error", err.Error()),
+				)
+			}
+		}
 	}
+
+	if principalSent {
+		// Sweep every OTHER current membership too: none of them may lose
+		// $seen either, regardless of which specific state row triggered
+		// this reconcile (re #376, second round).
+		for _, mm := range heroldMsg.Mailboxes {
+			if mm.MailboxID == targetMailboxID || mm.Flags&store.MessageFlagSeen != 0 {
+				continue
+			}
+			if _, err := w.opts.store.Meta().UpdateMessageFlags(
+				ctx, heroldMsg.ID, mm.MailboxID, store.MessageFlagSeen, 0, nil, nil, 0,
+			); err != nil {
+				log.Warn("imapimport: write-back: failed to force $seen on principal-sent membership",
+					slog.String("account_id", account.ID),
+					slog.Uint64("msg_id", uint64(heroldMsg.ID)),
+					slog.Uint64("mailbox_id", uint64(mm.MailboxID)),
+					slog.String("error", err.Error()),
+				)
+			}
+		}
+	}
+
 	return upstreamSynced
 }
 

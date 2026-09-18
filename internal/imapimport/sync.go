@@ -908,38 +908,49 @@ func (w *accountWorker) placeExistingMessage(
 	// principalSent is true for a dedup hit that is a copy of a message the
 	// principal sent: `existing` already carries a \Sent-role membership, or
 	// the dedup-hit message's From names one of the principal's own
-	// identities (canonical address or a JMAP send-as identity). Gates both
-	// the Archive-wins placement below and the forced-$seen membership
-	// further down (re #376).
+	// identities (canonical address or a JMAP send-as identity). Gates the
+	// forced-$seen membership below (re #376).
 	principalSent := w.dedupHitIsPrincipalSent(ctx, principalID, existing, msg, attrs)
 
-	// Archive-wins precedence (re #376): once the principal has filed a
-	// thread in Archive (Send + Archive), a copy of their own sent reply
-	// arriving later through IMAP import -- routed back into the upstream
-	// account's INBOX by a Cc that loops through it -- must not resurface
-	// the thread in Inbox. Mirrors the Junk-wins check above: runs before
-	// any membership is touched, and reports the existing Archive
-	// membership so fetchAndIngest still records a message_state row
-	// addressable by (folder, uid), same as the Junk case (re #319).
+	// Archive-wins precedence (re #376, generalised in the second round): an
+	// INBOX-mapped placement is redirected to Archive, never dropped,
+	// whenever the message or its thread is already filed away. Two
+	// conditions, either sufficient, evaluated before any membership is
+	// touched:
 	//
-	// Scoped to principalSent (unlike the Junk-wins check above): a message
-	// that genuinely lives in two upstream folders at once -- e.g. the
-	// account's own Archive and INBOX both hold a copy, independent of any
-	// herold-side action -- gets both herold memberships by design (the
-	// multi-mailbox dedup placement this function implements); only the
-	// principal's-own-sent-mail case has "was already filed away" semantics
-	// strong enough to suppress the INBOX placement (re #376, re #377).
-	if targetMB.Attributes&store.MailboxAttrInbox != 0 && principalSent {
-		for _, mm := range existing.Mailboxes {
-			if attrs[mm.MailboxID]&store.MailboxAttrArchive != 0 {
-				return false, existing.ID, mm.MailboxID, errINBOXSuppressedByArchive
+	//  a) `existing` already carries an Archive membership -- the
+	//     Cc-duplicate of an incoming message that was archived between two
+	//     import passes. Nothing new needs adding; the caller records a
+	//     state row addressing the real placement, same as the Junk-wins
+	//     case (re #319).
+	//  b) `existing`'s thread has an Archive member and, as of this
+	//     placement, no member of the thread carries an Inbox membership --
+	//     a reply sent with plain Send (no Send+Archive) from an already-
+	//     archived thread: the reply itself is Sent-only, but the thread it
+	//     replies to lives in Archive. The redirected membership has to be
+	//     CREATED here, since the thread's Archive member is a different
+	//     message, not `existing`.
+	//
+	// Unlike the first round, this no longer requires principalSent: an
+	// incoming message's own Cc-duplicate dedup hit is not principal-sent,
+	// but still must not resurface an already-archived message or thread.
+	effectiveTargetMB := targetMB
+	suppressedByArchive := false
+	if targetMB.Attributes&store.MailboxAttrInbox != 0 {
+		if archMB, ok := existingArchiveMembership(existing, attrs); ok {
+			return false, existing.ID, archMB, errINBOXSuppressedByArchive
+		}
+		if archMBID, ok := w.threadHasArchiveNoInbox(ctx, principalID, existing, attrs); ok {
+			if archMB, mbErr := w.opts.store.Meta().GetMailboxByID(ctx, archMBID); mbErr == nil {
+				effectiveTargetMB = archMB
+				suppressedByArchive = true
 			}
 		}
 	}
 
 	alreadyMember := false
 	for _, mm := range existing.Mailboxes {
-		if mm.MailboxID == targetMB.ID {
+		if mm.MailboxID == effectiveTargetMB.ID {
 			alreadyMember = true
 			break
 		}
@@ -949,9 +960,9 @@ func (w *accountWorker) placeExistingMessage(
 		// Add the membership. Idempotent per AddMessageToMailbox's ErrConflict
 		// guard — a concurrent ingest of the same message into the same
 		// mailbox loses the race harmlessly.
-		if _, _, addErr := w.opts.store.Meta().AddMessageToMailbox(ctx, existing.ID, targetMB.ID); addErr != nil {
+		if _, _, addErr := w.opts.store.Meta().AddMessageToMailbox(ctx, existing.ID, effectiveTargetMB.ID); addErr != nil {
 			if !errors.Is(addErr, store.ErrConflict) {
-				return false, existing.ID, targetMB.ID, fmt.Errorf("imapimport: AddMessageToMailbox (dedup): %w", addErr)
+				return false, existing.ID, effectiveTargetMB.ID, fmt.Errorf("imapimport: AddMessageToMailbox (dedup): %w", addErr)
 			}
 			// ErrConflict: another path already added it; not a new member here.
 		} else {
@@ -966,14 +977,14 @@ func (w *accountWorker) placeExistingMessage(
 		// forces it on a fresh \Sent-role insert (re #316) -- this extends
 		// that rule from the insert-time membership to every membership a
 		// later dedup hit adds.
-		if _, uerr := w.opts.store.Meta().UpdateMessageFlags(ctx, existing.ID, targetMB.ID, store.MessageFlagSeen, 0, nil, nil, 0); uerr != nil {
+		if _, uerr := w.opts.store.Meta().UpdateMessageFlags(ctx, existing.ID, effectiveTargetMB.ID, store.MessageFlagSeen, 0, nil, nil, 0); uerr != nil {
 			w.opts.log.Warn("imapimport: failed to force $seen on principal-sent dedup membership",
 				slog.String("account_id", w.opts.account.ID),
 				slog.String("error", uerr.Error()))
 		}
 	}
 
-	if targetMB.Attributes&store.MailboxAttrJunk != 0 {
+	if effectiveTargetMB.Attributes&store.MailboxAttrJunk != 0 {
 		// Placing into Junk: strip any INBOX membership this message already
 		// carries from an earlier sync pass. The Junk membership added above
 		// (or already present) guarantees the message is never left with
@@ -981,9 +992,89 @@ func (w *accountWorker) placeExistingMessage(
 		w.stripInboxMembershipsForJunk(ctx, principalID, existing)
 	}
 
+	if suppressedByArchive {
+		// Same contract as errINBOXSuppressedByJunk: the caller records a
+		// state row for this folder pointing at the real (Archive)
+		// placement, with the nominal INBOX target recorded separately as
+		// MappedMailboxID (re #319).
+		return isNewMember, existing.ID, effectiveTargetMB.ID, errINBOXSuppressedByArchive
+	}
+
 	// Membership created now (or already in place): the caller decides
 	// whether to categorise based on isNewMember and heroldMailbox == INBOX.
-	return isNewMember, existing.ID, targetMB.ID, nil
+	return isNewMember, existing.ID, effectiveTargetMB.ID, nil
+}
+
+// existingArchiveMembership reports whether existing already carries a
+// membership in an Archive-attributed mailbox, returning that mailbox's ID.
+// Archive-wins condition (a), re #376.
+func existingArchiveMembership(existing store.Message, attrs map[store.MailboxID]store.MailboxAttributes) (store.MailboxID, bool) {
+	for _, mm := range existing.Mailboxes {
+		if attrs[mm.MailboxID]&store.MailboxAttrArchive != 0 {
+			return mm.MailboxID, true
+		}
+	}
+	return 0, false
+}
+
+// threadHasArchiveNoInbox reports whether existing's thread already has a
+// member filed in an Archive-attributed mailbox and, as of this placement, no
+// member of the thread carries an Inbox membership. Returns the Archive
+// mailbox ID found. Archive-wins condition (b), re #376 (second round): a
+// reply sent with plain Send from an archived thread is itself Sent-only, so
+// condition (a) above never fires for it, but its thread already lives in
+// Archive and must stay there.
+//
+// A message not yet threaded (ThreadID == 0) is looked up by its own
+// MessageID as the thread key, mirroring how JMAP Thread/get and render.go
+// treat an un-threaded message as a singleton thread.
+func (w *accountWorker) threadHasArchiveNoInbox(
+	ctx context.Context,
+	principalID store.PrincipalID,
+	existing store.Message,
+	attrs map[store.MailboxID]store.MailboxAttributes,
+) (store.MailboxID, bool) {
+	key := existing.ThreadID
+	if key == 0 {
+		key = uint64(existing.ID)
+	}
+	rows, err := w.opts.store.Meta().ListThreadsByKeys(ctx, principalID, []uint64{key})
+	if err != nil || len(rows[key]) == 0 {
+		return 0, false
+	}
+
+	var archiveMB store.MailboxID
+	scan := func(mms []store.MessageMailbox) (hasInbox bool) {
+		for _, mm := range mms {
+			if archiveMB == 0 && attrs[mm.MailboxID]&store.MailboxAttrArchive != 0 {
+				archiveMB = mm.MailboxID
+			}
+			if attrs[mm.MailboxID]&store.MailboxAttrInbox != 0 {
+				hasInbox = true
+			}
+		}
+		return hasInbox
+	}
+
+	if scan(existing.Mailboxes) {
+		return 0, false
+	}
+	for _, tm := range rows[key] {
+		if tm.MessageID == existing.ID {
+			continue
+		}
+		m, gerr := w.opts.store.Meta().GetMessage(ctx, tm.MessageID)
+		if gerr != nil {
+			continue
+		}
+		if scan(m.Mailboxes) {
+			return 0, false
+		}
+	}
+	if archiveMB == 0 {
+		return 0, false
+	}
+	return archiveMB, true
 }
 
 // dedupHitIsPrincipalSent reports whether a Message-ID/blob-hash dedup hit
@@ -1024,6 +1115,43 @@ func (w *accountWorker) dedupHitIsPrincipalSent(
 	return false
 }
 
+// messageIsPrincipalSent reports whether heroldMsg -- a message already
+// resolved from the store, with its current mailbox memberships and cached
+// envelope -- is a message the principal sent: any of its current
+// memberships is in a \Sent-role mailbox, or its stored From envelope names
+// one of the principal's own identities. Used by the down-sync and
+// write-back flag reconcile (applyUpstreamFlagsToHerold) to decide whether an
+// upstream-authoritative \Seen change may ever clear $seen on the message
+// (re #376, second round) -- the placement-time equivalent for a
+// freshly-refetched dedup hit is dedupHitIsPrincipalSent, which takes the
+// re-parsed mailparse.Message instead of the stored Envelope.
+func (w *accountWorker) messageIsPrincipalSent(ctx context.Context, principalID store.PrincipalID, heroldMsg store.Message) bool {
+	attrs := w.mailboxAttrByID(ctx, principalID)
+	for _, mm := range heroldMsg.Mailboxes {
+		if attrs[mm.MailboxID]&store.MailboxAttrSent != 0 {
+			return true
+		}
+	}
+	from := strings.TrimSpace(heroldMsg.Envelope.From)
+	if from == "" {
+		return false
+	}
+	identities := w.principalIdentityEmails(ctx, principalID)
+	if len(identities) == 0 {
+		return false
+	}
+	addrs, err := mail.ParseAddressList(from)
+	if err != nil {
+		return false
+	}
+	for _, a := range addrs {
+		if _, ok := identities[strings.ToLower(strings.TrimSpace(a.Address))]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 // principalIdentityEmails returns the lower-cased set of addresses that
 // count as "the principal's own identity" for dedupHitIsPrincipalSent: the
 // principal's canonical address plus every JMAP send-as identity's Email.
@@ -1054,11 +1182,12 @@ func (w *accountWorker) principalIdentityEmails(ctx context.Context, principalID
 var errINBOXSuppressedByJunk = errors.New("imapimport: inbox membership suppressed by junk precedence")
 
 // errINBOXSuppressedByArchive is returned by placeExistingMessage when an
-// INBOX-mapped folder placement is suppressed because the dedup hit is a
-// copy of a message the principal sent and already filed in Archive
-// (re #376). Not a failure: the caller treats it as a benign skip, same as
-// errINBOXSuppressedByJunk.
-var errINBOXSuppressedByArchive = errors.New("imapimport: inbox membership suppressed by archive precedence (own sent copy)")
+// INBOX-mapped folder placement is redirected into Archive instead: the
+// dedup hit already carries an Archive membership, or its thread has an
+// Archive member and no Inbox member at placement time (re #376, generalised
+// beyond principal-sent copies in the second round). Not a failure: the
+// caller treats it as a benign skip, same as errINBOXSuppressedByJunk.
+var errINBOXSuppressedByArchive = errors.New("imapimport: inbox membership suppressed by archive precedence")
 
 // mailboxAttrByID returns a MailboxID -> Attributes map for every mailbox
 // owned by pid, for callers that need to classify several

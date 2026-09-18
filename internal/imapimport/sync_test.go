@@ -55,6 +55,24 @@ func buildRFC822(msgID, subject string, date time.Time) []byte {
 	return b.Bytes()
 }
 
+// buildRFC822WithInReplyTo is buildRFC822 plus an In-Reply-To header, so the
+// store's threading logic (References/In-Reply-To ancestry, storesqlite and
+// storepg InsertMessage) joins the returned message into the same thread as
+// the message identified by inReplyToMsgID.
+func buildRFC822WithInReplyTo(msgID, subject string, date time.Time, inReplyToMsgID string) []byte {
+	var b bytes.Buffer
+	fmt.Fprintf(&b, "Message-ID: <%s>\r\n", msgID)
+	fmt.Fprintf(&b, "In-Reply-To: <%s>\r\n", inReplyToMsgID)
+	fmt.Fprintf(&b, "Subject: %s\r\n", subject)
+	fmt.Fprintf(&b, "From: sender@example.test\r\n")
+	fmt.Fprintf(&b, "To: recipient@example.test\r\n")
+	fmt.Fprintf(&b, "Date: %s\r\n", date.Format("Mon, 02 Jan 2006 15:04:05 -0700"))
+	fmt.Fprintf(&b, "Content-Type: text/plain; charset=utf-8\r\n")
+	fmt.Fprintf(&b, "\r\n")
+	fmt.Fprintf(&b, "body of %s\r\n", subject)
+	return b.Bytes()
+}
+
 // appendToServer uses IMAP APPEND to add a message to the given mailbox on
 // the in-process test server. Returns the assigned UID.
 func appendToServer(t *testing.T, ts *testIMAPServer, user, password, mailbox string, raw []byte, flags []imap.Flag, internalDate time.Time) imap.UID {
@@ -1467,6 +1485,249 @@ func TestDedupHitOnArchivedSentCopySkipsInbox(t *testing.T) {
 			}
 			archiveMB := getMailboxID(t, ha.Store, acc.PrincipalID, "Archive")
 			inboxMB := getMailboxID(t, ha.Store, acc.PrincipalID, "INBOX")
+			if ms.HeroldMailboxID != archiveMB {
+				t.Errorf("HeroldMailboxID = %d; want %d (Archive, the message's real placement)", ms.HeroldMailboxID, archiveMB)
+			}
+			if ms.MappedMailboxID != inboxMB {
+				t.Errorf("MappedMailboxID = %d; want %d (the suppressed INBOX target)", ms.MappedMailboxID, inboxMB)
+			}
+		})
+	}
+}
+
+// TestReplyPlainSendFromArchivedThreadNoInboxResurface reproduces the
+// maintainer's second-round hand-back of #376 (comment 5083, required
+// outcome 3a): a reply sent with plain Send (no Send+Archive) from a thread
+// whose earlier message already lives in Archive must not resurface the
+// thread in Inbox when the reply's own Cc loops it back into the upstream
+// INBOX -- and a later down-sync pass that still observes the upstream copy
+// unseen must not create the membership either. Before the fix, Archive-wins
+// (errINBOXSuppressedByArchive) only fired when `existing` itself already
+// carried an Archive membership; a reply that is Sent-only, with only its
+// THREAD filed in Archive, was not covered.
+func TestReplyPlainSendFromArchivedThreadNoInboxResurface(t *testing.T) {
+	for _, be := range ownSentDedupBackends(t) {
+		t.Run(be.name, func(t *testing.T) {
+			ts := startTestIMAPServer(t)
+			u := ts.addUser("u25", "pw")
+			if err := u.Create("Sent", nil); err != nil {
+				t.Fatalf("Create Sent: %v", err)
+			}
+			if err := u.Create("Archive", nil); err != nil {
+				t.Fatalf("Create Archive: %v", err)
+			}
+
+			ha, _ := testharness.Start(t, testharness.Options{Store: be.st, Clock: be.clk})
+			acc := makeAccountWithFloor(t, ha.Store, ts, accountCfg{
+				email:               "u25@example.test",
+				username:            "u25",
+				credentialPlaintext: "pw",
+			}, nil)
+
+			// Phase 1: the original incoming message already lives in Archive
+			// upstream (an earlier thread the principal filed away).
+			d1 := time.Date(2025, 9, 18, 13, 32, 0, 0, time.UTC)
+			incomingRaw := buildRFC822("incoming-thread-376@test", "Original Thread", d1)
+			appendToServer(t, ts, "u25", "pw", "Archive", incomingRaw, nil, d1)
+			if err := runSyncOnce(t, ha, ts, acc, nil); err != nil {
+				t.Fatalf("first sync: %v", err)
+			}
+
+			// Phase 2: the principal replies with plain Send (the reply lands
+			// in Sent only, never in Archive itself) -- In-Reply-To threads it
+			// to the archived incoming message.
+			d2 := time.Date(2025, 9, 18, 19, 51, 0, 0, time.UTC)
+			replyRaw := buildRFC822WithInReplyTo("own-reply-thread-376@test", "Re: Original Thread", d2, "incoming-thread-376@test")
+			appendToServer(t, ts, "u25", "pw", "Sent", replyRaw, nil, d2)
+			if err := runSyncOnce(t, ha, ts, acc, nil); err != nil {
+				t.Fatalf("second sync: %v", err)
+			}
+
+			ctx := context.Background()
+			incomingMsg, err := ha.Store.Meta().GetMessageByMessageIDHeader(ctx, acc.PrincipalID, "incoming-thread-376@test")
+			if err != nil {
+				t.Fatalf("GetMessageByMessageIDHeader (incoming): %v", err)
+			}
+			replyMsg, err := ha.Store.Meta().GetMessageByMessageIDHeader(ctx, acc.PrincipalID, "own-reply-thread-376@test")
+			if err != nil {
+				t.Fatalf("GetMessageByMessageIDHeader (reply): %v", err)
+			}
+			// Precondition: the reply threaded to the incoming message (else
+			// the thread-level Archive-wins rule this test targets never
+			// engages), and the reply itself carries no Archive membership.
+			replyKey := replyMsg.ThreadID
+			if replyKey == 0 {
+				replyKey = uint64(replyMsg.ID)
+			}
+			incomingKey := incomingMsg.ThreadID
+			if incomingKey == 0 {
+				incomingKey = uint64(incomingMsg.ID)
+			}
+			if replyKey != incomingKey {
+				t.Fatalf("reply and incoming were not threaded together: reply key=%d incoming key=%d", replyKey, incomingKey)
+			}
+			if len(replyMsg.Mailboxes) != 1 {
+				t.Fatalf("precondition: reply should have exactly 1 membership (Sent), got %d: %+v", len(replyMsg.Mailboxes), replyMsg.Mailboxes)
+			}
+
+			// Phase 3: the Cc-routed copy of the reply shows up in upstream
+			// INBOX, unseen -- the production trigger. It must not resurface
+			// the archived thread.
+			inboxUID := appendToServer(t, ts, "u25", "pw", "INBOX", replyRaw, nil, d2)
+			if err := runSyncOnce(t, ha, ts, acc, nil); err != nil {
+				t.Fatalf("third sync: %v", err)
+			}
+
+			checkNoInboxResurface := func(when string) {
+				t.Helper()
+				replyMsg2, err := ha.Store.Meta().GetMessageByMessageIDHeader(ctx, acc.PrincipalID, "own-reply-thread-376@test")
+				if err != nil {
+					t.Fatalf("GetMessageByMessageIDHeader (reply, %s): %v", when, err)
+				}
+				names := messageMailboxNames(t, ha.Store, acc.PrincipalID, replyMsg2)
+				for _, n := range names {
+					if strings.EqualFold(n, "INBOX") {
+						t.Errorf("%s: reply mailboxes = %v; INBOX membership resurfaced the archived thread (re #376)", when, names)
+					}
+				}
+				for _, mm := range replyMsg2.Mailboxes {
+					if mm.Flags&store.MessageFlagSeen == 0 {
+						t.Errorf("%s: reply membership in mailbox %d is not $seen: %+v", when, mm.MailboxID, mm)
+					}
+				}
+				if got := countMailboxMessages(t, ha.Store, acc.PrincipalID, "INBOX"); got != 0 {
+					t.Errorf("%s: herold INBOX has %d messages; want 0 (archive wins for the thread)", when, got)
+				}
+			}
+			checkNoInboxResurface("after third sync")
+
+			ms, found, err := ha.Store.Meta().GetIMAPImportMessageState(ctx, acc.ID, "INBOX", uint32(inboxUID))
+			if err != nil {
+				t.Fatalf("GetIMAPImportMessageState: %v", err)
+			}
+			if !found {
+				t.Fatal("message_state not recorded for the suppressed INBOX placement")
+			}
+			archiveMB := getMailboxID(t, ha.Store, acc.PrincipalID, "Archive")
+			inboxMB := getMailboxID(t, ha.Store, acc.PrincipalID, "INBOX")
+			if ms.HeroldMailboxID != archiveMB {
+				t.Errorf("HeroldMailboxID = %d; want %d (Archive, the reply's real placement)", ms.HeroldMailboxID, archiveMB)
+			}
+			if ms.MappedMailboxID != inboxMB {
+				t.Errorf("MappedMailboxID = %d; want %d (the suppressed INBOX target)", ms.MappedMailboxID, inboxMB)
+			}
+
+			// Phase 4 (the maintainer's specific repro, comment 5083): a
+			// second down-sync pass observes the upstream INBOX copy still
+			// unseen and must not resurface it, nor clear $seen on the
+			// redirected Archive membership.
+			if err := runSyncOnce(t, ha, ts, acc, nil); err != nil {
+				t.Fatalf("fourth sync (second down-sync): %v", err)
+			}
+			checkNoInboxResurface("after fourth sync (second down-sync)")
+		})
+	}
+}
+
+// TestIncomingCcDuplicateArchivedBetweenImportsSkipsInbox reproduces the
+// maintainer's second-round hand-back of #376 (comment 5083, required
+// outcome 3b): an incoming message delivered upstream as two separate copies
+// (To and Cc, matched onto the same herold message by Message-ID dedup) that
+// the principal archives in herold between the two import passes must not
+// have the second copy re-add an INBOX membership. Before the fix,
+// Archive-wins was gated on the message being a copy of the principal's own
+// sent mail; an ordinary incoming message dedup hit was not covered.
+func TestIncomingCcDuplicateArchivedBetweenImportsSkipsInbox(t *testing.T) {
+	for _, be := range ownSentDedupBackends(t) {
+		t.Run(be.name, func(t *testing.T) {
+			ts := startTestIMAPServer(t)
+			u := ts.addUser("u27", "pw")
+			if err := u.Create("Archive", nil); err != nil {
+				t.Fatalf("Create Archive: %v", err)
+			}
+
+			ha, _ := testharness.Start(t, testharness.Options{Store: be.st, Clock: be.clk})
+			acc := makeAccountWithFloor(t, ha.Store, ts, accountCfg{
+				email:               "u27@example.test",
+				username:            "u27",
+				credentialPlaintext: "pw",
+			}, nil)
+
+			d := time.Date(2025, 9, 18, 13, 32, 0, 0, time.UTC)
+			raw := buildRFC822("incoming-cc-dup-376@test", "Incoming With Cc Dup", d)
+
+			// Phase 1: the "To" copy arrives upstream and is mirrored into
+			// herold INBOX as a fresh insert.
+			appendToServer(t, ts, "u27", "pw", "INBOX", raw, nil, d)
+			if err := runSyncOnce(t, ha, ts, acc, nil); err != nil {
+				t.Fatalf("first sync: %v", err)
+			}
+
+			ctx := context.Background()
+			msg, err := ha.Store.Meta().GetMessageByMessageIDHeader(ctx, acc.PrincipalID, "incoming-cc-dup-376@test")
+			if err != nil {
+				t.Fatalf("GetMessageByMessageIDHeader (precondition): %v", err)
+			}
+			if len(msg.Mailboxes) != 1 {
+				t.Fatalf("precondition: want 1 membership (INBOX), got %d: %+v", len(msg.Mailboxes), msg.Mailboxes)
+			}
+
+			// Phase 2: the principal archives the message in herold, between
+			// the two upstream import passes (mirrors the production report's
+			// "archived between the two imports"). The herold Archive mailbox
+			// does not exist yet -- the upstream Archive folder has never
+			// held a message, so no import pass has called ensureMailbox for
+			// it -- so create it directly, the way a real archive action
+			// would via ensureMailbox/InsertMailbox.
+			inboxMB := getMailboxID(t, ha.Store, acc.PrincipalID, "INBOX")
+			archiveMailbox, err := ha.Store.Meta().InsertMailbox(ctx, store.Mailbox{
+				PrincipalID: acc.PrincipalID,
+				Name:        "Archive",
+				Attributes:  store.MailboxAttrArchive,
+			})
+			if err != nil {
+				t.Fatalf("InsertMailbox (Archive): %v", err)
+			}
+			archiveMB := archiveMailbox.ID
+			if _, _, err := ha.Store.Meta().AddMessageToMailbox(ctx, msg.ID, archiveMB); err != nil {
+				t.Fatalf("AddMessageToMailbox (archive): %v", err)
+			}
+			if err := ha.Store.Meta().RemoveMessageFromMailbox(ctx, msg.ID, inboxMB); err != nil {
+				t.Fatalf("RemoveMessageFromMailbox (un-inbox): %v", err)
+			}
+
+			// Phase 3: the "Cc" copy of the same message (identical
+			// Message-ID) arrives upstream in a separate delivery. It must
+			// not re-add INBOX to the now-archived message.
+			ccUID := appendToServer(t, ts, "u27", "pw", "INBOX", raw, nil, d)
+			if err := runSyncOnce(t, ha, ts, acc, nil); err != nil {
+				t.Fatalf("second sync: %v", err)
+			}
+
+			msg2, err := ha.Store.Meta().GetMessageByMessageIDHeader(ctx, acc.PrincipalID, "incoming-cc-dup-376@test")
+			if err != nil {
+				t.Fatalf("GetMessageByMessageIDHeader (after second sync): %v", err)
+			}
+			names := messageMailboxNames(t, ha.Store, acc.PrincipalID, msg2)
+			for _, n := range names {
+				if strings.EqualFold(n, "INBOX") {
+					t.Errorf("message mailboxes = %v; the Cc duplicate re-added INBOX to an already-archived message (re #376)", names)
+				}
+			}
+			if len(names) != 1 {
+				t.Errorf("message mailboxes = %v; want exactly [Archive] (1 membership)", names)
+			}
+			if got := countMailboxMessages(t, ha.Store, acc.PrincipalID, "INBOX"); got != 0 {
+				t.Errorf("herold INBOX has %d messages; want 0 (archive wins over the Cc-duplicate dedup hit)", got)
+			}
+
+			ms, found, err := ha.Store.Meta().GetIMAPImportMessageState(ctx, acc.ID, "INBOX", uint32(ccUID))
+			if err != nil {
+				t.Fatalf("GetIMAPImportMessageState: %v", err)
+			}
+			if !found {
+				t.Fatal("message_state not recorded for the suppressed INBOX placement")
+			}
 			if ms.HeroldMailboxID != archiveMB {
 				t.Errorf("HeroldMailboxID = %d; want %d (Archive, the message's real placement)", ms.HeroldMailboxID, archiveMB)
 			}

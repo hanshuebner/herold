@@ -195,15 +195,19 @@ func TestUpstreamDeletedFlagSkipsImport(t *testing.T) {
 }
 
 // TestUpstreamExpungeDropsMembership verifies mirroring an upstream EXPUNGE:
-// a message mirrored from two folders (INBOX and a plain, non-Junk "Archive"
-// folder — chosen to isolate expunge handling from the junk-wins path) loses
-// only the expunged folder's membership on the next sync; the message and
-// its Archive membership survive because another membership remains.
+// a message mirrored from two folders (INBOX and a plain, no-special-use
+// "Projects" folder — chosen to isolate expunge handling from the
+// junk-wins/archive-wins precedence paths) loses only the expunged folder's
+// membership on the next sync; the message and its Projects membership
+// survive because another membership remains. "Archive" is deliberately not
+// used here: since #376 (second round) it carries wins-over-Inbox precedence
+// like Junk, which would make this scenario collapse to the single-folder
+// case TestArchiveWinsOverInboxUnconditionally covers.
 func TestUpstreamExpungeDropsMembership(t *testing.T) {
 	ts := startTestIMAPServer(t)
 	u := ts.addUser("exp1", "pw")
-	if err := u.Create("Archive", nil); err != nil {
-		t.Fatalf("Create Archive: %v", err)
+	if err := u.Create("Projects", nil); err != nil {
+		t.Fatalf("Create Projects: %v", err)
 	}
 
 	ha, _ := testharness.Start(t, testharness.Options{})
@@ -211,7 +215,7 @@ func TestUpstreamExpungeDropsMembership(t *testing.T) {
 	d := time.Date(2025, 8, 3, 9, 0, 0, 0, time.UTC)
 	raw := buildRFC822("expunge-drop@test", "Expunge Drop", d)
 	inboxUID := appendToServer(t, ts, "exp1", "pw", "INBOX", raw, nil, d)
-	appendToServer(t, ts, "exp1", "pw", "Archive", raw, nil, d)
+	appendToServer(t, ts, "exp1", "pw", "Projects", raw, nil, d)
 
 	acc := makeAccountWithFloor(t, ha.Store, ts, accountCfg{
 		email:               "exp1@example.test",
@@ -229,7 +233,7 @@ func TestUpstreamExpungeDropsMembership(t *testing.T) {
 		t.Fatalf("GetMessageByMessageIDHeader (first sync): %v", err)
 	}
 	if len(msg.Mailboxes) != 2 {
-		t.Fatalf("after first sync: %d memberships; want 2 (INBOX, Archive)", len(msg.Mailboxes))
+		t.Fatalf("after first sync: %d memberships; want 2 (INBOX, Projects)", len(msg.Mailboxes))
 	}
 
 	// Simulate the upstream expunging its INBOX copy, without herold's
@@ -249,14 +253,60 @@ func TestUpstreamExpungeDropsMembership(t *testing.T) {
 		t.Fatalf("GetMessageByMessageIDHeader (post-expunge): %v", err)
 	}
 	names := messageMailboxNames(t, ha.Store, acc.PrincipalID, msg2)
-	if len(names) != 1 || names[0] != "Archive" {
-		t.Errorf("post-expunge mailboxes = %v; want exactly [Archive] (INBOX membership dropped, message kept)", names)
+	if len(names) != 1 || names[0] != "Projects" {
+		t.Errorf("post-expunge mailboxes = %v; want exactly [Projects] (INBOX membership dropped, message kept)", names)
 	}
 
 	if _, found, err := ha.Store.Meta().GetIMAPImportMessageState(ctx, acc.ID, "INBOX", uint32(inboxUID)); err != nil {
 		t.Fatalf("GetIMAPImportMessageState: %v", err)
 	} else if found {
 		t.Error("message_state row still exists for the expunged INBOX UID; want it deleted")
+	}
+}
+
+// TestArchiveWinsOverInboxUnconditionally verifies that, since #376 (second
+// round), Archive-wins over Inbox applies to every dedup hit, not only a
+// copy of a message the principal sent — a message mirrored from both INBOX
+// and Archive ends up in Archive only, mirroring TestJunkWinsOverInboxNoDelete's
+// unconditional Junk-wins assertion.
+func TestArchiveWinsOverInboxUnconditionally(t *testing.T) {
+	ts := startTestIMAPServer(t)
+	u := ts.addUser("aw1", "pw")
+	if err := u.Create("Archive", nil); err != nil {
+		t.Fatalf("Create Archive: %v", err)
+	}
+
+	ha, _ := testharness.Start(t, testharness.Options{})
+
+	d := time.Date(2025, 8, 3, 9, 0, 0, 0, time.UTC)
+	raw := buildRFC822("archivewins-1@test", "Archive Wins", d)
+	appendToServer(t, ts, "aw1", "pw", "INBOX", raw, nil, d)
+	appendToServer(t, ts, "aw1", "pw", "Archive", raw, nil, d)
+
+	acc := makeAccountWithFloor(t, ha.Store, ts, accountCfg{
+		email:               "aw1@example.test",
+		username:            "aw1",
+		credentialPlaintext: "pw",
+	}, nil)
+
+	if err := runSyncOnce(t, ha, ts, acc, nil); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	ctx := context.Background()
+	msg, err := ha.Store.Meta().GetMessageByMessageIDHeader(ctx, acc.PrincipalID, "archivewins-1@test")
+	if err != nil {
+		t.Fatalf("GetMessageByMessageIDHeader: %v", err)
+	}
+	names := messageMailboxNames(t, ha.Store, acc.PrincipalID, msg)
+	if len(names) != 1 || names[0] != "Archive" {
+		t.Errorf("message mailboxes = %v; want exactly [Archive] (archive wins over inbox)", names)
+	}
+	if got := countMailboxMessages(t, ha.Store, acc.PrincipalID, "INBOX"); got != 0 {
+		t.Errorf("herold INBOX has %d messages; want 0 (archive wins)", got)
+	}
+	if got := countMailboxMessages(t, ha.Store, acc.PrincipalID, "Archive"); got != 1 {
+		t.Errorf("herold Archive has %d messages; want 1", got)
 	}
 }
 
@@ -346,13 +396,17 @@ func TestExcludedFolderNoStateRows(t *testing.T) {
 // rows produced go with them -- mirroring the store's normal removal path
 // (the same one afe08c39 uses for an upstream expunge). A message with
 // another surviving membership (Shared, mirrored from both INBOX and
-// Archive) keeps that membership; a message that lived only in the excluded
-// folder (Archive-only) is destroyed.
+// Projects) keeps that membership; a message that lived only in the excluded
+// folder (Projects-only) is destroyed. The excluded folder is a plain,
+// no-special-use "Projects" folder rather than "Archive": since #376 (second
+// round) Archive carries wins-over-Inbox precedence, which would collapse the
+// "shared message keeps two memberships pre-exclusion" precondition this test
+// depends on.
 func TestExcludedFolderCleanupOnBecomingExcluded(t *testing.T) {
 	ts := startTestIMAPServer(t)
 	u := ts.addUser("becl1", "pw")
-	if err := u.Create("Archive", nil); err != nil {
-		t.Fatalf("Create Archive: %v", err)
+	if err := u.Create("Projects", nil); err != nil {
+		t.Fatalf("Create Projects: %v", err)
 	}
 
 	ha, _ := testharness.Start(t, testharness.Options{})
@@ -360,9 +414,9 @@ func TestExcludedFolderCleanupOnBecomingExcluded(t *testing.T) {
 	d := time.Date(2025, 8, 5, 9, 0, 0, 0, time.UTC)
 	rawShared := buildRFC822("becomes-excluded-shared@test", "Shared", d)
 	appendToServer(t, ts, "becl1", "pw", "INBOX", rawShared, nil, d)
-	appendToServer(t, ts, "becl1", "pw", "Archive", rawShared, nil, d)
-	rawOnly := buildRFC822("becomes-excluded-only@test", "Only Archive", d)
-	archiveOnlyUID := appendToServer(t, ts, "becl1", "pw", "Archive", rawOnly, nil, d)
+	appendToServer(t, ts, "becl1", "pw", "Projects", rawShared, nil, d)
+	rawOnly := buildRFC822("becomes-excluded-only@test", "Only Projects", d)
+	projectsOnlyUID := appendToServer(t, ts, "becl1", "pw", "Projects", rawOnly, nil, d)
 
 	acc := makeAccountWithFloor(t, ha.Store, ts, accountCfg{
 		email:               "becl1@example.test",
@@ -378,20 +432,20 @@ func TestExcludedFolderCleanupOnBecomingExcluded(t *testing.T) {
 
 	// Pre-exclusion sanity: the cursor exists and the shared message has two
 	// memberships.
-	if _, found, err := ha.Store.Meta().GetIMAPImportFolderCursor(ctx, acc.ID, "Archive"); err != nil {
+	if _, found, err := ha.Store.Meta().GetIMAPImportFolderCursor(ctx, acc.ID, "Projects"); err != nil {
 		t.Fatalf("GetIMAPImportFolderCursor (pre-exclusion): %v", err)
 	} else if !found {
-		t.Fatal("Archive cursor missing after first sync")
+		t.Fatal("Projects cursor missing after first sync")
 	}
 	sharedMsg, err := ha.Store.Meta().GetMessageByMessageIDHeader(ctx, acc.PrincipalID, "becomes-excluded-shared@test")
 	if err != nil {
 		t.Fatalf("lookup shared message: %v", err)
 	}
 	if len(sharedMsg.Mailboxes) != 2 {
-		t.Fatalf("shared message has %d memberships; want 2 (INBOX, Archive)", len(sharedMsg.Mailboxes))
+		t.Fatalf("shared message has %d memberships; want 2 (INBOX, Projects)", len(sharedMsg.Mailboxes))
 	}
 
-	// Exclude Archive after it was already synced.
+	// Exclude Projects after it was already synced.
 	acc2, err := ha.Store.Meta().UpdateIMAPImportAccount(ctx, store.IMAPImportAccountUpdate{
 		ID:               acc.ID,
 		PrincipalID:      acc.PrincipalID,
@@ -403,7 +457,7 @@ func TestExcludedFolderCleanupOnBecomingExcluded(t *testing.T) {
 		AuthMethod:       acc.AuthMethod,
 		State:            acc.State,
 		DeletePropagates: acc.DeletePropagates,
-		ExcludedFolders:  []string{"Archive"},
+		ExcludedFolders:  []string{"Projects"},
 	})
 	if err != nil {
 		t.Fatalf("UpdateIMAPImportAccount: %v", err)
@@ -413,25 +467,25 @@ func TestExcludedFolderCleanupOnBecomingExcluded(t *testing.T) {
 		t.Fatalf("second sync (post-exclusion): %v", err)
 	}
 
-	// The Archive cursor is gone.
-	if _, found, err := ha.Store.Meta().GetIMAPImportFolderCursor(ctx, acc.ID, "Archive"); err != nil {
+	// The Projects cursor is gone.
+	if _, found, err := ha.Store.Meta().GetIMAPImportFolderCursor(ctx, acc.ID, "Projects"); err != nil {
 		t.Fatalf("GetIMAPImportFolderCursor (post-exclusion): %v", err)
 	} else if found {
-		t.Error("Archive cursor still exists after exclusion; want it removed")
+		t.Error("Projects cursor still exists after exclusion; want it removed")
 	}
 
-	// No message_state rows remain for Archive.
-	states, err := ha.Store.Meta().ListIMAPImportMessageStatesByFolder(ctx, acc.ID, "Archive")
+	// No message_state rows remain for Projects.
+	states, err := ha.Store.Meta().ListIMAPImportMessageStatesByFolder(ctx, acc.ID, "Projects")
 	if err != nil {
 		t.Fatalf("ListIMAPImportMessageStatesByFolder: %v", err)
 	}
 	if len(states) != 0 {
-		t.Errorf("%d message_state rows remain for excluded Archive; want 0", len(states))
+		t.Errorf("%d message_state rows remain for excluded Projects; want 0", len(states))
 	}
-	if _, found, err := ha.Store.Meta().GetIMAPImportMessageState(ctx, acc.ID, "Archive", uint32(archiveOnlyUID)); err != nil {
-		t.Fatalf("GetIMAPImportMessageState (archive-only): %v", err)
+	if _, found, err := ha.Store.Meta().GetIMAPImportMessageState(ctx, acc.ID, "Projects", uint32(projectsOnlyUID)); err != nil {
+		t.Fatalf("GetIMAPImportMessageState (projects-only): %v", err)
 	} else if found {
-		t.Error("message_state row for the Archive-only message still exists; want it deleted")
+		t.Error("message_state row for the Projects-only message still exists; want it deleted")
 	}
 
 	// The shared message survives with its INBOX membership only.
@@ -444,10 +498,10 @@ func TestExcludedFolderCleanupOnBecomingExcluded(t *testing.T) {
 		t.Errorf("shared message mailboxes = %v; want exactly [INBOX]", names)
 	}
 
-	// The Archive-only message is destroyed: no membership survives it.
+	// The Projects-only message is destroyed: no membership survives it.
 	if _, err := ha.Store.Meta().GetMessageByMessageIDHeader(ctx, acc.PrincipalID, "becomes-excluded-only@test"); err == nil {
-		t.Error("Archive-only message still exists after exclusion; want it destroyed")
+		t.Error("Projects-only message still exists after exclusion; want it destroyed")
 	} else if !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("GetMessageByMessageIDHeader (archive-only): unexpected error: %v", err)
+		t.Fatalf("GetMessageByMessageIDHeader (projects-only): unexpected error: %v", err)
 	}
 }
