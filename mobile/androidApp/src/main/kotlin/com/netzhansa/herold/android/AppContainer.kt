@@ -2,6 +2,7 @@ package com.netzhansa.herold.android
 
 import android.content.Context
 import com.netzhansa.herold.android.diag.DiagLog
+import com.netzhansa.herold.android.diag.PendingReportStore
 import com.netzhansa.herold.shared.actions.CategoryActions
 import com.netzhansa.herold.shared.actions.FilterActions
 import com.netzhansa.herold.shared.actions.MailActions
@@ -188,6 +189,12 @@ class AppContainer(context: Context) {
 
     /** The bug reporter's send path: the bug-reports API through the outbox (REQ-AND-SYS-53). */
     val bugReports = BugReportSender(outbox, spool) { System.currentTimeMillis() }
+
+    /**
+     * The report the maintainer is still adding screens to, kept in app
+     * storage so the captures outlive the process (issue #424).
+     */
+    val pendingBugReport = PendingReportStore(context)
 
     /**
      * True while a "Report a problem" or a shake is waiting for the
@@ -460,6 +467,9 @@ class AppContainer(context: Context) {
         unlock.unlocked()
         DiagLog.i(AUTH_TAG, "signed out; the account's local rows are dropped")
         _signInState.value = SignInState.Idle
+        // An unsent report belongs to the account that would have sent
+        // it (REQ-AND-SYS-53), so it goes with the account's rows.
+        pendingBugReport.clear()
         store.clearAll()
     }
 

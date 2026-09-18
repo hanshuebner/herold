@@ -183,6 +183,30 @@ same key drives `bin/herold bug-fetch --server-url <backend-url>
 --dry-run` with `$HEROLD_BUG_REPORTS_KEY`, which is how the posted
 reports are listed from the maintainer's side.
 
+`BugReportMultiCaptureAcceptanceTest` drives a report that carries more
+than one screen (issue #424): a capture on a conversation, "Add another
+capture", a second capture from the inbox added to the open report, and
+one send whose drop carries `screenshot-1.png`, `screenshot-2.png` and
+two `captures[]` entries. Its last check leaves a report open on
+purpose, for the class that follows:
+
+    adb shell am instrument -w -r \
+      -e class com.netzhansa.herold.android.BugReportMultiCaptureAcceptanceTest \
+      -e heroldBaseUrl http://10.0.2.2:<backend-port> \
+      -e heroldSmtpAddr 10.0.2.2:<smtp-port> \
+      -e heroldBugReportsKey "$KEY" \
+      com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+
+    adb shell am kill com.netzhansa.herold.android
+
+    adb shell am instrument -w -r \
+      -e class com.netzhansa.herold.android.BugReportPendingReportSurvivesTest \
+      -e heroldBaseUrl http://10.0.2.2:<backend-port> \
+      com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+
+The second invocation is a cold process, which is what a pending report
+has to survive: the marker it finds comes from app storage alone.
+
 The shake is injected through the emulator console rather than by hand:
 `adb emu` talks to a telnet listener on the host's loopback, which the
 device reaches at `10.0.2.2:5554`, and the listener wants the token in

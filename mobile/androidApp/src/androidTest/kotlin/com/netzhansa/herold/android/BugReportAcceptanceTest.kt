@@ -213,7 +213,7 @@ class BugReportAcceptanceTest {
         // conversation the report is about.
         assertTrue(
             "the sheet shows no screenshot thumbnail",
-            compose.onAllNodesWithTag("bug-thumbnail").fetchSemanticsNodes().isNotEmpty(),
+            compose.onAllNodesWithTag("bug-thumbnail-1").fetchSemanticsNodes().isNotEmpty(),
         )
     }
 

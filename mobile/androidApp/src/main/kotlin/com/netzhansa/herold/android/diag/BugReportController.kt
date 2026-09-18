@@ -11,6 +11,7 @@ import com.netzhansa.herold.android.SessionScope
 import com.netzhansa.herold.shared.compose.ComposeResult
 import com.netzhansa.herold.shared.diag.BugBundleWriter
 import com.netzhansa.herold.shared.diag.BugCapture
+import com.netzhansa.herold.shared.diag.BugShot
 import com.netzhansa.herold.shared.diag.BugSubmission
 import com.netzhansa.herold.shared.diag.DeviceFacts
 import com.netzhansa.herold.shared.diag.OutboxLine
@@ -54,10 +55,16 @@ class BugReportController(private val container: AppContainer) {
         val principal = runCatching { container.tokenStore.principal() }.getOrNull()
 
         return BugCapture(
-            route = route,
-            routeArguments = arguments,
+            shots = listOf(
+                BugShot(
+                    route = route,
+                    routeArguments = arguments,
+                    threadId = arguments["threadId"],
+                    capturedAtMs = System.currentTimeMillis(),
+                    screenshot = shot,
+                ),
+            ),
             accountScope = container.accountScope.value,
-            threadId = arguments["threadId"],
             principal = principal,
             serverUrl = session?.baseUrl,
             accountIds = accounts.map { it.id },
@@ -66,7 +73,6 @@ class BugReportController(private val container: AppContainer) {
             outbox = outboxSummary(queue),
             push = pushFacts(context, registration?.transport),
             logs = DiagLog.ring.lines(),
-            screenshots = listOfNotNull(shot),
             sessionDetails = sessionDetails(session, principal, registration?.deviceClientId, accounts.map { it.id }),
         )
     }
@@ -76,17 +82,44 @@ class BugReportController(private val container: AppContainer) {
      * endpoint. The account it goes out on is the one in scope, or the
      * primary.
      */
-    suspend fun send(submission: BugSubmission, capture: BugCapture, holdMs: Long): ComposeResult {
+    suspend fun send(
+        submission: BugSubmission,
+        capture: BugCapture,
+        session: SessionScope?,
+        holdMs: Long,
+    ): ComposeResult {
         val accountId = container.accountScope.value
             ?: container.store.accountList().firstOrNull { it.isPrimary }?.id
             ?: container.store.accountList().firstOrNull()?.id
             ?: return ComposeResult.Failed("No account to send the report from")
-        val bundle = BugBundleWriter.build(submission, capture, System.currentTimeMillis())
+        val bundle = BugBundleWriter.build(submission, atSendTime(capture, session), System.currentTimeMillis())
         val result = container.bugReports.queue(bundle, accountId, holdMs)
         if (result is ComposeResult.Queued) {
             DiagLog.i(TAG, "bug report queued as entry ${result.entryId}")
         }
         return result
+    }
+
+    /**
+     * The capture as the bundle carries it. The ring is the one held
+     * now rather than the one held at the first gesture, so a report
+     * built from several captures covers the stretch between them
+     * (issue #424); the session details are read here too, so an
+     * unfinished report leaves no id in a file.
+     */
+    private suspend fun atSendTime(capture: BugCapture, session: SessionScope?): BugCapture {
+        val accounts = runCatching { container.store.accountList() }.getOrDefault(emptyList())
+        val registration = runCatching { container.store.pushRegistration() }.getOrNull()
+        val principal = capture.principal ?: runCatching { container.tokenStore.principal() }.getOrNull()
+        return capture.copy(
+            logs = DiagLog.ring.lines(),
+            sessionDetails = sessionDetails(
+                session,
+                principal,
+                registration?.deviceClientId,
+                accounts.map { it.id },
+            ),
+        )
     }
 
     private fun deviceFacts(): DeviceFacts = DeviceFacts(
