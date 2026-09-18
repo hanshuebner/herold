@@ -60,6 +60,14 @@
     placeholder?: string;
     disabled?: boolean;
     autofocus?: boolean;
+    /**
+     * Called with a function the parent can invoke to force-commit any
+     * pending, structurally-complete text sitting in the input as a chip,
+     * synchronously. ComposeWindow calls it immediately before validating
+     * recipients on Send, so a typed address is never dropped by a Send
+     * click that never gave the input a chance to blur (issue #419).
+     */
+    onRegisterCommit?: (commit: () => void) => void;
   }
 
   let {
@@ -72,6 +80,7 @@
     placeholder,
     disabled = false,
     autofocus = false,
+    onRegisterCommit,
   }: Props = $props();
 
   /** The other two fields a chip in this field can be moved to. */
@@ -251,6 +260,28 @@
     onWarning(null);
     return true;
   }
+
+  /**
+   * Force-commit the buffer synchronously when it is structurally
+   * complete. Exposed to the parent via onRegisterCommit (issue #419): the
+   * regular blur path defers the same decision behind a 120ms setTimeout
+   * (to let a suggestion click register first), which leaves a window
+   * where a Send click reads compose.toRecipients/compose.to before the
+   * deferred commit lands. Calling this directly from the Send handler
+   * closes that window.
+   */
+  function commitPending(): void {
+    if (buffer.trim() && isStructurallyComplete(buffer)) {
+      commitBuffer();
+    }
+  }
+
+  $effect(() => {
+    onRegisterCommit?.(commitPending);
+    return () => {
+      onRegisterCommit?.(() => {});
+    };
+  });
 
   /** Add a chip from the autocomplete dropdown. */
   function commitSuggestion(s: ContactSuggestion): void {

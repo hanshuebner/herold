@@ -106,6 +106,15 @@
   let hasRecipientWarnings = $derived(
     toWarning !== null || ccWarning !== null || bccWarning !== null,
   );
+
+  // Force-commit functions registered by each RecipientField instance
+  // (issue #419). Called from sendWithWarn immediately before validating
+  // recipients so a typed-but-not-yet-blurred address is flushed into a
+  // chip synchronously rather than relying on the field's own deferred
+  // blur commit, which can still be pending when Send is clicked.
+  let commitToPending = $state<() => void>(() => {});
+  let commitCcPending = $state<() => void>(() => {});
+  let commitBccPending = $state<() => void>(() => {});
   // True for fresh compose (no parent) and forward (parent, but To
   // starts empty) — the cases where the user must address the message
   // before anything else. False for reply / reply-all, whose To is
@@ -441,6 +450,17 @@
       compose.errorMessage = 'Fix recipient warnings before sending';
       return;
     }
+
+    // Flush any pending, structurally-complete text still sitting in the
+    // To/Cc/Bcc inputs into chips before validating recipients (issue
+    // #419). Without this, an address typed but not yet committed via
+    // blur/Enter/comma is invisible to compose.toRecipients/compose.to:
+    // clicking Send blurs the input too, but that path's own commit is
+    // deferred behind a 120ms setTimeout (RecipientField.onBlur), which
+    // can still be pending when this synchronous check below runs.
+    commitToPending();
+    commitCcPending();
+    commitBccPending();
 
     // No recipients — surface the error inline AND move the cursor to
     // the To field so the user can type immediately. compose.send()
@@ -868,6 +888,7 @@
           placeholder="recipient@example.com"
           disabled={compose.status === 'sending'}
           autofocus={focusToField && compose.status === 'editing'}
+          onRegisterCommit={(fn) => (commitToPending = fn)}
         />
         {#if !compose.ccBccVisible}
           <button
@@ -896,6 +917,7 @@
             onWarning={(w) => (ccWarning = w)}
             onRecipientMove={(from, idx, to) => compose.moveRecipient(from, idx, to)}
             disabled={compose.status === 'sending'}
+            onRegisterCommit={(fn) => (commitCcPending = fn)}
           />
         </div>
         {#if ccWarning}
@@ -913,6 +935,7 @@
             onWarning={(w) => (bccWarning = w)}
             onRecipientMove={(from, idx, to) => compose.moveRecipient(from, idx, to)}
             disabled={compose.status === 'sending'}
+            onRegisterCommit={(fn) => (commitBccPending = fn)}
           />
         </div>
         {#if bccWarning}

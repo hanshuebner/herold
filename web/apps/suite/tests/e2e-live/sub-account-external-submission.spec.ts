@@ -75,6 +75,17 @@ test('separated identity with external submission sends through the sink from it
   await page.locator('[placeholder="recipient@example.com"]').first().fill(recipient);
   await page.locator('label:has-text("Subject") input').fill('sub-account external submission e2e');
   await page.locator('.ProseMirror').fill('sub-account e2e body');
+  // The recipient must be committed to a chip -- via the field's own
+  // blur-commit, since the Subject/body fills above already moved focus
+  // away from To -- before Send is clicked. ComposeWindow's send path
+  // additionally force-commits any still-pending text synchronously
+  // (issue #419), so this should never race even without that settling
+  // time; asserting it explicitly here means a regression fails with an
+  // attributable "recipient never became a chip" message instead of the
+  // opaque "compose send failed" one below.
+  await expect(
+    page.locator('.recipient-field .chip-label', { hasText: recipient }),
+  ).toBeVisible();
   await page.getByTestId('compose-send').click();
 
   // Send() either closes the compose window (success) or leaves it open
