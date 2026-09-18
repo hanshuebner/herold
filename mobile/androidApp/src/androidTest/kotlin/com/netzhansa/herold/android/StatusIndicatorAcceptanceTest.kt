@@ -7,15 +7,12 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTextInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.netzhansa.herold.android.ui.settings.UndoSendPreference
+import com.netzhansa.herold.android.ui.settings.UndoSendWindow
 import com.netzhansa.herold.shared.auth.SignInResult
-import com.netzhansa.herold.shared.sync.SyncStatus
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.cancelAndJoin
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -31,15 +28,15 @@ import java.io.File
  * The status indicator holds its slot (REQ-AND-SYNC-30, issue #421), in
  * two phases the harness runs around a connectivity toggle:
  *
- *   am instrument ... -e class StatusIndicatorAcceptanceTest#t70_layoutHoldsOnlineAndWhileSyncing
+ *   am instrument ... -e class StatusIndicatorAcceptanceTest#t70_layoutHoldsOnlineAndInFlight
  *   adb shell svc data disable && adb shell svc wifi disable
  *   am instrument ... -e class StatusIndicatorAcceptanceTest#t71_layoutHoldsOffline
  *
  * Phase one measures the list and a named row while idle and again
- * while a sync runs, and reads the diagnostics screen the indicator
- * opens. Phase two measures the same things with the radios off. The
- * measurements cross the phases in a file, because each phase is its
- * own process.
+ * with a send waiting out its undo window, and reads the diagnostics
+ * screen the indicator opens. Phase two measures the same things with
+ * the radios off. The measurements cross the phases in a file, because
+ * each phase is its own process.
  */
 @RunWith(AndroidJUnit4::class)
 @FixMethodOrder(MethodSorters.NAME_ASCENDING)
@@ -64,7 +61,7 @@ class StatusIndicatorAcceptanceTest {
     }
 
     @Test
-    fun t70_layoutHoldsOnlineAndWhileSyncing() = runBlocking {
+    fun t70_layoutHoldsOnlineAndInFlight() = runBlocking {
         if (app.container.session.value == null) {
             val result = app.container.signInWithPassword(
                 DevInstance.baseUrl, DevInstance.email, DevInstance.password, null,
@@ -84,35 +81,43 @@ class StatusIndicatorAcceptanceTest {
 
         val rowTag = firstRowTag()
         val idle = measure(rowTag)
-        compose.captureScreen("70-inbox-status-online")
+        compose.captureScreen("status-1-inbox-online")
 
-        // Syncs back to back, so the in-flight state is on screen long
-        // enough to be measured rather than caught between two frames.
-        val syncs = CoroutineScope(Dispatchers.IO).launch {
-            while (isActive) {
-                app.container.session.value?.syncEngine?.syncAll()
-            }
+        // The radios coming back leaves the last failed request
+        // standing until one gets through, so the phase waits for the
+        // app to believe it is online before it reads an in-flight
+        // state that offline would outrank.
+        compose.waitUntil(TIMEOUT_MS) { !app.container.offline.value }
+
+        // An interaction in flight, held long enough to be looked at: a
+        // send waits out its undo window in the outbox, which is what
+        // the in-flight dot stands for.
+        UndoSendPreference.remember(
+            InstrumentationRegistry.getInstrumentation().targetContext,
+            UndoSendWindow.THIRTY,
+        )
+        compose.onNodeWithTag("inbox-compose").performClick()
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("compose-screen").fetchSemanticsNodes().isNotEmpty()
         }
-        val syncing: Layout
-        try {
-            compose.waitUntil(TIMEOUT_MS) {
-                compose.onAllNodesWithTag("status-dot-busy", useUnmergedTree = true)
-                    .fetchSemanticsNodes().isNotEmpty()
-            }
-            syncing = measure(rowTag)
-            captureDeviceScreen("71-inbox-status-syncing")
-        } finally {
-            syncs.cancelAndJoin()
+        compose.onNodeWithTag("compose-to").performTextInput(DevInstance.recipientEmail + ",")
+        compose.onNodeWithTag("compose-subject").performTextInput("status indicator in flight")
+        compose.onNodeWithTag("compose-send").performClick()
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("compose-screen").fetchSemanticsNodes().isEmpty()
         }
-        assertEquals("the list does not move when a sync starts", idle, syncing)
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("status-dot-busy", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        val busy = measure(rowTag)
+        compose.captureScreen("status-2-inbox-in-flight")
+        assertEquals("the list does not move when something is in flight", idle, busy)
 
         ledger.writeText("$rowTag\n${idle.listTop}\n${idle.rowTop}\n${idle.rowLeft}\n")
 
         // The diagnostics screen the indicator opens, with the ring on
         // it (REQ-AND-SYS-54).
-        compose.waitUntil(TIMEOUT_MS) {
-            app.container.session.value?.syncEngine?.status?.value !is SyncStatus.Syncing
-        }
         compose.onNodeWithTag("status-indicator").performClick()
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithTag("diagnostics-screen").fetchSemanticsNodes().isNotEmpty()
@@ -125,7 +130,7 @@ class StatusIndicatorAcceptanceTest {
             compose.onAllNodesWithTag("diagnostics-log-line", useUnmergedTree = true)
                 .fetchSemanticsNodes().isNotEmpty(),
         )
-        compose.captureScreen("73-diagnostics")
+        compose.captureScreen("status-4-diagnostics")
         compose.onNodeWithTag("diagnostics-back").performClick()
         Unit
     }
@@ -153,7 +158,7 @@ class StatusIndicatorAcceptanceTest {
         assertEquals("the list holds its top with no connection", recorded[1].toFloat(), offline.listTop, 0f)
         assertEquals("the row holds its position with no connection", recorded[2].toFloat(), offline.rowTop, 0f)
         assertEquals("the row holds its left edge with no connection", recorded[3].toFloat(), offline.rowLeft, 0f)
-        compose.captureScreen("72-inbox-status-offline")
+        compose.captureScreen("status-3-inbox-offline")
 
         // The way to the detail is the same tap offline as online.
         compose.onNodeWithTag("status-indicator").performClick()
@@ -161,7 +166,7 @@ class StatusIndicatorAcceptanceTest {
             compose.onAllNodesWithTag("diagnostics-screen").fetchSemanticsNodes().isNotEmpty()
         }
         compose.onNodeWithTag("diagnostics-connectivity").assertIsDisplayed()
-        compose.captureScreen("74-diagnostics-offline")
+        compose.captureScreen("status-5-diagnostics-offline")
         compose.onNodeWithTag("diagnostics-back").performClick()
     }
 
