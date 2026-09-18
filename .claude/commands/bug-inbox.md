@@ -6,9 +6,9 @@ argument-hint: (none) | <drop-id>
 Process drops captured by the in-browser herold-triage panel and by the
 Android app's in-app reporter. The extension writes each drop to disk with no
 server: a self-contained bundle lands in
-`~/Downloads/herold-bugs/<id>.heroldbug.json`. The phone sends its bundle as a
-mail to the maintainer's own address under the "Bug reports" label; step 0
-fetches those over JMAP. A drop is one of two kinds:
+`~/Downloads/herold-bugs/<id>.heroldbug.json`. The phone posts its bundle to
+the herold server's bug reports API; step 0 pulls those down. A drop is one of
+two kinds:
 
 - a **report** (`meta.kind` is `bug` or `feature`) -- file it as a new ticket;
 - a **review hand-back** (`meta.kind` is `review`) -- comment on the named
@@ -41,37 +41,38 @@ structural properties, and the identifiers a developer can act on (UID, folder,
 Message-ID, account id). Never paste a third party's personal data into a ticket,
 and instruct the ticket-clerk of the same when you dispatch it.
 
-## 0. Fetch phone bug-report mails
+## 0. Fetch phone bug reports from the server
 
-The Android reporter mails its bundle to the maintainer's own address under the
-"Bug reports" label. `herold bug-fetch` pulls every unread message in that label
-over JMAP, expands each into `~/herold-bugs/mail-<message-id>/` in the drop
-layout below, and marks the message read. It authenticates with the admin API
-key and server URL in `~/.herold/credentials.toml` (or `$HEROLD_API_KEY` with
-`--server-url`), so skip this step cleanly when neither is available:
+The Android reporter posts its bundle to `POST /api/v1/bug-reports` on the
+maintainer's herold server, which keeps it in its data directory. `herold
+bug-fetch` lists those reports, downloads each into `~/herold-bugs/<id>/` in
+the drop layout below (`STATUS=new`), and deletes it on the server once the
+drop is complete on disk, so the drop on the Mac is the only copy afterwards.
+It authenticates with the key in `~/.herold/bug-reports.toml` (`server_url`,
+`api_key`; the key carries only the `bug-reports` scope and can do nothing
+else on the server) or with `$HEROLD_BUG_REPORTS_KEY` plus `--server-url`, so
+skip this step cleanly when neither is available:
 
 ```sh
-if [ -f ~/.herold/credentials.toml ] || [ -n "${HEROLD_API_KEY:-}" ]; then
-  bin/herold bug-fetch --label "Bug reports" --out ~/herold-bugs \
-    || echo "BUG-FETCH FAILED"
+if [ -f ~/.herold/bug-reports.toml ] || [ -n "${HEROLD_BUG_REPORTS_KEY:-}" ]; then
+  bin/herold bug-fetch --out ~/herold-bugs || echo "BUG-FETCH FAILED"
 else
-  echo "bug-fetch skipped: no ~/.herold/credentials.toml and no HEROLD_API_KEY"
+  echo "bug-fetch skipped: no ~/.herold/bug-reports.toml and no HEROLD_BUG_REPORTS_KEY"
 fi
 ```
 
 Build `bin/herold` first (`make build-server`) if it is missing or stale; a
 missing binary is a failure to report, not a reason to skip. `bug-fetch` prints
-one `bug-fetch: wrote <dir>` line per new drop, `no unread messages` when the
-label is drained, and `no mailbox named "Bug reports"` when the phone has not
-sent a report yet -- all three are normal. A `BUG-FETCH FAILED` line means the
-mailbox could not be read: report it, do not treat it as "no phone reports".
-`--dry-run` lists the messages without downloading, writing, or marking.
+one `bug-fetch: wrote <dir>` line per new drop and `no reports` when the server
+holds none -- both are normal. A `BUG-FETCH FAILED` line means the server could
+not be reached or refused the key: report it, do not treat it as "no phone
+reports". `--dry-run` lists the reports without downloading, writing, or
+deleting; `--keep` downloads without deleting.
 
 The fetched drops carry the same files as a browser drop, so from step 1 on
 they are processed identically, with one addition: typing on the phone is
 optional, so a phone drop may arrive without a description and gets one from
-the maintainer in step 1b before it is filed. A phone mail that carries no
-`report.json` gets one synthesised from its subject and body (`kind: bug`).
+the maintainer in step 1b before it is filed.
 
 ## 0b. Expand downloaded bundles
 

@@ -26,29 +26,29 @@ If a drop watcher is not already running **in this session**, arm one:
 Do NOT arm a second watcher if one is already running this session -- duplicate
 watchers double-process. Confirm it is armed, then stop and wait for events.
 
-## Poll the "Bug reports" mailbox
+## Poll the server for phone bug reports
 
-Phone bug reports arrive as mail, not as files, so `fswatch` never sees them.
-Alongside the file watcher, arm a **second persistent Monitor** that polls the
-mailbox on an interval by running `herold bug-fetch` (see `/bug-inbox` step 0),
-which writes each unread report into `~/herold-bugs/mail-<id>/` and marks the
-mail read:
+Phone bug reports sit on the herold server, not in a file, so `fswatch` never
+sees them. Alongside the file watcher, arm a **second persistent Monitor** that
+polls the server on an interval by running `herold bug-fetch` (see `/bug-inbox`
+step 0), which writes each report into `~/herold-bugs/<id>/` and deletes it on
+the server:
 
 ```sh
 while :; do
-  bin/herold bug-fetch --label "Bug reports" --out "${HEROLD_DROP_ROOT:-$HOME/herold-bugs}" 2>&1 \
-    | grep -Ev 'no unread messages|no mailbox named|already present' \
+  bin/herold bug-fetch --out "${HEROLD_DROP_ROOT:-$HOME/herold-bugs}" 2>&1 \
+    | grep -Ev 'no reports|already present' \
     | sed 's/^bug-fetch: wrote /New herold drop: /'
   sleep 300
 done
 ```
 
-Skip arming the poller (and say so) when neither `~/.herold/credentials.toml`
-nor `HEROLD_API_KEY` is present; do not arm a second poller if one already runs
-in this session. Each `New herold drop: <dir>` line it emits is the same
-standing instruction as a file-watcher event. A line naming a failure means the
-mailbox could not be read on that pass: report it once and keep the poller
-running.
+Skip arming the poller (and say so) when neither `~/.herold/bug-reports.toml`
+nor `HEROLD_BUG_REPORTS_KEY` is present; do not arm a second poller if one
+already runs in this session. Each `New herold drop: <dir>` line it emits is the
+same standing instruction as a file-watcher event. A line naming a failure means
+the server could not be reached on that pass: report it once and keep the
+poller running.
 
 ## On each "New herold drop" event
 
