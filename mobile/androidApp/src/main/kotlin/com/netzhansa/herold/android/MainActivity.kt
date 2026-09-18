@@ -43,6 +43,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.netzhansa.herold.android.auth.LockScreen
 import com.netzhansa.herold.android.ui.diag.BugReportHost
+import com.netzhansa.herold.android.ui.diag.DiagnosticsScreen
 import com.netzhansa.herold.android.ui.common.collectAsStateSafely
 import com.netzhansa.herold.android.ui.compose.ComposeScreen
 import com.netzhansa.herold.android.ui.filters.FilterEditorScreen
@@ -243,6 +244,7 @@ fun HeroldApp(
                         onOutbox = { navController.navigate("outbox") },
                         onSettings = { navController.navigate("settings") },
                         onFilters = { navController.navigate("filters") },
+                        onDiagnostics = { navController.navigate("diagnostics") },
                         onReportProblem = { container.requestBugReport() },
                         onSignOut = { scope.launch { container.signOut() } },
                     )
@@ -253,6 +255,7 @@ fun HeroldApp(
                         onSessions = { navController.navigate("sessions") },
                         onCategories = { navController.navigate("categories") },
                         onTransparency = { navController.navigate("transparency") },
+                        onDiagnostics = { navController.navigate("diagnostics") },
                         onReportProblem = { container.requestBugReport() },
                         onBack = { navController.popBackStack() },
                     )
@@ -296,6 +299,16 @@ fun HeroldApp(
                         accountScope = container.accountScope.value,
                         onClose = { navController.popBackStack() },
                         handoff = container.composeHandoff.value,
+                    )
+                }
+                // What the status indicator leads to, and the way in
+                // from settings (REQ-AND-SYS-54, issue #421).
+                composable("diagnostics") {
+                    DiagnosticsScreen(
+                        container = container,
+                        session = current,
+                        onReportProblem = { container.requestBugReport() },
+                        onBack = { navController.popBackStack() },
                     )
                 }
                 composable("outbox") {
@@ -366,6 +379,7 @@ fun HeroldApp(
                             navController.navigate("compose-unsubscribe")
                         },
                         onOutbox = { navController.navigate("outbox") },
+                        onDiagnostics = { navController.navigate("diagnostics") },
                         onReportProblem = { container.requestBugReport() },
                         onBack = { navController.popBackStack() },
                     )

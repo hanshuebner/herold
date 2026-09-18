@@ -46,7 +46,6 @@ import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
@@ -83,11 +82,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.netzhansa.herold.android.AppContainer
 import com.netzhansa.herold.android.SessionScope
-import com.netzhansa.herold.android.ui.common.ConnectivityChip
 import com.netzhansa.herold.android.ui.common.LabelSheet
 import com.netzhansa.herold.android.ui.common.UndoOffers
 import com.netzhansa.herold.shared.actions.UndoMessages
 import com.netzhansa.herold.android.ui.common.SnoozeSheet
+import com.netzhansa.herold.android.ui.common.StatusIndicator
 import com.netzhansa.herold.android.ui.common.collectAsStateSafely
 import com.netzhansa.herold.shared.actions.SnoozeClock
 import com.netzhansa.herold.shared.domain.Email
@@ -99,11 +98,13 @@ import com.netzhansa.herold.shared.inbox.CategoryLanes
 import com.netzhansa.herold.shared.inbox.DrawerModel
 import com.netzhansa.herold.shared.inbox.MailDestination
 import com.netzhansa.herold.shared.inbox.InboxAssembler
+import com.netzhansa.herold.shared.outbox.OutboxState
 import com.netzhansa.herold.shared.outbox.PendingMessage
 import com.netzhansa.herold.shared.outbox.pendingMarkersByThread
 import com.netzhansa.herold.shared.inbox.InboxItem
 import com.netzhansa.herold.shared.inbox.ThreadRow
 import com.netzhansa.herold.shared.sync.SyncStatus
+import com.netzhansa.herold.shared.sync.appStatus
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
@@ -130,6 +131,7 @@ fun InboxScreen(
     onOutbox: () -> Unit,
     onSettings: () -> Unit,
     onFilters: () -> Unit,
+    onDiagnostics: () -> Unit,
     onReportProblem: () -> Unit,
     onSignOut: () -> Unit,
 ) {
@@ -150,7 +152,12 @@ fun InboxScreen(
     val accounts by container.store.accounts().collectAsStateSafely(emptyList())
     val syncStatus by session.syncEngine.status.collectAsStateSafely(SyncStatus.Idle)
     val offline by container.offline.collectAsStateSafely(false)
-    val pending by container.outbox.pendingCount.collectAsStateSafely(0)
+    val pending = remember(queued) { queued.count { it.isPending } }
+    val failedInQueue = remember(queued) { queued.count { it.state == OutboxState.FAILED } }
+    // One dot in the app bar says what the client is doing with the
+    // server, and its slot is there in every state, so the list never
+    // moves under the reader (REQ-AND-SYNC-30, issue #421).
+    val status = appStatus(offline, syncStatus, pending, failedInQueue)
 
     val accountScope by container.accountScope.collectAsStateSafely(null)
     var selectedCategory by rememberSaveable { mutableStateOf<String?>(null) }
@@ -251,14 +258,6 @@ fun InboxScreen(
     }
 
     UndoOffers(container = container, snackbar = snackbar)
-
-    // A refusal the drain met is the user's to see: the entry stays in
-    // the outbox, and this is what tells them to look (REQ-AND-SYNC-23).
-    LaunchedEffect(session) {
-        session.drainer.failures.collect { failure ->
-            snackbar.showSnackbar("${failure.label} failed: ${failure.message}")
-        }
-    }
 
     ModalNavigationDrawer(
         drawerState = drawer,
@@ -424,6 +423,7 @@ fun InboxScreen(
                     )
                 },
                 actions = {
+                    StatusIndicator(status = status, onOpenDiagnostics = onDiagnostics)
                     AccountScopeSwitcher(
                         accounts = accounts.map { it.id to it.name },
                         selected = accountScope,
@@ -448,19 +448,6 @@ fun InboxScreen(
         },
     ) { padding ->
         Column(modifier = Modifier.fillMaxSize().padding(padding)) {
-            ConnectivityChip(offline = offline, pending = pending, onOpenOutbox = onOutbox)
-            if (syncStatus is SyncStatus.Syncing) {
-                LinearProgressIndicator(modifier = Modifier.fillMaxWidth().testTag("inbox-syncing"))
-            }
-            (syncStatus as? SyncStatus.Failed)?.let { failed ->
-                Text(
-                    text = failed.message,
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp).testTag("inbox-sync-error"),
-                )
-            }
-
             if (destination == MailDestination.Snoozed) {
                 SnoozedList(
                     rows = snoozedRows,
