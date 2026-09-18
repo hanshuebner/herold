@@ -645,29 +645,112 @@ function resolveUrlCandidate(url: string, options: SanitizeOptions): string | nu
   return `/proxy/image?url=${encodeURIComponent(url)}`;
 }
 
+const SRCSET_WHITESPACE = new Set([' ', '\t', '\n', '\f', '\r']);
+
 /**
- * Splits an HTML `srcset` attribute value into (url, descriptor) pairs.
- * Candidates are comma-separated; each is a URL followed by an optional
- * whitespace-separated width/density descriptor (`480w`, `2x`). This
- * covers the srcset shapes mail HTML actually uses -- none of the
- * candidate schemes this module resolves (`cid:`, `http(s):`, `data:`)
- * legitimately contain a literal comma, so a plain split is sufficient.
+ * Splits an HTML `srcset` attribute value into (url, descriptor) pairs,
+ * following the WHATWG "parsing a srcset attribute" microsyntax
+ * (https://html.spec.whatwg.org/multipage/images.html#parsing-a-srcset-attribute).
+ *
+ * A literal comma is legal inside a URL -- e.g. a query string like
+ * `?a=1,2` -- and real senders' HTML uses it (issue #306 second-round
+ * follow-up). The syntax collects a URL as the run of non-whitespace
+ * characters up to the next space, so an internal comma is part of the
+ * URL; a comma only separates candidates when it appears after a
+ * descriptor (handled by the descriptor tokenizer's own comma branch) or
+ * as a bare trailing comma with no descriptor (stripped explicitly
+ * below). A naive `split(',')` truncates a comma-bearing URL and loses
+ * its descriptor -- this is a real state-machine walk, not a shortcut.
  */
 function parseSrcset(value: string): Array<{ url: string; descriptor: string }> {
   const candidates: Array<{ url: string; descriptor: string }> = [];
-  for (const part of value.split(',')) {
-    const trimmed = part.trim();
-    if (!trimmed) continue;
-    const spaceIdx = trimmed.search(/\s/);
-    if (spaceIdx === -1) {
-      candidates.push({ url: trimmed, descriptor: '' });
-    } else {
-      candidates.push({
-        url: trimmed.slice(0, spaceIdx),
-        descriptor: trimmed.slice(spaceIdx).trim(),
-      });
+  const len = value.length;
+  let pos = 0;
+
+  while (pos < len) {
+    // Splitting loop: skip whitespace and commas between candidates.
+    while (pos < len && (SRCSET_WHITESPACE.has(value[pos]!) || value[pos] === ',')) {
+      pos++;
     }
+    if (pos >= len) break;
+
+    // Collect the URL: everything up to the next whitespace character.
+    const urlStart = pos;
+    while (pos < len && !SRCSET_WHITESPACE.has(value[pos]!)) {
+      pos++;
+    }
+    let url = value.slice(urlStart, pos);
+
+    let descriptor = '';
+    if (url.endsWith(',')) {
+      // A trailing comma with no descriptor terminates the candidate --
+      // strip it rather than treat it as part of the URL.
+      url = url.replace(/,+$/, '');
+    } else {
+      // Descriptor tokenizer: a small state machine mirroring the spec's
+      // "in descriptor" / "in parens" / "after descriptor" states, so a
+      // parenthesised descriptor component (e.g. a future `calc()`-like
+      // extension) does not have its internal comma/whitespace mistaken
+      // for a candidate boundary.
+      while (pos < len && SRCSET_WHITESPACE.has(value[pos]!)) pos++;
+      const parts: string[] = [];
+      let current = '';
+      let state: 'in-descriptor' | 'in-parens' | 'after-descriptor' = 'in-descriptor';
+      for (;;) {
+        const c = pos < len ? value[pos] : undefined;
+        if (state === 'in-descriptor') {
+          if (c === undefined) {
+            if (current !== '') parts.push(current);
+            break;
+          } else if (SRCSET_WHITESPACE.has(c)) {
+            if (current !== '') {
+              parts.push(current);
+              current = '';
+            }
+            state = 'after-descriptor';
+            pos++;
+          } else if (c === ',') {
+            pos++;
+            if (current !== '') parts.push(current);
+            break;
+          } else if (c === '(') {
+            current += c;
+            state = 'in-parens';
+            pos++;
+          } else {
+            current += c;
+            pos++;
+          }
+        } else if (state === 'in-parens') {
+          if (c === undefined) {
+            parts.push(current);
+            break;
+          } else if (c === ')') {
+            current += c;
+            state = 'in-descriptor';
+            pos++;
+          } else {
+            current += c;
+            pos++;
+          }
+        } else {
+          // after-descriptor
+          if (c === undefined) {
+            break;
+          } else if (SRCSET_WHITESPACE.has(c)) {
+            pos++;
+          } else {
+            // Reconsume this character in "in descriptor" state.
+            state = 'in-descriptor';
+          }
+        }
+      }
+      descriptor = parts.join(' ');
+    }
+
+    candidates.push({ url, descriptor });
   }
+
   return candidates;
 }
 

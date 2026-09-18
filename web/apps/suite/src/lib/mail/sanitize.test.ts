@@ -505,6 +505,70 @@ describe('sanitizeHtml — srcset image rewrite (issue #306, second round)', () 
     );
     expect(body).toContain('srcset="/jmap/download/sig.tiff 2x"');
   });
+
+  // Follow-up: parseSrcset must implement the HTML srcset microsyntax
+  // (whitespace-primary URL collection), not a naive comma split -- a
+  // literal comma inside a URL's query string is common and must survive.
+  it('preserves a literal comma inside a srcset candidate URL', () => {
+    const html = '<img src="cid:ok" srcset="https://x.test/img.png?a=1,2 2x">';
+    const body = bodyOf(
+      sanitizeHtml(html, { loadImages: true, cidMap: { ok: '/jmap/download/ok.png' } }),
+    );
+    expect(body).toContain(
+      `srcset="/proxy/image?url=${encodeURIComponent('https://x.test/img.png?a=1,2')} 2x"`,
+    );
+  });
+
+  it('preserves the comma in each URL of a multi-candidate list', () => {
+    const html =
+      '<img src="cid:ok" srcset="https://x.test/a.png?x=1,2 1x, https://x.test/b.png?y=3,4 2x">';
+    const body = bodyOf(
+      sanitizeHtml(html, { loadImages: true, cidMap: { ok: '/jmap/download/ok.png' } }),
+    );
+    const expected =
+      `/proxy/image?url=${encodeURIComponent('https://x.test/a.png?x=1,2')} 1x, ` +
+      `/proxy/image?url=${encodeURIComponent('https://x.test/b.png?y=3,4')} 2x`;
+    expect(body).toContain(`srcset="${expected}"`);
+  });
+
+  it('strips a bare trailing comma from a candidate with no descriptor', () => {
+    const html = '<img src="cid:ok" srcset="https://x.test/img.png,">';
+    const body = bodyOf(
+      sanitizeHtml(html, { loadImages: true, cidMap: { ok: '/jmap/download/ok.png' } }),
+    );
+    expect(body).toContain(
+      `srcset="/proxy/image?url=${encodeURIComponent('https://x.test/img.png')}"`,
+    );
+    expect(body).not.toContain('img.png,');
+  });
+
+  it('accepts a w descriptor following a comma-bearing URL', () => {
+    const html = '<img src="cid:ok" srcset="https://x.test/img.png?a=1,2 480w">';
+    const body = bodyOf(
+      sanitizeHtml(html, { loadImages: true, cidMap: { ok: '/jmap/download/ok.png' } }),
+    );
+    expect(body).toContain(
+      `srcset="/proxy/image?url=${encodeURIComponent('https://x.test/img.png?a=1,2')} 480w"`,
+    );
+  });
+
+  it('does not throw on malformed srcset input', () => {
+    const malformed = [
+      ',,,',
+      '   ',
+      '(((',
+      'https://x.test/a.png (2x',
+      'https://x.test/a.png)2x',
+      ',',
+      'https://x.test/a.png ,, 2x',
+    ];
+    for (const srcset of malformed) {
+      const html = `<img src="cid:ok" srcset="${srcset}">`;
+      expect(() =>
+        sanitizeHtml(html, { loadImages: true, cidMap: { ok: '/jmap/download/ok.png' } }),
+      ).not.toThrow();
+    }
+  });
 });
 
 describe('sanitizeHtml — external image gating', () => {
