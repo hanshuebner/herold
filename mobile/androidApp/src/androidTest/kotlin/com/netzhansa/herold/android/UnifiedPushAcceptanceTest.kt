@@ -6,7 +6,6 @@ import android.content.Context
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.netzhansa.herold.android.push.PushTransportChoice
-import com.netzhansa.herold.shared.auth.SignInResult
 import com.netzhansa.herold.shared.jmap.Capability
 import com.netzhansa.herold.shared.jmap.JmapClient
 import kotlinx.coroutines.runBlocking
@@ -69,12 +68,7 @@ class UnifiedPushAcceptanceTest {
         )
         distributorControl("/control/live")
         runBlocking {
-            if (app.container.session.value == null) {
-                val result = app.container.signInWithPassword(
-                    DevInstance.baseUrl, DevInstance.email, DevInstance.password, null,
-                )
-                assertTrue("sign-in failed: $result", result is SignInResult.Success)
-            }
+            app.signInAsDevInstancePrincipal()
             app.container.session.value!!.syncEngine.syncAll()
             app.container.session.value!!.pushRegistrar.unregister()
         }

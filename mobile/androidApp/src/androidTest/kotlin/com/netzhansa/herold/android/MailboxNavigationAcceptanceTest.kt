@@ -62,11 +62,7 @@ class MailboxNavigationAcceptanceTest {
         val client = DevInstance.serverClient()
         val accountId = client.session().mailAccountId!!
         seededRule?.let { client.managedRuleSet(accountId, destroy = listOf(it)) }
-        seededLabel?.let { name ->
-            client.mailboxGet(accountId, null).list
-                .firstOrNull { it.role == null && it.name.equals(name, ignoreCase = true) }
-                ?.let { client.mailboxSet(accountId, destroy = listOf(it.id)) }
-        }
+        seededLabel?.let { LabelState.take(client, accountId).dropLabels(setOf(it)) }
     }
 
     @Test

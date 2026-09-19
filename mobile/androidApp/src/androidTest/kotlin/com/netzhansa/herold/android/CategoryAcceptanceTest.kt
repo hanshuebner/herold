@@ -10,7 +10,6 @@ import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTouchInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
-import com.netzhansa.herold.shared.auth.SignInResult
 import com.netzhansa.herold.shared.domain.Email
 import com.netzhansa.herold.shared.domain.Keywords
 import com.netzhansa.herold.shared.jmap.JmapClient
@@ -511,12 +510,7 @@ class CategoryAcceptanceTest {
 
     private fun signInAndSync() = runBlocking {
         grantNotificationPermission()
-        if (app.container.session.value == null) {
-            val result = app.container.signInWithPassword(
-                DevInstance.baseUrl, DevInstance.email, DevInstance.password, null,
-            )
-            assertTrue("sign-in failed: $result", result is SignInResult.Success)
-        }
+        app.signInAsDevInstancePrincipal()
         app.container.session.value!!.syncEngine.syncAll()
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithTag("inbox-list").fetchSemanticsNodes().isNotEmpty()

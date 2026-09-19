@@ -12,7 +12,6 @@ import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeRight
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
-import com.netzhansa.herold.shared.auth.SignInResult
 import com.netzhansa.herold.shared.domain.Email
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -58,12 +57,7 @@ class OfflineAcceptanceTest {
 
     @Test
     fun t1_warmTheCacheWhileOnline() = runBlocking {
-        if (app.container.session.value == null) {
-            val result = app.container.signInWithPassword(
-                DevInstance.baseUrl, DevInstance.email, DevInstance.password, null,
-            )
-            assertTrue("sign-in failed: $result", result is SignInResult.Success)
-        }
+        app.signInAsDevInstancePrincipal()
         // The phase seeds the message it caches, so phase two reads a
         // thread this run put there rather than whatever was left behind.
         val subject = "offline read ${System.currentTimeMillis()}"

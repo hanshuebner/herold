@@ -20,7 +20,6 @@ import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
-import com.netzhansa.herold.shared.auth.SignInResult
 import com.netzhansa.herold.shared.domain.Email
 import kotlinx.coroutines.runBlocking
 import org.hamcrest.CoreMatchers.allOf
@@ -167,12 +166,7 @@ class MessageLinkAcceptanceTest {
 
     private fun signInAndSync() = runBlocking {
         grantNotificationPermission()
-        if (app.container.session.value == null) {
-            val result = app.container.signInWithPassword(
-                DevInstance.baseUrl, DevInstance.email, DevInstance.password, null,
-            )
-            assertTrue("sign-in failed: $result", result is SignInResult.Success)
-        }
+        app.signInAsDevInstancePrincipal()
         app.container.session.value!!.syncEngine.syncAll()
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithTag("inbox-list").fetchSemanticsNodes().isNotEmpty()

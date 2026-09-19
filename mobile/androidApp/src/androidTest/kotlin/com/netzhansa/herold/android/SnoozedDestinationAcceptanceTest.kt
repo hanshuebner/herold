@@ -8,7 +8,6 @@ import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.netzhansa.herold.shared.actions.SnoozeClock
-import com.netzhansa.herold.shared.auth.SignInResult
 import com.netzhansa.herold.shared.domain.Email
 import com.netzhansa.herold.shared.jmap.JmapClient
 import kotlinx.coroutines.flow.first
@@ -146,12 +145,7 @@ class SnoozedDestinationAcceptanceTest {
     // ---- helpers -------------------------------------------------------
 
     private fun signInAndSync() = runBlocking {
-        if (app.container.session.value == null) {
-            val result = app.container.signInWithPassword(
-                DevInstance.baseUrl, DevInstance.email, DevInstance.password, null,
-            )
-            assertTrue("sign-in failed: $result", result is SignInResult.Success)
-        }
+        app.signInAsDevInstancePrincipal()
         app.container.session.value!!.syncEngine.syncAll()
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithTag("inbox-list").fetchSemanticsNodes().isNotEmpty()

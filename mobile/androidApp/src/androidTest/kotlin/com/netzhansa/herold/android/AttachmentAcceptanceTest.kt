@@ -22,7 +22,6 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.netzhansa.herold.android.media.ImageScaling
 import com.netzhansa.herold.android.media.ImageSize
-import com.netzhansa.herold.shared.auth.SignInResult
 import com.netzhansa.herold.shared.domain.Email
 import com.netzhansa.herold.shared.sync.toStoreRow
 import kotlinx.coroutines.flow.first
@@ -62,12 +61,7 @@ class AttachmentAcceptanceTest {
         grantNotificationPermission()
         Intents.init()
         runBlocking {
-            if (app.container.session.value == null) {
-                val result = app.container.signInWithPassword(
-                    DevInstance.baseUrl, DevInstance.email, DevInstance.password, null,
-                )
-                assertTrue("sign-in failed: $result", result is SignInResult.Success)
-            }
+            app.signInAsDevInstancePrincipal()
             app.container.session.value!!.syncEngine.syncAll()
         }
         compose.waitUntil(TIMEOUT_MS) {

@@ -23,7 +23,6 @@ import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
-import com.netzhansa.herold.shared.auth.SignInResult
 import com.netzhansa.herold.shared.domain.Email
 import com.netzhansa.herold.shared.domain.Keywords
 import com.netzhansa.herold.shared.domain.MailboxRoles
@@ -99,12 +98,7 @@ class OutboxAcceptanceTest {
      */
     @Test
     fun t60_warmOnline() = runBlocking {
-        if (app.container.session.value == null) {
-            val result = app.container.signInWithPassword(
-                DevInstance.baseUrl, DevInstance.email, DevInstance.password, null,
-            )
-            assertTrue("sign-in failed: $result", result is SignInResult.Success)
-        }
+        app.signInAsDevInstancePrincipal()
         val stamp = System.currentTimeMillis()
         DevInstance.deliverMail("outbox archive $stamp", body = "To be archived offline.")
         DevInstance.deliverMail("outbox star $stamp", body = "To be starred offline.")
@@ -338,12 +332,7 @@ class OutboxAcceptanceTest {
      */
     @Test
     fun t66_aSendMetByADeadNetworkQueuesQuietly() = runBlocking {
-        if (app.container.session.value == null) {
-            val result = app.container.signInWithPassword(
-                DevInstance.baseUrl, DevInstance.email, DevInstance.password, null,
-            )
-            assertTrue("sign-in failed: $result", result is SignInResult.Success)
-        }
+        app.signInAsDevInstancePrincipal()
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithTag("inbox-list").fetchSemanticsNodes().isNotEmpty()
         }
@@ -400,12 +389,7 @@ class OutboxAcceptanceTest {
      */
     @Test
     fun t67_aReplyQueuedOfflineShowsInItsThreadAndBecomesTheSentMessage() = runBlocking {
-        if (app.container.session.value == null) {
-            val result = app.container.signInWithPassword(
-                DevInstance.baseUrl, DevInstance.email, DevInstance.password, null,
-            )
-            assertTrue("sign-in failed: $result", result is SignInResult.Success)
-        }
+        app.signInAsDevInstancePrincipal()
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithTag("inbox-list").fetchSemanticsNodes().isNotEmpty()
         }

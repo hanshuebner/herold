@@ -1,5 +1,6 @@
 package com.netzhansa.herold.android
 
+import com.netzhansa.herold.shared.domain.MailboxRoles
 import com.netzhansa.herold.shared.jmap.JmapClient
 import com.netzhansa.herold.shared.jmap.WireMailbox
 import kotlinx.serialization.json.JsonPrimitive
@@ -48,12 +49,7 @@ class LabelState private constructor(
      */
     suspend fun dropLabels(names: Set<String>) {
         val folded = names.map { it.lowercase() }.toSet()
-        val doomed = labels().filter { it.name.lowercase() in folded }
-        if (doomed.isEmpty()) return
-        val outcome = client.mailboxSet(accountId, destroy = doomed.map { it.id })
-        check(outcome.errorMessages.isEmpty()) {
-            "dropping ${doomed.map { it.name }} failed: ${outcome.errorMessages}"
-        }
+        destroy(labels().filter { it.name.lowercase() in folded })
     }
 
     /**
@@ -69,13 +65,7 @@ class LabelState private constructor(
     suspend fun restore() {
         val current = labels()
         val known = taken.associateBy { it.id }
-        val created = current.filter { it.id !in known }
-        if (created.isNotEmpty()) {
-            val outcome = client.mailboxSet(accountId, destroy = created.map { it.id })
-            check(outcome.errorMessages.isEmpty()) {
-                "removing the labels this class created failed: ${outcome.errorMessages}"
-            }
-        }
+        destroy(current.filter { it.id !in known })
         val survivors = current.filter { it.id in known }
         val strayed = survivors.filter {
             val was = known.getValue(it.id)
@@ -108,6 +98,34 @@ class LabelState private constructor(
         }
     }
 
+    /**
+     * Destroys [boxes], archiving whatever mail they hold first: a
+     * mailbox with messages in it answers `mailboxHasEmail` and stays.
+     */
+    private suspend fun destroy(boxes: List<WireMailbox>) {
+        if (boxes.isEmpty()) return
+        val archiveId = client.mailboxGet(accountId, null).list
+            .firstOrNull { it.role == MailboxRoles.ARCHIVE }?.id
+        boxes.forEach { box ->
+            val held = client.emailQueryInbox(accountId, box.id, EMPTIED_AT_MOST)
+            if (held.isEmpty()) return@forEach
+            val archive = archiveId ?: error("no archive to empty ${box.name} into")
+            client.emailSet(
+                accountId,
+                held.associateWith {
+                    buildJsonObject {
+                        put("mailboxIds/$archive", true)
+                        put("mailboxIds/${box.id}", JsonPrimitive(null as String?))
+                    }
+                },
+            )
+        }
+        val outcome = client.mailboxSet(accountId, destroy = boxes.map { it.id })
+        check(outcome.errorMessages.isEmpty()) {
+            "destroying ${boxes.map { it.name }} failed: ${outcome.errorMessages}"
+        }
+    }
+
     private suspend fun labels(): List<WireMailbox> =
         client.mailboxGet(accountId, null).list.filter { it.role == null }
 
@@ -117,6 +135,9 @@ class LabelState private constructor(
     }
 
     companion object {
+        /** How much mail a label is emptied of before it is destroyed. */
+        private const val EMPTIED_AT_MOST = 200
+
         /** The account's labels as they stand now. */
         suspend fun take(client: JmapClient, accountId: String): LabelState =
             LabelState(client, accountId, client.mailboxGet(accountId, null).list.filter { it.role == null })

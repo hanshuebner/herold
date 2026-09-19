@@ -76,9 +76,18 @@ class AcceptanceTest {
         compose.waitUntil(TIMEOUT_MS) { compose.onAllNodesWithTag("signin-submit").fetchSemanticsNodes().isNotEmpty() }
     }
 
+    /**
+     * The labels go back as they were, and the session goes with them:
+     * the two-factor checks sign in as the TOTP-enrolled admin, and a
+     * class that finds that session reads the wrong principal's mailbox
+     * (issue #414).
+     */
     @After
-    fun restoreLabels() {
-        runBlocking { labelState.restore() }
+    fun restoreLabelsAndSession() {
+        runBlocking {
+            labelState.restore()
+            app.container.signOut()
+        }
     }
 
     @Test
