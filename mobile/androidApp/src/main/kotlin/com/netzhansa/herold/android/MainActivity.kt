@@ -34,6 +34,7 @@ import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
+import androidx.navigation.NavController
 import androidx.navigation.NavOptionsBuilder
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -66,9 +67,11 @@ import com.netzhansa.herold.android.ui.thread.ThreadScreen
 import com.netzhansa.herold.shared.compose.ComposeMode
 import com.netzhansa.herold.shared.sync.SyncStatus
 import com.netzhansa.herold.shared.sync.SyncTypes
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * The single activity the whole shell lives in (REQ-AND-NAV-01). Predictive
@@ -191,44 +194,15 @@ fun HeroldApp(
             val request by launchRequest.collectAsStateSafely(null)
             LaunchedEffect(request) {
                 val pending = request ?: return@LaunchedEffect
-                // A link the user follows twice lands on the destination
-                // it names, rather than stacking a second copy of it.
-                val singleTop: NavOptionsBuilder.() -> Unit = { launchSingleTop = true }
-                when (val destination = pending.destination) {
-                    is AppDestination.Thread -> {
-                        val account = destination.accountId
-                            ?: container.accountHolding(destination.threadId)
-                        if (account != null) {
-                            navController.navigate("thread/$account/${destination.threadId}", singleTop)
-                        }
-                    }
-
-                    is AppDestination.Reply ->
-                        navController.navigate(
-                            "compose/${ComposeMode.REPLY.name}/${destination.accountId}/${destination.emailId}",
-                            singleTop,
-                        )
-
-                    is AppDestination.Compose -> {
-                        container.composeHandoff.value = ComposeHandoff(
-                            prefill = destination.prefill,
-                            attachments = pending.attachments.map { it.toString() },
-                        )
-                        navController.navigate("compose-handoff", singleTop)
-                    }
-
-                    is AppDestination.Settings -> navController.navigate("settings", singleTop)
-
-                    AppDestination.Inbox -> navController.popBackStack("inbox", inclusive = false)
-                }
-                launchRequest.value = null
+                deliverLaunchRequest(pending, container, navController, launchRequest)
             }
 
             // A send taken back inside its undo window comes back as the
             // compose it was, on the screen the user is on (issue #354).
             val resumed by container.composeResume.collectAsStateSafely(null)
             LaunchedEffect(resumed) {
-                if (resumed != null) navController.navigate("compose-resume")
+                if (resumed == null) return@LaunchedEffect
+                withContext(Dispatchers.Main.immediate) { navController.navigate("compose-resume") }
             }
 
             NavHost(navController = navController, startDestination = "inbox") {
@@ -469,9 +443,14 @@ fun HeroldApp(
             LaunchedEffect(entry) {
                 if (entry != null) return@LaunchedEffect
                 delay(EMPTY_BACK_STACK_GRACE_MS)
-                if (navController.currentBackStackEntry != null) return@LaunchedEffect
-                DiagLog.w(SHELL_TAG, "the navigation back stack is empty; reopening the inbox")
-                navController.navigate("inbox") { popUpTo(0) { inclusive = true } }
+                // The wait puts the rest of this on whatever dispatcher
+                // resumed it, and the back stack is read and rebuilt on
+                // the main thread (issue #434).
+                withContext(Dispatchers.Main.immediate) {
+                    if (navController.currentBackStackEntry != null) return@withContext
+                    DiagLog.w(SHELL_TAG, "the navigation back stack is empty; reopening the inbox")
+                    navController.navigate("inbox") { popUpTo(0) { inclusive = true } }
+                }
             }
 
             // Over every screen: the operation the server refused until
@@ -484,6 +463,62 @@ fun HeroldApp(
             // (REQ-AND-SYS-50/51).
             BugReportHost(container = container, session = current, navController = navController)
         }
+    }
+}
+
+/**
+ * Opens what a launch request names - a notification's thread or reply
+ * target, a share, a `mailto:`, a deep link or an App Link
+ * (REQ-AND-SYS-10, REQ-AND-PUSH-13/21) - and takes it off the queue.
+ *
+ * Callable from any thread (issue #434): which account holds a thread
+ * the link did not name is a store read, so the caller resumes from it
+ * on whatever dispatcher answered, while the NavController belongs to
+ * the main thread. The navigation and the clearing are one step on the
+ * main dispatcher, so a request that arrived behind this one is carried
+ * out rather than cleared unseen; a request that came in while the
+ * shell was still restoring waits in the flow until the shell composes
+ * and is delivered once.
+ */
+internal suspend fun deliverLaunchRequest(
+    pending: LaunchRequest,
+    container: AppContainer,
+    navController: NavController,
+    launchRequest: MutableStateFlow<LaunchRequest?>,
+) {
+    // A link the user follows twice lands on the destination it names,
+    // rather than stacking a second copy of it.
+    val singleTop: NavOptionsBuilder.() -> Unit = { launchSingleTop = true }
+    val destination = pending.destination
+    val threadAccount = (destination as? AppDestination.Thread)?.let {
+        it.accountId ?: container.accountHolding(it.threadId)
+    }
+    withContext(Dispatchers.Main.immediate) {
+        when (destination) {
+            is AppDestination.Thread ->
+                if (threadAccount != null) {
+                    navController.navigate("thread/$threadAccount/${destination.threadId}", singleTop)
+                }
+
+            is AppDestination.Reply ->
+                navController.navigate(
+                    "compose/${ComposeMode.REPLY.name}/${destination.accountId}/${destination.emailId}",
+                    singleTop,
+                )
+
+            is AppDestination.Compose -> {
+                container.composeHandoff.value = ComposeHandoff(
+                    prefill = destination.prefill,
+                    attachments = pending.attachments.map { it.toString() },
+                )
+                navController.navigate("compose-handoff", singleTop)
+            }
+
+            is AppDestination.Settings -> navController.navigate("settings", singleTop)
+
+            AppDestination.Inbox -> navController.popBackStack("inbox", inclusive = false)
+        }
+        launchRequest.compareAndSet(pending, null)
     }
 }
 
