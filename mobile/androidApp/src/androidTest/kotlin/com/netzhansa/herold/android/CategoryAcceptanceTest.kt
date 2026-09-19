@@ -119,6 +119,11 @@ class CategoryAcceptanceTest {
             compose.onAllNodesWithTag("category-row-$DERIVED_PROMOTIONS").fetchSemanticsNodes().isNotEmpty()
         }
         compose.captureScreen("m4-derived-category-settings")
+        // The list is as long as the account has labels, and a row below
+        // the fold takes the tap at an offset outside the window: the
+        // sheet never opens and the wait below runs out.
+        compose.onNodeWithTag("categories-screen")
+            .performScrollToNode(hasTestTag("category-row-$DERIVED_PROMOTIONS"))
         compose.onNodeWithTag("category-row-$DERIVED_PROMOTIONS").performClick()
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithTag("category-choice-bundled").fetchSemanticsNodes().isNotEmpty()
