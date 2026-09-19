@@ -286,20 +286,23 @@ func (w *accountWorker) processWriteBack(ctx context.Context, conn Conn, ch stor
 //     per row: pushing is never wrong regardless of what any other row for
 //     the same message is doing (REQ-IMAP-IMP-42, re #435: "a local read
 //     is pushed to every upstream copy").
-//   - A row whose own upstream copy moved (whether or not herold also
-//     changed -- the same "both changed, upstream wins" rule the single-row
-//     case has always applied) proposes applying its upstream value to
-//     herold. When several rows for the same message propose different
-//     values (one copy seen upstream, one not), herold gets one coherent
-//     outcome: the bitwise OR of every proposing row's upstream flags, so
-//     \Seen wins if set on ANY copy -- a message read via any one of its
-//     upstream placements has genuinely been read, and this choice is what
-//     closes the durability gap above (a copy that never advances can no
-//     longer drag an already-confirmed read back to unseen). Per
-//     REQ-IMAP-IMP-42 ("an upstream-side change only wins when no local
-//     change is outstanding on any of the rows"), a row only enters this
-//     branch when its own upstream copy moved; a row that is merely
-//     catching up to herold (the case above) never contributes here.
+//   - When at least one row's own upstream copy moved (whether or not
+//     herold also changed -- the same "both changed, upstream wins" rule
+//     the single-row case has always applied), herold gets one coherent
+//     outcome: the bitwise OR of EVERY row's CURRENT upstream flags for the
+//     message, not only the rows that moved this round, so \Seen wins if
+//     set on ANY copy -- a message read via any one of its upstream
+//     placements has genuinely been read. A row that did not move this
+//     round but still currently shows \Seen upstream keeps contributing
+//     that \Seen bit to the vote; excluding it (voting only the movers)
+//     let an already-confirmed read get dragged back to unseen by an
+//     unrelated sibling clearing \Seen. The genuine "propagate to unseen"
+//     case is unaffected: when every row's current upstream state is
+//     unseen, the OR is unseen and herold follows. Per REQ-IMAP-IMP-42
+//     ("an upstream-side change only wins when no local change is
+//     outstanding on any of the rows"), the branch only triggers when at
+//     least one row's own upstream copy moved; a row that is merely
+//     catching up to herold (the push branch above) never triggers it.
 func (w *accountWorker) reconcileMessageFlags(ctx context.Context, conn Conn, msgID store.MessageID) {
 	account := w.opts.account
 	log := w.opts.log
@@ -382,18 +385,25 @@ func (w *accountWorker) reconcileMessageFlags(ctx context.Context, conn Conn, ms
 		w.status.incPropagated(1)
 	}
 
-	// Upstream branch: every row whose own upstream copy moved. Combine
-	// their proposals into one coherent value (OR: \Seen/\Flagged wins if
-	// set on any copy) and apply it to herold once.
+	// Upstream branch: triggered when at least one row's own upstream copy
+	// moved this round, but the vote itself is OR-ed over every row's
+	// CURRENT upstream flags -- including a row that did not change this
+	// round. A row that is already caught up and still shows \Seen upstream
+	// has genuinely confirmed that copy was read; excluding it from the vote
+	// just because it happened not to move THIS round is what let a sibling
+	// row's independent (and possibly unrelated) drift drag an
+	// already-confirmed read back to unseen.
 	var combined store.IMAPImportSyncedFlags
 	var proposers []int
 	sawConflict := false
+	for i := range views {
+		combined |= views[i].upstream
+	}
 	for i := range views {
 		v := &views[i]
 		if !v.upstreamChanged {
 			continue
 		}
-		combined |= v.upstream
 		proposers = append(proposers, i)
 		if v.localChanged {
 			sawConflict = true

@@ -277,6 +277,80 @@ func TestDownSyncCoherentOutcomeMixedUpstreamSeen(t *testing.T) {
 	}
 }
 
+// TestDownSyncAnyCopyStillSeenSurvivesSiblingClear is the reproduction for
+// the independent-verification follow-up to #435: reconcileMessageFlags
+// computed its down-sync "combined" vote by OR-ing only the rows whose OWN
+// upstream copy changed THIS round (upstreamChanged), excluding a row that
+// is already caught up and whose current upstream flags still carry \Seen.
+// Both dedup copies start \Seen upstream (pushed there by write-back); one
+// copy then has \Seen cleared upstream while the other is left untouched and
+// still \Seen upstream. The untouched copy's still-\Seen state must keep the
+// message \Seen in herold -- excluding it from the vote is the same "a copy
+// that never advances drags an already-confirmed read back to unseen"
+// failure the original ticket reported.
+func TestDownSyncAnyCopyStillSeenSurvivesSiblingClear(t *testing.T) {
+	for _, be := range ownSentDedupBackends(t) {
+		t.Run(be.name, func(t *testing.T) {
+			ts := startTestIMAPServer(t)
+			ts.addUser("dd4", "pw")
+
+			ha, _ := testharness.Start(t, testharness.Options{Store: be.st, Clock: be.clk})
+			acc := makeAccountWithFloor(t, ha.Store, ts, accountCfg{
+				email:               "dd4@example.test",
+				username:            "dd4",
+				credentialPlaintext: "pw",
+			}, nil)
+
+			uidTo, uidCc := appendDedupPair(t, ts, "dd4", "pw", "INBOX", "dd4-dup@test")
+
+			ctx := context.Background()
+			if err := runSyncOnce(t, ha, ts, acc, nil); err != nil {
+				t.Fatalf("initial sync: %v", err)
+			}
+			msTo, found, err := ha.Store.Meta().GetIMAPImportMessageState(ctx, acc.ID, "INBOX", uint32(uidTo))
+			if err != nil || !found {
+				t.Fatalf("state (To copy): found=%v err=%v", found, err)
+			}
+			msgID := msTo.HeroldMessageID
+
+			heroldMsg, err := ha.Store.Meta().GetMessage(ctx, msgID)
+			if err != nil {
+				t.Fatalf("GetMessage: %v", err)
+			}
+			if _, err := ha.Store.Meta().UpdateMessageFlags(ctx, heroldMsg.ID, heroldMsg.MailboxID,
+				store.MessageFlagSeen, 0, nil, nil, 0); err != nil {
+				t.Fatalf("UpdateMessageFlags: %v", err)
+			}
+
+			// Push the read to both upstream copies.
+			runOneWriteBackPass(t, ha, ts, acc)
+			if err := runSyncOnce(t, ha, ts, acc, nil); err != nil {
+				t.Fatalf("down-sync after push: %v", err)
+			}
+			if ms2flags(t, ha, msgID)&store.MessageFlagSeen == 0 {
+				t.Fatal("precondition: message should be \\Seen after the push")
+			}
+			for _, uid := range []imap.UID{uidTo, uidCc} {
+				if !hasUpstreamSeen(t, ts, "dd4", "pw", "INBOX", uid) {
+					t.Fatalf("precondition: upstream uid %d should carry \\Seen after the push", uid)
+				}
+			}
+
+			// Clear \Seen upstream on the To copy only; the Cc copy is left
+			// untouched and still carries \Seen upstream.
+			clearUpstreamSeen(t, ts, "dd4", "pw", "INBOX", uidTo)
+
+			if err := runSyncOnce(t, ha, ts, acc, nil); err != nil {
+				t.Fatalf("down-sync round: %v", err)
+			}
+
+			if ms2flags(t, ha, msgID)&store.MessageFlagSeen == 0 {
+				t.Error("herold message should stay \\Seen: the Cc copy is untouched and still \\Seen upstream")
+			}
+		})
+	}
+}
+
 // setUpstreamFlagged sets \Flagged on the given upstream message via IMAP
 // STORE, without touching \Seen.
 func setUpstreamFlagged(t *testing.T, ts *testIMAPServer, user, password, mailbox string, uid imap.UID) {
@@ -291,4 +365,32 @@ func setUpstreamFlagged(t *testing.T, ts *testIMAPServer, user, password, mailbo
 	if err := conn.UIDStoreFlags(ctx, uid, imap.StoreFlagsAdd, []imap.Flag{imap.FlagFlagged}); err != nil {
 		t.Fatalf("UIDStoreFlags: %v", err)
 	}
+}
+
+// clearUpstreamSeen removes \Seen on the given upstream message via IMAP
+// STORE.
+func clearUpstreamSeen(t *testing.T, ts *testIMAPServer, user, password, mailbox string, uid imap.UID) {
+	t.Helper()
+	ctx := context.Background()
+	conn := dialFakeConn(t, ts, user, password)
+	defer conn.Logout()
+	defer conn.Close()
+	if _, err := conn.SelectReadWrite(ctx, mailbox); err != nil {
+		t.Fatalf("SelectReadWrite: %v", err)
+	}
+	if err := conn.UIDStoreFlags(ctx, uid, imap.StoreFlagsDel, []imap.Flag{imap.FlagSeen}); err != nil {
+		t.Fatalf("UIDStoreFlags: %v", err)
+	}
+}
+
+// hasUpstreamSeen reports whether the given upstream message currently
+// carries \Seen.
+func hasUpstreamSeen(t *testing.T, ts *testIMAPServer, user, password, mailbox string, uid imap.UID) bool {
+	t.Helper()
+	for _, f := range getUpstreamFlags(t, ts, user, password, mailbox, uid) {
+		if f == imap.FlagSeen {
+			return true
+		}
+	}
+	return false
 }
