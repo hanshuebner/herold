@@ -16,6 +16,20 @@ actions, touch gestures) is cited from the Suite, not restated.
 | REQ-AND-NAV-04 | The mailbox/label tree opens as a navigation drawer (Suite `REQ-MOB-34`). Pickers (label, snooze, from-identity) render as bottom sheets (Suite `REQ-MOB-37`). |
 | REQ-AND-NAV-05 | The tablet two/three-pane layouts (Suite `REQ-MOB-40..47`) are a later adaptation of the same navigation graph; phone is the v1 delivery target. |
 
+## Inbox category lanes
+
+The inbox is divided into the account's category lanes, whose dispositions and
+priorities come from the server's `Mailbox` objects (Suite
+`docs/design/web/requirements/05-categorisation.md` REQ-CAT-01..11, issues #399,
+#404, #427).
+
+| ID | Requirement |
+|----|-------------|
+| REQ-AND-NAV-30 | The inbox carries a tab row of the account's lanes and nothing besides: one tab per `pinned` category, in the server's priority order, with the labels that state a disposition ahead of the categories that take the pinned default. An account with no lanes shows no tab row and one undivided list. |
+| REQ-AND-NAV-31 | The inbox opens on the `primary`-role lane (Suite REQ-CAT-03), which is also where a message carrying no category lands. That lane carries what no other tab claims: a `bundled` category's collapsed row and a conversation whose category has no lane of its own. An account without a `primary` lane opens on the leading tab, which carries the same. |
+| REQ-AND-NAV-32 | The lane the reader picks holds across a sync that adds or reorders lanes; a lane that the server takes away returns the selection to the `primary` lane. |
+| REQ-AND-NAV-33 | A tab whose lane holds unread mail carries a badge with that lane's unread conversation count, the conversations inside a bundled row included; past 99 the badge reads `99+`. The count is read from the local store's rows, so it follows a message being read or arriving without waiting for a sync to end. The badge sits in a slot each tab keeps in every state, so the row's geometry does not change when a count appears, changes width, or goes. |
+
 ## Back and gesture navigation
 
 | ID | Requirement |
