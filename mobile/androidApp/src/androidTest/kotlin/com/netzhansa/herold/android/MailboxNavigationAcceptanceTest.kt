@@ -23,6 +23,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
+import org.junit.After
 import org.junit.Assert.assertFalse
 import org.junit.Rule
 import org.junit.Test
@@ -47,6 +48,27 @@ class MailboxNavigationAcceptanceTest {
 
     private val app get() = instrumentation.targetContext.applicationContext as HeroldApplication
 
+    /** The rule and the label this run seeded, dropped again afterwards. */
+    private var seededRule: String? = null
+    private var seededLabel: String? = null
+
+    /**
+     * Takes the seeded rule and its label off the account, so the next
+     * class meets the label set it would meet on a fresh instance
+     * (issue #414).
+     */
+    @After
+    fun dropSeed(): Unit = runBlocking {
+        val client = DevInstance.serverClient()
+        val accountId = client.session().mailAccountId!!
+        seededRule?.let { client.managedRuleSet(accountId, destroy = listOf(it)) }
+        seededLabel?.let { name ->
+            client.mailboxGet(accountId, null).list
+                .firstOrNull { it.role == null && it.name.equals(name, ignoreCase = true) }
+                ?.let { client.mailboxSet(accountId, destroy = listOf(it.id)) }
+        }
+    }
+
     @Test
     fun t40_aFolderAndALabelOpenFromTheDrawerAndListTheirThreads(): Unit = runBlocking {
         val stamp = System.currentTimeMillis()
@@ -69,6 +91,8 @@ class MailboxNavigationAcceptanceTest {
             create = mapOf("drawer" to rule("Drawer $stamp", sender, labelName)),
         )
         check(created.errors.isEmpty()) { "the seed rule was refused: ${created.errors}" }
+        seededRule = created.created.values.firstOrNull()?.id
+        seededLabel = labelName
 
         DevInstance.deliverMail(subject = labelled, from = "Drawer <$sender>", body = "Filed by the rule.")
         DevInstance.deliverMail(subject = archived, body = "Moved to the archive.")

@@ -18,6 +18,7 @@ import com.netzhansa.herold.shared.domain.Email
 import com.netzhansa.herold.shared.domain.ManagedRule
 import com.netzhansa.herold.shared.jmap.JmapClient
 import kotlinx.coroutines.runBlocking
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -52,6 +53,23 @@ class FiltersAcceptanceTest {
 
     /** A label to file matching mail into; unique so reruns do not collide. */
     private val labelName = "Acme"
+
+    /**
+     * Takes the class's rules and the label they file into off the
+     * account, so a filter written here cannot file a later class's
+     * mail and the label set is the one a fresh instance holds
+     * (issue #414).
+     */
+    @After
+    fun dropRules(): Unit = runBlocking {
+        val client = DevInstance.serverClient()
+        val accountId = client.session().mailAccountId!!
+        val rules = client.managedRuleGet(accountId, null).list.map { it.id }
+        if (rules.isNotEmpty()) client.managedRuleSet(accountId, destroy = rules)
+        client.mailboxGet(accountId, null).list
+            .firstOrNull { it.role == null && it.name.equals(labelName, ignoreCase = true) }
+            ?.let { client.mailboxSet(accountId, destroy = listOf(it.id)) }
+    }
 
     @Test
     fun t05_aQueuedRuleWriteDrainsRatherThanSittingInTheOutbox(): Unit = runBlocking {
