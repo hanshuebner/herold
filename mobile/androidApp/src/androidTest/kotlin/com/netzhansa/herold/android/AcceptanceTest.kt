@@ -26,6 +26,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -47,7 +48,8 @@ import org.junit.runners.MethodSorters
  * Each check provisions the mail it reads, so the run stands on any
  * instance and in any order. The category-tab check additionally pins the
  * two lanes it reads, since a tab is a label the server holds at
- * disposition "pinned" (issue #399).
+ * disposition "pinned" (issue #399); the labels it found go back as they
+ * were when the class is done (issue #414).
  */
 @RunWith(AndroidJUnit4::class)
 @FixMethodOrder(MethodSorters.NAME_ASCENDING)
@@ -59,13 +61,24 @@ class AcceptanceTest {
     private val app get() = InstrumentationRegistry.getInstrumentation()
         .targetContext.applicationContext as HeroldApplication
 
+    private lateinit var labelState: LabelState
+
     @Before
     fun signedOut() {
         // The app asks for it contextually after the first sync; granted up
         // front the dialog never covers the screen these checks read.
         grantNotificationPermission()
-        runBlocking { app.container.signOut() }
+        runBlocking {
+            app.container.signOut()
+            val client = DevInstance.serverClient()
+            labelState = LabelState.take(client, client.session().mailAccountId!!)
+        }
         compose.waitUntil(TIMEOUT_MS) { compose.onAllNodesWithTag("signin-submit").fetchSemanticsNodes().isNotEmpty() }
+    }
+
+    @After
+    fun restoreLabels() {
+        runBlocking { labelState.restore() }
     }
 
     @Test
@@ -409,10 +422,13 @@ class AcceptanceTest {
         // this check reads are pinned here, through the same Mailbox/set
         // the settings screen writes.
         val accountId = session.client.session().mailAccountId!!
+        // The server pins at most five lanes, so the budget is cleared
+        // before the two this check reads are asked for (issue #414).
+        labelState.unpinAll(keep = setOf(CATEGORY_A, CATEGORY_B))
         val labels = session.client.mailboxGet(accountId, null).list
         listOf(CATEGORY_A, CATEGORY_B).forEachIndexed { rank, category ->
             val existing = labels.firstOrNull { it.role == null && it.name.equals(category, true) }
-            if (existing == null) {
+            val outcome = if (existing == null) {
                 session.client.mailboxSet(
                     accountId,
                     create = mapOf(
@@ -433,6 +449,12 @@ class AcceptanceTest {
                         },
                     ),
                 )
+            }
+            // A refused pin leaves the label at "none" and the tab
+            // absent, which reads on the screen as a missing lane rather
+            // than as the refusal it is.
+            check(outcome.errorMessages.isEmpty()) {
+                "pinning the $category lane failed: ${outcome.errorMessages}"
             }
         }
         listOf(CATEGORY_A to PROMOTIONS_MARKER, CATEGORY_B to UPDATES_MARKER).forEach { (category, marker) ->
