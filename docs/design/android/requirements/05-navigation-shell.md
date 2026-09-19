@@ -66,6 +66,7 @@ REQ-UI-20..25).
 | REQ-AND-NAV-21 | On foreground the shell reopens EventSource and triggers reconciliation (`02-offline-and-sync.md` REQ-AND-SYNC-11); on background it releases the connection and relies on FCM. |
 | REQ-AND-NAV-22 | The virtual keyboard is handled via window insets (IME insets): the focused input stays visible above the keyboard and bottom-anchored controls reposition (parallels Suite `REQ-MOB-60/61`). IME composition, autocorrect, and swipe-typing are not intercepted (Suite `REQ-MOB-63`). |
 | REQ-AND-NAV-23 | Safe-area / display-cutout insets are respected so content is not clipped by notches or the navigation bar (parallels Suite `REQ-MOB-56`). |
+| REQ-AND-NAV-24 | The shell draws edge to edge, so every surface pinned to the window's bottom edge - the conversation's reply pills, the inbox's compose button, the drawer's pinned entries, a sheet's action row - pads itself out of what the platform reports there (the navigation bar, and the strip a gesture-navigated device holds for its swipe), while its background carries on to the edge of the screen. The room comes from the report, so a three-button device gets a bar's height and a gesture-navigated one a handle's worth, with no band of empty screen under either (issue #428). |
 
 ## Out of scope (v1)
 

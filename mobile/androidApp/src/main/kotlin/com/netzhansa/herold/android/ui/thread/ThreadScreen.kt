@@ -98,6 +98,7 @@ import com.netzhansa.herold.android.push.MailNotifier
 import com.netzhansa.herold.android.links.ExternalBrowser
 import com.netzhansa.herold.android.media.ImageScaling
 import com.netzhansa.herold.android.ui.common.SnoozeSheet
+import com.netzhansa.herold.android.ui.common.bottomSystemBarsPadding
 import com.netzhansa.herold.android.ui.common.StatusIndicator
 import com.netzhansa.herold.android.ui.common.UndoOffers
 import com.netzhansa.herold.android.ui.common.collectAsStateSafely
@@ -1028,10 +1029,14 @@ private fun ReplyBar(
     onReplyAll: () -> Unit,
     onForward: () -> Unit,
 ) {
+    // The surface paints to the bottom of the screen; the row inside it
+    // stands above whatever the system holds there, so no pill lands
+    // under the gesture handle (issue #428).
     Surface(tonalElevation = 2.dp) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .bottomSystemBarsPadding()
                 .padding(horizontal = 12.dp, vertical = 8.dp)
                 .testTag("thread-reply-bar"),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
