@@ -13,7 +13,6 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
-import com.netzhansa.herold.shared.auth.SignInResult
 import com.netzhansa.herold.shared.domain.Email
 import com.netzhansa.herold.shared.domain.ManagedRule
 import com.netzhansa.herold.shared.jmap.JmapClient
@@ -66,9 +65,7 @@ class FiltersAcceptanceTest {
         val accountId = client.session().mailAccountId!!
         val rules = client.managedRuleGet(accountId, null).list.map { it.id }
         if (rules.isNotEmpty()) client.managedRuleSet(accountId, destroy = rules)
-        client.mailboxGet(accountId, null).list
-            .firstOrNull { it.role == null && it.name.equals(labelName, ignoreCase = true) }
-            ?.let { client.mailboxSet(accountId, destroy = listOf(it.id)) }
+        LabelState.take(client, accountId).dropLabels(setOf(labelName))
     }
 
     @Test
@@ -380,12 +377,7 @@ class FiltersAcceptanceTest {
 
     private fun signInAndSync() = runBlocking {
         grantNotificationPermission()
-        if (app.container.session.value == null) {
-            val result = app.container.signInWithPassword(
-                DevInstance.baseUrl, DevInstance.email, DevInstance.password, null,
-            )
-            assertTrue("sign-in failed: $result", result is SignInResult.Success)
-        }
+        app.signInAsDevInstancePrincipal()
         app.container.session.value!!.syncEngine.syncAll()
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithTag("inbox-list").fetchSemanticsNodes().isNotEmpty()

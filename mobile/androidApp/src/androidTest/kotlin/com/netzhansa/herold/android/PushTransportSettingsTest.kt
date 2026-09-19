@@ -9,10 +9,8 @@ import androidx.compose.ui.test.performScrollToNode
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.netzhansa.herold.android.push.PushTransportChoice
-import com.netzhansa.herold.shared.auth.SignInResult
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -36,12 +34,7 @@ class PushTransportSettingsTest {
     fun signedIn() {
         grantNotificationPermission()
         runBlocking {
-            if (app.container.session.value == null) {
-                val result = app.container.signInWithPassword(
-                    DevInstance.baseUrl, DevInstance.email, DevInstance.password, null,
-                )
-                assertTrue("sign-in failed: $result", result is SignInResult.Success)
-            }
+            app.signInAsDevInstancePrincipal()
             app.container.session.value!!.syncEngine.syncAll()
         }
         app.container.push.choice = PushTransportChoice.AUTOMATIC
