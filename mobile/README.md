@@ -169,6 +169,21 @@ Run the classes in a few invocations rather than one: a single invocation of
 the whole suite loads the emulator enough that a delivery wait or the
 editor's readiness check can exceed its 30 s budget.
 
+### Any order, twice over (issue #414)
+
+The classes share one account on the instance, so a class that writes
+account-wide state gives it back. `AcceptanceTest`, `CategoryAcceptanceTest`,
+`FiltersAcceptanceTest` and `MailboxNavigationAcceptanceTest` snapshot the
+labels or rules they find and restore them in an `@After`
+(`LabelState.take` / `restore`), and the checks that need a pinned lane
+clear the five-pin budget first rather than hoping it is free. A new class
+that writes labels, dispositions, managed rules or snoozes does the same: the
+suite has to pass in any order and twice in a row on one instance.
+
+Mail is the exception - a check delivers the messages it reads and leaves
+them - so a class asserts on the conversations it created, never on what the
+seed or an earlier class happens to hold.
+
 ### Oversized parts (issue #420)
 
 `BlobCacheInstrumentedTest` needs no instance: it states Android's 2 MiB
