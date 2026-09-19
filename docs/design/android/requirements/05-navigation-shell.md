@@ -30,6 +30,23 @@ priorities come from the server's `Mailbox` objects (Suite
 | REQ-AND-NAV-32 | The lane the reader picks holds across a sync that adds or reorders lanes; a lane that the server takes away returns the selection to the `primary` lane. |
 | REQ-AND-NAV-33 | A tab whose lane holds unread mail carries a badge with that lane's unread conversation count, the conversations inside a bundled row included; past 99 the badge reads `99+`. The Suite badges its own tab strip the same way. The count is read from the local store's rows, so it follows a message being read or arriving without waiting for a sync to end. The badge sits in a slot each tab keeps in every state, so the row's geometry does not change when a count appears, changes width, or goes. |
 
+## Conversation screen
+
+The reading pane's arrangement, taken from Gmail's (issue #428): a short
+action bar, the subject as a heading in the content, one card per message
+carrying its own actions, and the answers below the conversation. Behaviour
+of the accordion itself is the Suite's (`docs/design/web/requirements/09-ui-layout.md`
+REQ-UI-20..25).
+
+| ID | Requirement |
+|----|-------------|
+| REQ-AND-NAV-40 | The conversation's app bar carries back, archive, delete, mark-unread, the conversation overflow and the status indicator (`02-offline-and-sync.md` REQ-AND-SYNC-30), and nothing else. The overflow holds what applies to the whole conversation: mute, snooze, share and reporting a problem. |
+| REQ-AND-NAV-41 | The subject is a heading in the scrolling content: at most two lines, ellipsised, with the mailboxes and labels the conversation sits in named beside it and the conversation's star at its right. It scrolls away with the messages. |
+| REQ-AND-NAV-42 | A message card carries the sender's avatar - the initials over the colour derived from the address (Suite `REQ-MAIL-44` tier 4) - the display name in bold with the message's date on the same line, and a recipients line that a chevron opens onto the full from, to and cc addresses and the message's full timestamp. A collapsed message keeps its one-line preview. |
+| REQ-AND-NAV-43 | Each message carries its own reply affordance and overflow: reply, reply all, forward, star this message, mark unread from here, block the sender, create a filter from this message, and "Why is this here?". They act on the message they sit on. |
+| REQ-AND-NAV-44 | Reply, reply all and forward are pills pinned below the conversation and act on its newest message, the one a reply answers (Suite `REQ-MAIL-30`). |
+| REQ-AND-NAV-45 | Marking unread - the whole conversation from the bar, the message and the ones after it from a card - leaves the conversation, so the reader lands on the list where the unread row is. Delete moves the conversation into the trash mailbox and out of the others, under the undo offer archive carries (`02-offline-and-sync.md` REQ-AND-SYNC-20). |
+
 ## Back and gesture navigation
 
 | ID | Requirement |

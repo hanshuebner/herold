@@ -26,6 +26,7 @@ presentation-level and not yet built.
 |---|---|---|---|
 | `02-mail-basics` — thread model, read/unread, star | protocol | n/a | — |
 | `02-mail-basics` — reading-pane HTML render + inline images | presentation | done (milestone 1a) | #327 |
+| `09-ui-layout` — reading-pane arrangement (`REQ-UI-20..25`) | presentation | done (#428); Gmail's arrangement natively: a short app bar (back, archive, delete, mark-unread, overflow, status indicator), the subject as a heading in the scrolling content with the label chips and the star, a card per message with an avatar, the date on the sender's line, an expanding recipients line and its own reply and overflow, and reply/reply all/forward as pills pinned below the conversation (`REQ-AND-NAV-40..45`) | #428 |
 | `02-mail-basics` — sub-account combined inbox + scope switcher (`REQ-MAIL-SUB-01..09`) | presentation | done (milestone 1a) | #327 |
 | `02-mail-basics` — emoji reactions (`Email.reactions`) | protocol | n/a | — |
 | `02-mail-basics` — undo-send window (`REQ-MAIL-14`, `REQ-SET-06`) | presentation | done (milestone 2a, #354); the phone holds the message in its own outbox for the window instead of the suite's server-side `sendAt`, so an undo costs no round trip and works offline | #354 |
@@ -68,7 +69,7 @@ presentation-level and not yet built.
 | `25-push-notifications` — enriched push payload | protocol | n/a | — |
 | `25-push-notifications` — notification presentation (FCM) | presentation | done (milestone 1b); Gmail-grade presentation - app icon, decoded sender, avatar, subject and preview, attachment chips, Reply (#348) | #328 |
 | `25-push-notifications` — transport selection (FCM or UnifiedPush) | presentation | done (milestone 2c); Automatic prefers FCM where Play Services carries it and falls back to a UnifiedPush distributor, and settings pins either. The suite has one transport (Web Push) and no such choice. | #229 |
-| `02-mail-basics` / `REQ-MAIL-44` — sender avatar (hosted principal's picture, initials fallback) | presentation | done in notifications (#348); the message list and reading pane still show no avatar | #348 |
+| `02-mail-basics` / `REQ-MAIL-44` — sender avatar (hosted principal's picture, initials fallback) | presentation | done in notifications (#348) and on every message card in the reading pane (#428), where the initials sit on the colour derived from the address; the message list still shows none | #348 |
 | G7 — LLM transparency contract | protocol | n/a | — |
 | G7 — per-message "the LLM was asked ..." inspect view | presentation | done (milestone 3a, #361); "Why is this here?" in the thread overflow over `Email/llmInspect`, with the prompt as applied to the message | #361 |
 
