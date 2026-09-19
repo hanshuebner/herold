@@ -513,7 +513,7 @@ class InboxAssemblerTest {
     }
 
     @Test
-    fun theLeadingTabIsHomeOnAnAccountWithoutAPrimaryLane() {
+    fun thePrimaryTabLeadsTheRowEvenWhenNoCategoryClaimsIt() {
         val lanes = CategoryLanes.from(
             listOf(
                 label("Hobby", CategoryDisposition.PINNED, priority = 0),
@@ -521,8 +521,37 @@ class InboxAssemblerTest {
             ),
         )
 
-        assertEquals("hobby", lanes.select(null))
-        assertEquals("hobby", lanes.tabOf("unlaned"))
+        assertEquals(listOf("primary", "hobby", "promotions"), lanes.tabs)
+        assertEquals("primary", lanes.select(null))
+        assertEquals("primary", lanes.tabOf("unlaned"), "mail with no lane of its own goes to Primary")
+    }
+
+    @Test
+    fun thePrimaryTabIsThereWhenTheCategoriesOutnumberThePinnedBudget() {
+        val lanes = CategoryLanes.from(
+            mailboxes,
+            derivedCategories = emptyList(),
+            observedCategories = listOf(
+                "alpha", "beta", "gamma", "delta", "epsilon", "primary", "promotions",
+            ),
+        )
+
+        assertEquals(CategoryLanes.PINNED_LIMIT, lanes.pinned.size, "the pinned budget is the server's")
+        assertEquals("primary", lanes.tabs.first(), "the lane uncategorised mail falls to keeps its tab")
+        assertEquals("primary", lanes.select(null))
+        assertEquals(
+            "primary",
+            lanes.tabOf("promotions"),
+            "a category the budget left out shows under Primary rather than nowhere",
+        )
+    }
+
+    @Test
+    fun anAccountWithNoLanesGetsNoPrimaryTabEither() {
+        val lanes = CategoryLanes.from(mailboxes, emptyList())
+
+        assertTrue(lanes.tabs.isEmpty())
+        assertNull(lanes.home)
     }
 
     @Test

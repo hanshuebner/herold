@@ -98,17 +98,31 @@ data class CategoryLanes(
     fun dispositionOf(category: String?): CategoryDisposition =
         category?.let { dispositions[it] } ?: CategoryDisposition.NONE
 
-    /** The lanes the inbox's tab row carries, in priority order (issue #427). */
-    val tabs: List<String> get() = pinned
+    /**
+     * The lanes the inbox's tab row carries, in priority order
+     * (issue #427). The primary-role lane leads the row unless the
+     * account gives it a lane of its own: it is where uncategorised
+     * mail goes (REQ-CAT-03), so a row without it would leave that mail
+     * with no tab to appear under - which is what an account with more
+     * categories than the pinned budget holds would otherwise do.
+     */
+    val tabs: List<String>
+        get() = when {
+            pinned.isEmpty() -> emptyList()
+            PRIMARY_ROLE in pinned -> pinned
+            dispositions[PRIMARY_ROLE].let { it == null || it == CategoryDisposition.PINNED } ->
+                listOf(PRIMARY_ROLE) + pinned
+            else -> pinned
+        }
 
     /**
      * The lane that carries whatever no tab of its own claims: the
      * primary-role category (REQ-CAT-03), or the leading tab on an
-     * account whose primary category is no tab. A bundled category's
-     * row and a conversation whose category has no lane live here, so
-     * nothing the inbox holds is out of reach once the combined view is
-     * gone (issue #427). An account with no lanes has no home lane and
-     * one undivided list.
+     * account that gives its primary category another lane. A bundled
+     * category's row and a conversation whose category has no lane live
+     * here, so nothing the inbox holds is out of reach once the
+     * combined view is gone (issue #427). An account with no lanes has
+     * no home lane and one undivided list.
      */
     val home: String? get() = PRIMARY_ROLE.takeIf { it in tabs } ?: tabs.firstOrNull()
 
