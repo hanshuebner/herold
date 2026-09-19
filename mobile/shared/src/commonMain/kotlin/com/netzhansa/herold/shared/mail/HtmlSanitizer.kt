@@ -15,6 +15,9 @@ object HtmlSanitizer {
     /** Scheme the reading pane intercepts to serve an inline image from the blob cache. */
     const val INLINE_SCHEME = "https://inline.herold.invalid/"
 
+    /** The box the body renders in, which is as wide as the card. */
+    const val BODY_CLASS = "herold-body"
+
     private val activeElements = listOf("script", "iframe", "object", "embed", "applet", "form", "meta", "link")
 
     private val eventHandler = Regex("""\son[a-zA-Z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)""", RegexOption.IGNORE_CASE)
@@ -83,10 +86,20 @@ object HtmlSanitizer {
                      font-family: sans-serif; font-size: 15px; line-height: 1.45;
                      overflow-wrap: break-word; }
               img { max-width: 100%; height: auto; }
-              table { max-width: 100%; }
+              /* A document written for a desktop pane declares pixel widths
+                 a phone does not have. Capping every box at the width it was
+                 given reflows the document to the card at its own text size
+                 (issue #430). */
+              body * { max-width: 100%; }
+              /* What no reflow can narrow - a row that refuses to wrap, a
+                 fixed table - keeps its width and scrolls sideways in this
+                 box, which is as wide as the card. The conversation around
+                 it only ever scrolls up and down. */
+              .$BODY_CLASS { overflow-x: auto; }
+              table { border-collapse: collapse; }
               a { color: #4c8dff; }
             </style>
-            </head><body>$body</body></html>
+            </head><body><div class="$BODY_CLASS">$body</div></body></html>
         """.trimIndent()
     }
 }

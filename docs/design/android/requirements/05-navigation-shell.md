@@ -46,6 +46,7 @@ REQ-UI-20..25).
 | REQ-AND-NAV-43 | Each message carries its own reply affordance and overflow: reply, reply all, forward, star this message, mark unread from here, block the sender, create a filter from this message, and "Why is this here?". They act on the message they sit on. |
 | REQ-AND-NAV-44 | Reply, reply all and forward are pills pinned below the conversation and act on its newest message, the one a reply answers (Suite `REQ-MAIL-30`). |
 | REQ-AND-NAV-45 | Marking unread - the whole conversation from the bar, the message and the ones after it from a card - leaves the conversation, so the reader lands on the list where the unread row is. Delete moves the conversation into the trash mailbox and out of the others, under the undo offer archive carries (`02-offline-and-sync.md` REQ-AND-SYNC-20). |
+| REQ-AND-NAV-46 | A message body is laid out to the card's width at the text size the pane renders with: the body document declares `width=device-width, initial-scale=1` and the WebView honours it (`useWideViewPort`, `loadWithOverviewMode`), and every box is capped at the width it was given, so a document written for a desktop pane reflows instead of running off the screen. What no reflow can narrow keeps its width and scrolls sideways inside the body's own box; the conversation around it only ever scrolls up and down (issue #430). |
 
 ## Back and gesture navigation
 

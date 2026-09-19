@@ -57,6 +57,19 @@ class HtmlSanitizerTest {
     }
 
     @Test
+    fun theDocumentLaysABodyOutToTheCardsWidth() {
+        val document = HtmlSanitizer.document("<p>Body</p>", darkTheme = false)
+
+        // The viewport the WebView's wide-viewport setting reads.
+        assertContains(document, "width=device-width, initial-scale=1")
+        // Every box is capped at the width it was given, and what cannot
+        // be narrowed scrolls inside the body's own box (issue #430).
+        assertContains(document, "body * { max-width: 100%; }")
+        assertContains(document, ".${HtmlSanitizer.BODY_CLASS} { overflow-x: auto; }")
+        assertContains(document, "<div class=\"${HtmlSanitizer.BODY_CLASS}\"><p>Body</p></div>")
+    }
+
+    @Test
     fun plainTextBodiesAreEscapedNotInterpreted() {
         val html = HtmlSanitizer.fromPlainText("<b>not bold</b> & co")
 
