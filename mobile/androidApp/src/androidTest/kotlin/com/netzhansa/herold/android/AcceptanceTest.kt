@@ -183,21 +183,31 @@ class AcceptanceTest {
     @Test
     fun t03_theInboxShowsSeededThreadsWithCategoryTabsThatFilterTheList() {
         signIn()
-        provisionCategoryLanes()
+        val seeded = provisionCategoryLanes()
         syncNow()
 
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithTag("inbox-tabs").fetchSemanticsNodes().isNotEmpty()
         }
         compose.onNodeWithTag("inbox-list").assertIsDisplayed()
-        val rowsBefore = threadRowCount()
-        assertTrue("expected seeded threads in the inbox, found $rowsBefore", rowsBefore >= 2)
+        assertTrue(
+            "the tab row carries the account's lanes and no combined entry (issue #427)",
+            compose.onAllNodesWithTag("inbox-tab-all").fetchSemanticsNodes().isEmpty(),
+        )
+        assertTrue("expected seeded threads in the inbox", threadRowCount() >= 1)
         compose.captureScreen("04-inbox-with-category-tabs")
 
+        // A tab shows its own lane: the message seeded into it is there
+        // and the other lane's is not.
         compose.onNodeWithTag("inbox-tab-$CATEGORY_A").performClick()
         compose.waitForIdle()
-        val rowsInTab = threadRowCount()
-        assertTrue("a category tab must narrow the stream ($rowsInTab of $rowsBefore)", rowsInTab in 1 until rowsBefore)
+        val mine = seeded.getValue(CATEGORY_A).threadId
+        val other = seeded.getValue(CATEGORY_B).threadId
+        compose.waitUntil(TIMEOUT_MS) { compose.listHoldsThread(mine) }
+        assertTrue(
+            "the $CATEGORY_A tab must not show the $CATEGORY_B lane's conversation",
+            compose.listLacksThread(other),
+        )
         compose.captureScreen("05-category-tab-filters")
     }
 
@@ -424,7 +434,7 @@ class AcceptanceTest {
      * the lane of its highest-priority category, so a second one would
      * shadow the lane under test.
      */
-    private fun provisionCategoryLanes() = runBlocking {
+    private fun provisionCategoryLanes(): Map<String, com.netzhansa.herold.shared.domain.Email> = runBlocking {
         val session = app.container.session.value!!
         // The lanes are the server's: a category is a tab because its
         // label carries disposition "pinned" (issue #399). The two lanes
@@ -466,7 +476,7 @@ class AcceptanceTest {
                 "pinning the $category lane failed: ${outcome.errorMessages}"
             }
         }
-        listOf(CATEGORY_A to PROMOTIONS_MARKER, CATEGORY_B to UPDATES_MARKER).forEach { (category, marker) ->
+        listOf(CATEGORY_A to PROMOTIONS_MARKER, CATEGORY_B to UPDATES_MARKER).associate { (category, marker) ->
             val subject = "acceptance $category lane $marker ${System.nanoTime()}"
             DevInstance.deliverMail(subject = subject, body = "One message for the $category lane.")
             var email = awaitInbox(subject)
@@ -498,6 +508,7 @@ class AcceptanceTest {
                 category,
                 email.category,
             )
+            category to email
         }
     }
 
