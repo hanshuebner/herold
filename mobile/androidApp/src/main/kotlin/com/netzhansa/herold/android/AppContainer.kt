@@ -548,7 +548,10 @@ class AppContainer(context: Context) {
             now = { System.currentTimeMillis() },
         )
         val calls = BearerCalls(authenticator, stepUp)
-        val client = JmapClient(httpClient, baseUrl, authenticator)
+        // The transport reports what its requests met, so a request
+        // that got through clears the offline indication whether or not
+        // the pass it belonged to ran to the end (issue #433).
+        val client = JmapClient(httpClient, baseUrl, authenticator, reachability)
         val composer = Composer(client, outbox, spool, { System.currentTimeMillis() })
         val drainer = OutboxDrainer(
             api = client,
@@ -583,7 +586,7 @@ class AppContainer(context: Context) {
             // plugin, no cookie storage, nothing of the account on it.
             unsubscribe = UnsubscribeClient(httpClient),
             transparency = Transparency(client),
-            eventSource = EventSourceClient(httpClient, client),
+            eventSource = EventSourceClient(httpClient, client, reachability),
             imageProxy = ImageProxyClient(httpClient, client),
             pushRegistrar = PushRegistrar(
                 api = client,
