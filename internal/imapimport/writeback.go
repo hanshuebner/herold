@@ -251,7 +251,7 @@ func (w *accountWorker) processWriteBack(ctx context.Context, conn Conn, ch stor
 	case store.ChangeOpUpdated:
 		// Could be a flag update or a mailbox membership change (move).
 		// We dispatch both; the handlers are no-ops when irrelevant.
-		w.writeBackFlags(ctx, conn, ms, msgID)
+		w.reconcileMessageFlags(ctx, conn, msgID)
 		w.writeBackMove(ctx, conn, ms, msgID)
 
 	case store.ChangeOpDestroyed:
@@ -261,80 +261,163 @@ func (w *accountWorker) processWriteBack(ctx context.Context, conn Conn, ch stor
 	// no write-back needed (we own it).
 }
 
-// writeBackFlags implements the three-way flag reconcile for \Seen and
-// \Flagged. REQ-IMAP-IMP-42.
-func (w *accountWorker) writeBackFlags(ctx context.Context, conn Conn, ms store.IMAPImportMessageState, msgID store.MessageID) {
+// reconcileMessageFlags implements the REQ-IMAP-IMP-42 three-way flag
+// reconcile for \Seen and \Flagged, scoped to the herold MESSAGE rather than
+// to a single IMAPImportMessageState row (re #435). Message-ID dedup can
+// fold two upstream copies (e.g. a To copy and a Cc copy landing in the same
+// or different upstream folders) onto one herold message, which then carries
+// one state row per copy. Reconciling one row at a time let a herold-side
+// read reach only whichever copy a single-row lookup happened to pick,
+// leaving the other row's LastSyncedFlags stuck at its ingest-time baseline;
+// once that row's own upstream flags later drifted for any unrelated reason,
+// its stale baseline made the down-sync side treat the drift as a fresh
+// "both changed" conflict and let the still-unseen copy overwrite the read
+// that had already been confirmed via the other copy.
+//
+// Called from both directions: the change-feed-driven write-back loop
+// (herold-side changes) and the down-sync poll (upstream-side changes),
+// so both share one reconcile outcome instead of drifting independently.
+//
+// The three-way decision runs once per herold message rather than once per
+// row:
+//   - A row with an outstanding local (herold-side) change relative to its
+//     own LastSyncedFlags, whose own upstream copy has not independently
+//     moved, gets herold's value pushed to it. This is safe and decided
+//     per row: pushing is never wrong regardless of what any other row for
+//     the same message is doing (REQ-IMAP-IMP-42, re #435: "a local read
+//     is pushed to every upstream copy").
+//   - A row whose own upstream copy moved (whether or not herold also
+//     changed -- the same "both changed, upstream wins" rule the single-row
+//     case has always applied) proposes applying its upstream value to
+//     herold. When several rows for the same message propose different
+//     values (one copy seen upstream, one not), herold gets one coherent
+//     outcome: the bitwise OR of every proposing row's upstream flags, so
+//     \Seen wins if set on ANY copy -- a message read via any one of its
+//     upstream placements has genuinely been read, and this choice is what
+//     closes the durability gap above (a copy that never advances can no
+//     longer drag an already-confirmed read back to unseen). Per
+//     REQ-IMAP-IMP-42 ("an upstream-side change only wins when no local
+//     change is outstanding on any of the rows"), a row only enters this
+//     branch when its own upstream copy moved; a row that is merely
+//     catching up to herold (the case above) never contributes here.
+func (w *accountWorker) reconcileMessageFlags(ctx context.Context, conn Conn, msgID store.MessageID) {
 	account := w.opts.account
 	log := w.opts.log
 
-	// Fetch herold-current flags.
 	heroldMsg, err := w.opts.store.Meta().GetMessage(ctx, msgID)
 	if err != nil {
 		// Message already gone — nothing to do.
 		return
 	}
-
 	heroldSynced := syncedFlagsFromStoreFlags(heroldMsg.Flags)
-	lastSynced := ms.LastSyncedFlags
 
-	if heroldSynced == lastSynced {
-		// No change on herold side — nothing to push.
-		return
-	}
-
-	// Select the upstream folder read-write so we can STORE.
-	if _, err := conn.SelectReadWrite(ctx, ms.UpstreamFolder); err != nil {
-		log.Warn("imapimport: write-back: SelectReadWrite failed",
+	allRows, err := w.opts.store.Meta().ListIMAPImportMessageStatesByMessage(ctx, msgID)
+	if err != nil {
+		log.Warn("imapimport: reconcile: ListIMAPImportMessageStatesByMessage failed",
 			slog.String("account_id", account.ID),
-			slog.String("folder", ms.UpstreamFolder),
+			slog.Uint64("msg_id", uint64(msgID)),
 			slog.String("error", err.Error()),
 		)
 		return
 	}
 
-	// Fetch upstream-current flags.
-	upstreamFlags, err := conn.UIDFetchFlags(ctx, imap.UID(ms.UpstreamUID))
-	if err != nil || upstreamFlags == nil {
-		// Message gone upstream or fetch failed — skip.
+	type rowView struct {
+		ms              store.IMAPImportMessageState
+		upstream        store.IMAPImportSyncedFlags
+		localChanged    bool
+		upstreamChanged bool
+	}
+	var views []rowView
+	for _, r := range allRows {
+		if r.AccountID != account.ID {
+			// Belongs to a different import account; not ours to reconcile.
+			continue
+		}
+		if _, err := conn.SelectReadWrite(ctx, r.UpstreamFolder); err != nil {
+			log.Warn("imapimport: reconcile: SelectReadWrite failed",
+				slog.String("account_id", account.ID),
+				slog.String("folder", r.UpstreamFolder),
+				slog.String("error", err.Error()),
+			)
+			continue
+		}
+		upstreamFlags, err := conn.UIDFetchFlags(ctx, imap.UID(r.UpstreamUID))
+		if err != nil || upstreamFlags == nil {
+			// Message gone upstream or fetch failed for this copy — skip it
+			// this round; the others still get reconciled.
+			continue
+		}
+		upstreamSynced := syncedFlagsFromIMAP(upstreamFlags)
+		views = append(views, rowView{
+			ms:              r,
+			upstream:        upstreamSynced,
+			localChanged:    heroldSynced != r.LastSyncedFlags,
+			upstreamChanged: upstreamSynced != r.LastSyncedFlags,
+		})
+	}
+	if len(views) == 0 {
 		return
 	}
-	upstreamSynced := syncedFlagsFromIMAP(upstreamFlags)
 
-	switch {
-	case upstreamSynced == lastSynced:
-		// Only herold changed → push herold's value to upstream.
-		if pushErr := w.pushFlagsToUpstream(ctx, conn, ms, heroldSynced); pushErr != nil {
+	// Push branch: every row with an outstanding local change whose own
+	// upstream copy has not independently moved. Independent per row.
+	for i := range views {
+		v := &views[i]
+		if !v.localChanged || v.upstreamChanged {
+			continue
+		}
+		if pushErr := w.pushFlagsToUpstream(ctx, conn, v.ms, heroldSynced); pushErr != nil {
 			log.Warn("imapimport: write-back: push flags failed (will retry)",
 				slog.String("account_id", account.ID),
-				slog.Uint64("uid", uint64(ms.UpstreamUID)),
+				slog.Uint64("uid", uint64(v.ms.UpstreamUID)),
 				slog.String("error", pushErr.Error()),
 			)
 			// Do NOT update last_synced — retry next tick. REQ-IMAP-IMP-42.
-			return
+			continue
 		}
-		ms.LastSyncedFlags = heroldSynced
-		w.upsertMessageState(ctx, ms)
+		v.ms.LastSyncedFlags = heroldSynced
+		w.upsertMessageState(ctx, v.ms)
 		observe.IMAPImportFlagsPropagatedTotal.WithLabelValues(account.ID, "up").Inc()
 		// Mirror to live snapshot counter (REQ-IMAP-IMP-65).
 		w.status.incPropagated(1)
+	}
 
-	case heroldSynced == lastSynced:
-		// Only upstream changed → apply upstream to herold. The applied
-		// value (not the raw upstream one) is recorded as LastSyncedFlags
-		// -- see applyUpstreamFlagsToHerold's \Sent-role exception (re #316).
-		applied := w.applyUpstreamFlagsToHerold(ctx, ms, upstreamSynced, heroldMsg)
-		ms.LastSyncedFlags = applied
-		w.upsertMessageState(ctx, ms)
+	// Upstream branch: every row whose own upstream copy moved. Combine
+	// their proposals into one coherent value (OR: \Seen/\Flagged wins if
+	// set on any copy) and apply it to herold once.
+	var combined store.IMAPImportSyncedFlags
+	var proposers []int
+	sawConflict := false
+	for i := range views {
+		v := &views[i]
+		if !v.upstreamChanged {
+			continue
+		}
+		combined |= v.upstream
+		proposers = append(proposers, i)
+		if v.localChanged {
+			sawConflict = true
+		}
+	}
+	if len(proposers) == 0 {
+		return
+	}
 
-	default:
-		// Both sides changed — upstream wins. REQ-IMAP-IMP-42 (decision 5).
-		log.Info("imapimport: write-back: flag conflict; upstream wins",
+	// The applied value (not the raw combined one) is recorded as
+	// LastSyncedFlags -- see applyUpstreamFlagsToHerold's \Sent-role
+	// exception (re #316).
+	applied := w.applyUpstreamFlagsToHerold(ctx, views[proposers[0]].ms, combined, heroldMsg)
+	for _, i := range proposers {
+		v := &views[i]
+		v.ms.LastSyncedFlags = applied
+		w.upsertMessageState(ctx, v.ms)
+	}
+	observe.IMAPImportFlagsPropagatedTotal.WithLabelValues(account.ID, "down").Inc()
+	if sawConflict {
+		log.Info("imapimport: reconcile: flag conflict; upstream wins",
 			slog.String("account_id", account.ID),
-			slog.Uint64("uid", uint64(ms.UpstreamUID)),
+			slog.Uint64("msg_id", uint64(msgID)),
 		)
-		applied := w.applyUpstreamFlagsToHerold(ctx, ms, upstreamSynced, heroldMsg)
-		ms.LastSyncedFlags = applied
-		w.upsertMessageState(ctx, ms)
 		observe.IMAPImportConflictsTotal.WithLabelValues(account.ID, "flag").Inc()
 	}
 }

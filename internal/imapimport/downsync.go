@@ -31,7 +31,6 @@ import (
 
 	imap "github.com/emersion/go-imap/v2"
 
-	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -77,14 +76,20 @@ func (w *accountWorker) downSyncFlags(
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		w.applyUpstreamFlagChange(ctx, upstreamFolder, cf)
+		w.applyUpstreamFlagChange(ctx, conn, upstreamFolder, cf)
 	}
 	return nil
 }
 
 // applyUpstreamFlagChange reconciles one upstream message's flags down to
 // herold under the upstream-authoritative three-way rule (REQ-IMAP-IMP-42).
-func (w *accountWorker) applyUpstreamFlagChange(ctx context.Context, upstreamFolder string, cf uidFlags) {
+// The actual reconcile is message-scoped, not row-scoped (re #435: a
+// Message-ID dedup hit can fold several upstream copies onto one herold
+// message, each with its own state row) -- this function's own job is just
+// the cheap per-row filter (skip a row whose own upstream copy has not
+// itself changed since its own last sync) before handing off to
+// reconcileMessageFlags, which re-examines every row for the message.
+func (w *accountWorker) applyUpstreamFlagChange(ctx context.Context, conn Conn, upstreamFolder string, cf uidFlags) {
 	account := w.opts.account
 	log := w.opts.log
 
@@ -118,34 +123,11 @@ func (w *accountWorker) applyUpstreamFlagChange(ctx context.Context, upstreamFol
 
 	upstreamSynced := syncedFlagsFromIMAP(cf.Flags)
 	if upstreamSynced == ms.LastSyncedFlags {
-		// Upstream unchanged since the last sync — nothing to apply.
+		// This copy's upstream flags are unchanged since its own last sync —
+		// nothing new for this row to contribute to the message-level
+		// reconcile.
 		return
 	}
 
-	heroldMsg, err := w.opts.store.Meta().GetMessage(ctx, ms.HeroldMessageID)
-	if err != nil {
-		// Message already gone from herold — nothing to do.
-		return
-	}
-	heroldSynced := syncedFlagsFromStoreFlags(heroldMsg.Flags)
-	conflict := heroldSynced != ms.LastSyncedFlags
-
-	// Upstream-authoritative: apply the upstream value to herold in both the
-	// only-upstream-changed case and the both-changed (conflict) case. The
-	// applied value (not the raw upstream one) is what gets recorded as
-	// LastSyncedFlags -- see applyUpstreamFlagsToHerold's \Sent-role
-	// exception (re #316).
-	applied := w.applyUpstreamFlagsToHerold(ctx, ms, upstreamSynced, heroldMsg)
-	ms.LastSyncedFlags = applied
-	w.upsertMessageState(ctx, ms)
-	observe.IMAPImportFlagsPropagatedTotal.WithLabelValues(account.ID, "down").Inc()
-
-	if conflict {
-		log.Info("imapimport: down-sync: flag conflict; upstream wins",
-			slog.String("account_id", account.ID),
-			slog.String("folder", upstreamFolder),
-			slog.Uint64("uid", uint64(cf.UID)),
-		)
-		observe.IMAPImportConflictsTotal.WithLabelValues(account.ID, "flag").Inc()
-	}
+	w.reconcileMessageFlags(ctx, conn, ms.HeroldMessageID)
 }

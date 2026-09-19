@@ -30,7 +30,95 @@ func newIMAPImportCmd() *cobra.Command {
 	c.AddCommand(newIMAPImportStatusCmd())
 	c.AddCommand(newIMAPImportRepairOrphansCmd())
 	c.AddCommand(newIMAPImportRestoreArchiveCmd())
+	c.AddCommand(newIMAPImportRepairSeenCmd())
 	c.AddCommand(newIMAPImportOwnAddressesCmd())
+	return c
+}
+
+// newIMAPImportRepairSeenCmd builds `herold imapimport repair-seen` (re
+// #435), a store-backed maintenance command that forces $seen back onto an
+// explicitly named message and aligns its imapimport_message_state rows, for
+// a message whose read state was cleared by the multi-copy reconcile bug: a
+// Message-ID dedup hit (a To copy and a Cc copy of the same message) folds
+// two upstream copies onto one herold message, and before the fix in #435,
+// write-back's single-row lookup could push a read to only one of the
+// copies, leaving the other row's baseline stale enough that an unrelated
+// later drift on that copy let a down-sync clear the read back to unseen.
+func newIMAPImportRepairSeenCmd() *cobra.Command {
+	var dryRun bool
+	var messageIDs []string
+	c := &cobra.Command{
+		Use:   "repair-seen <email-or-id> --message <id> [--message <id> ...]",
+		Short: "force $seen back onto named imported messages and align their state rows (re #435)",
+		Long: `Forces $seen onto every current membership of each explicitly named message
+and, for every imapimport_message_state row recorded for it, sets
+LastSyncedFlags to include \Seen -- so the fixed reconcile (issue #435) does
+not read the pre-repair, unseen baseline as a fresh conflict on its next
+tick, but instead pushes \Seen upstream to every one of the message's
+mirrored copies, the same as any other herold-side read.
+
+Each named message must belong to the given principal and carry at least
+one imapimport_message_state row (this repair is scoped to imported mail);
+otherwise it is reported as an error and left untouched. A message on which
+every current membership is already $seen is reported as "already-seen"
+and left untouched (safe to re-run). --dry-run reports the intended action
+per message without writing anything.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(messageIDs) == 0 {
+				return fmt.Errorf("at least one --message <id> is required")
+			}
+			ids := make([]store.MessageID, 0, len(messageIDs))
+			for _, s := range messageIDs {
+				n, err := strconv.ParseUint(s, 10, 64)
+				if err != nil {
+					return fmt.Errorf("--message %q: not a numeric message id: %w", s, err)
+				}
+				ids = append(ids, store.MessageID(n))
+			}
+
+			g := globals(cmd.Context())
+			cfg, err := requireConfig(g)
+			if err != nil {
+				return err
+			}
+			ctx := cmd.Context()
+			st, err := openStore(ctx, cfg, discardLogger(), clock.NewReal())
+			if err != nil {
+				return err
+			}
+			defer st.Close()
+
+			p, err := resolveStorePrincipal(ctx, st, args[0])
+			if err != nil {
+				return err
+			}
+
+			results, err := repairIMAPImportSeen(ctx, st, p.ID, ids, dryRun)
+			if err != nil {
+				return err
+			}
+			if g.jsonOut {
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetIndent("", "  ")
+				if err := enc.Encode(struct {
+					Mode    string                       `json:"mode"`
+					Results []IMAPImportRepairSeenResult `json:"results"`
+				}{Mode: modeString(dryRun), Results: results}); err != nil {
+					return err
+				}
+			} else if !g.quiet {
+				fmt.Fprintf(cmd.ErrOrStderr(), "repair-seen: done (%s)\n", modeString(dryRun))
+				fmt.Fprint(cmd.OutOrStdout(), formatIMAPImportRepairSeenResults(results))
+			}
+			if anySkipped(results) {
+				return fmt.Errorf("repair-seen: one or more messages were skipped; see output for the reason")
+			}
+			return nil
+		},
+	}
+	c.Flags().BoolVar(&dryRun, "dry-run", false, "report the intended action per message without writing anything")
+	c.Flags().StringArrayVar(&messageIDs, "message", nil, "message id to repair (repeatable)")
 	return c
 }
 
