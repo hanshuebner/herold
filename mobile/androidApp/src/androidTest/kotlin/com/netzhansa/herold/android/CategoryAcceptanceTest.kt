@@ -19,8 +19,10 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.FixMethodOrder
 import org.junit.Rule
 import org.junit.Test
@@ -39,6 +41,11 @@ import org.junit.runners.MethodSorters
  * is that the phone reads the server's setting rather than deciding for
  * itself. The last check writes one from the phone and reads it back
  * through that same independent client.
+ *
+ * The category state the checks write is the account's, so the class
+ * snapshots the labels it found and puts them back afterwards
+ * (issue #414): the five pinned lanes below are this class's for the
+ * length of the run and nobody else's afterwards.
  */
 @RunWith(AndroidJUnit4::class)
 @FixMethodOrder(MethodSorters.NAME_ASCENDING)
@@ -50,15 +57,41 @@ class CategoryAcceptanceTest {
     private val app get() = InstrumentationRegistry.getInstrumentation()
         .targetContext.applicationContext as HeroldApplication
 
+    private lateinit var labelState: LabelState
+    private var outboxBefore: Set<Long> = emptySet()
+
+    @Before
+    fun snapshotLabels(): Unit = runBlocking {
+        val client = DevInstance.serverClient()
+        labelState = LabelState.take(client, client.session().mailAccountId!!)
+        outboxBefore = app.container.outbox.list().map { it.id }.toSet()
+    }
+
+    /**
+     * The account's labels go back as they were, and the refusal t40
+     * parks in the outbox goes with them: a failed entry left in the
+     * app's own storage is what the next class's drain would meet.
+     */
+    @After
+    fun restoreLabels(): Unit = runBlocking {
+        labelState.restore()
+        app.container.outbox.list()
+            .filter { it.id !in outboxBefore && it.lastError != null }
+            .forEach { app.container.outbox.remove(it.id) }
+    }
+
     @Test
     fun t05_derivedCategoriesAreTabsWithoutALabelAndCollapseWhenGivenOne(): Unit = runBlocking {
         signInAndSync()
         val client = DevInstance.serverClient()
         val accountId = client.session().mailAccountId!!
         // The production shape of issue #404: the classifier's categories
-        // ride on the messages and the account has no label for any of
-        // them, so nothing on the wire carries a disposition.
-        dropLabels(client, accountId)
+        // ride on the messages and the account has no label for either of
+        // them, so nothing on the wire carries a disposition. Every other
+        // label goes to "none", so the five-pin budget has room for the
+        // two derived lanes.
+        labelState.dropLabels(setOf(DERIVED_PROMOTIONS, DERIVED_UPDATES))
+        labelState.unpinAll()
         val promo = "+promo derived ${System.nanoTime()}"
         val updates = "+updates derived ${System.nanoTime()}"
         DevInstance.deliverMail(subject = promo, body = "A sale.")
@@ -113,7 +146,10 @@ class CategoryAcceptanceTest {
         val accountId = client.session().mailAccountId!!
         // A pinned category no message carries: the stream under its tab
         // is empty, and an empty stream is a screen with words on it
-        // rather than a blank one (issue #405).
+        // rather than a blank one (issue #405). The lane is pinned with
+        // the budget cleared, so the tab is there whatever else the
+        // account holds.
+        labelState.unpinAll(keep = setOf(EMPTY_LANE))
         ensureLabel(client, accountId, EMPTY_LANE, "pinned", 0)
         app.container.session.value!!.syncEngine.syncAll()
 
@@ -295,14 +331,7 @@ class CategoryAcceptanceTest {
             BUNDLED to Triple("bundled", 2, true),
             FILED to Triple("filed", 3, true),
         )
-        val existing = client.mailboxGet(accountId, null).list
-        val clear = existing.filter { it.role == null && it.disposition != "none" && it.name.lowercase() !in mine }
-        if (clear.isNotEmpty()) {
-            client.mailboxSet(
-                accountId,
-                update = clear.associate { it.id to buildJsonObject { put("disposition", "none") } },
-            )
-        }
+        labelState.unpinAll(keep = mine.keys)
         val ids = mine.mapValues { (name, spec) -> ensureLabel(client, accountId, name, spec.first, spec.second) }
         return ids + (PLAIN to ensureLabel(client, accountId, PLAIN, "none", null))
     }
@@ -421,13 +450,6 @@ class CategoryAcceptanceTest {
             }
         if (patches.isEmpty()) return
         client.emailSet(accountId, patches)
-    }
-
-    /** Destroys every label of the account, leaving only the system mailboxes. */
-    private suspend fun dropLabels(client: JmapClient, accountId: String) {
-        val labels = client.mailboxGet(accountId, null).list.filter { it.role == null }
-        if (labels.isEmpty()) return
-        client.mailboxSet(accountId, destroy = labels.map { it.id })
     }
 
     /** The server's own view of a label found by name, polled until it matches. */
