@@ -116,6 +116,70 @@ class ComposerTest {
         assertContains(state.bodyHtml, "Forwarded message")
     }
 
+    /**
+     * A forward of an HTML message leaves with the original's markup and
+     * its inline part (issue #431). The editor hands the body back the
+     * way it renders it - the inline scheme in place of `cid:`, a
+     * blocked remote image - and the wire form puts both back.
+     */
+    @Test
+    fun aForwardedHtmlMessageLeavesWithItsMarkupAndItsInlinePart() = runTest {
+        val api = api()
+        val wiring = wiring(api)
+        val htmlParent = parent.copy(
+            bodyHtml = "<html><body><h1>Release notes</h1>" +
+                "<table><tr><td><strong>Build</strong> 2026.9</td></tr></table>" +
+                "<p><img src=\"cid:logo@x\"></p>" +
+                "<p><img src=\"https://cdn.example/banner.png\"></p>" +
+                "<script>evil()</script></body></html>",
+            attachments = listOf(
+                com.netzhansa.herold.shared.domain.Attachment(
+                    blobId = "blob-logo",
+                    name = "logo.png",
+                    type = "image/png",
+                    size = 256,
+                    cid = "<logo@x>",
+                    isInline = true,
+                ),
+            ),
+        )
+        val opened = wiring.composer.openFrom(ComposeMode.FORWARD, htmlParent, identities, accounts, "today")
+        assertContains(opened.bodyHtml, "<strong>Build</strong>")
+        assertEquals(listOf("blob-logo"), opened.attachments.map { it.blobId })
+
+        // What the editor publishes back: the renderer's inline scheme
+        // and the remote image held back behind its marker.
+        val rendered = com.netzhansa.herold.shared.mail.HtmlSanitizer
+            .sanitize(opened.bodyHtml, loadRemoteImages = false).html
+        wiring.composer.send(
+            opened.copy(bodyHtml = "<p>Passing this on.</p>" + rendered, to = listOf(MailAddress(null, "dan@example.com"))),
+            mailboxes,
+        )
+        wiring.drain()
+
+        val email = api.sendCalls.single().email
+        val html = email["bodyValues"]!!.jsonObject["2"]!!.jsonObject["value"]!!.jsonPrimitive.content
+        val text = email["bodyValues"]!!.jsonObject["1"]!!.jsonObject["value"]!!.jsonPrimitive.content
+        assertContains(html, "<h1>Release notes</h1>")
+        assertContains(html, "<strong>Build</strong>")
+        assertContains(html, "src=\"cid:logo@x\"")
+        assertContains(html, "src=\"https://cdn.example/banner.png\"")
+        assertTrue(!html.contains("inline.herold.invalid"), "no editor-side URL leaves the device: $html")
+        assertTrue(!html.contains("script", ignoreCase = true), "no script leaves with the forward: $html")
+
+        // The text alternative still holds the plain-text rendering.
+        assertContains(text, "Passing this on.")
+        assertContains(text, "Release notes")
+
+        // The inline part rides on the parent's blob - nothing was uploaded.
+        val parts = email["attachments"]!!.jsonArray.map { it.jsonObject }
+        assertEquals("blob-logo", parts.single()["blobId"]?.jsonPrimitive?.content)
+        assertEquals("inline", parts.single()["disposition"]?.jsonPrimitive?.content)
+        assertEquals("logo@x", parts.single()["cid"]?.jsonPrimitive?.content)
+        assertEquals(false, email["hasAttachment"]?.jsonPrimitive?.booleanOrNull)
+        assertTrue(api.uploads.isEmpty(), "a carried part is not re-uploaded")
+    }
+
     @Test
     fun anUploadOverTheServersLimitIsRefusedBeforeItIsSent() = runTest {
         val api = api()

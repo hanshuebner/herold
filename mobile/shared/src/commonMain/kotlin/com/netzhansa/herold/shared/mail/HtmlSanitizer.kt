@@ -20,10 +20,24 @@ object HtmlSanitizer {
 
     private val activeElements = listOf("script", "iframe", "object", "embed", "applet", "form", "meta", "link")
 
+    /**
+     * What a quoted original leaves behind on top of the active elements:
+     * a `style` block would style the whole outgoing message, and the
+     * document's own head furniture has nothing to say inside a
+     * `blockquote`.
+     */
+    private val quoteStripped = activeElements + listOf("style", "title", "base", "noscript")
+
+    /** Document scaffolding a fragment drops, keeping what it wrapped. */
+    private val documentWrappers = listOf("html", "head", "body")
+
     private val eventHandler = Regex("""\son[a-zA-Z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)""", RegexOption.IGNORE_CASE)
     private val javascriptUrl = Regex("""(href|src|action)\s*=\s*("|')\s*javascript:[^"']*("|')""", RegexOption.IGNORE_CASE)
     private val imgTag = Regex("""<img\b[^>]*>""", RegexOption.IGNORE_CASE)
     private val srcAttribute = Regex("""\bsrc\s*=\s*("([^"]*)"|'([^']*)')""", RegexOption.IGNORE_CASE)
+    private val doctype = Regex("""<!DOCTYPE[^>]*>""", RegexOption.IGNORE_CASE)
+    private val blockedSrcAttribute =
+        Regex("""\sdata-blocked-src\s*=\s*("([^"]*)"|'([^']*)')""", RegexOption.IGNORE_CASE)
 
     /**
      * @param html the message's HTML body
@@ -73,6 +87,55 @@ object HtmlSanitizer {
         }
         if (collapseQuotes) out = QuotedHtml.collapse(out)
         return SanitizedHtml(html = out, blockedRemoteImages = blockedRemoteImages)
+    }
+
+    /**
+     * A message's HTML as a quote embeds it: the markup the reader saw,
+     * reduced to a fragment that is safe inside another document
+     * (issue #431).
+     *
+     * Scripts, frames, forms and the document's head furniture are
+     * removed, event handlers and `javascript:` targets with them, and
+     * the `html`/`head`/`body` wrappers are dropped so what is left nests
+     * inside a `blockquote`. Image sources are untouched: a `cid:`
+     * reference has to stay one so the composer can carry the part it
+     * names, and a remote URL belongs to the original as much as its text
+     * does. Blocking remote images is the renderer's job, which
+     * [sanitize] does every time the fragment is shown.
+     */
+    fun quoteFragment(html: String): String {
+        var out = doctype.replace(html, "")
+        quoteStripped.forEach { tag ->
+            out = Regex("""<$tag\b[\s\S]*?</$tag\s*>""", RegexOption.IGNORE_CASE).replace(out, "")
+            out = Regex("""<$tag\b[^>]*/?>""", RegexOption.IGNORE_CASE).replace(out, "")
+            out = Regex("""</$tag\s*>""", RegexOption.IGNORE_CASE).replace(out, "")
+        }
+        documentWrappers.forEach { tag ->
+            out = Regex("""</?$tag\b[^>]*>""", RegexOption.IGNORE_CASE).replace(out, "")
+        }
+        out = eventHandler.replace(out, "")
+        out = javascriptUrl.replace(out) { match -> "${match.groupValues[1]}=\"#\"" }
+        return out.trim()
+    }
+
+    /**
+     * Puts the URL back on an image [sanitize] held back, for a body on
+     * its way out rather than on screen. The composer renders a quote
+     * through the same blocking the reading pane applies, so the editor
+     * hands back a body whose remote images carry the marker; the message
+     * that leaves carries the original's URLs, and what the recipient
+     * loads is their client's decision.
+     */
+    fun restoreBlockedImages(html: String): String = imgTag.replace(html) { match ->
+        val tag = match.value
+        val blocked = blockedSrcAttribute.find(tag) ?: return@replace tag
+        val url = blocked.groupValues[2].ifEmpty { blocked.groupValues[3] }.replace("\"", "&quot;")
+        val stripped = blockedSrcAttribute.replace(tag, "")
+        if (srcAttribute.containsMatchIn(stripped)) {
+            srcAttribute.replace(stripped) { "src=\"$url\"" }
+        } else {
+            stripped.replaceFirst("<img", "<img src=\"$url\"", ignoreCase = true)
+        }
     }
 
     /**

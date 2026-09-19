@@ -104,22 +104,26 @@ class Composer(
         val identity = IdentityChoice.defaultForReply(parent, identities, accounts)
         val selfEmails = IdentityChoice.selfEmails(identities)
         return when (mode) {
-            ComposeMode.FORWARD -> ComposeState(
-                mode = mode,
-                accountId = parent.accountId,
-                identity = identity,
-                subject = ReplyBuilder.forwardSubject(parent.subject),
-                bodyHtml = ReplyBuilder.forwardQuote(parent, sentAtLabel),
-                attachments = ReplyBuilder.forwardAttachments(parent),
-                replyContext = ReplyContext(
+            ComposeMode.FORWARD -> {
+                val quote = ReplyBuilder.forwardQuote(parent, sentAtLabel)
+                ComposeState(
+                    mode = mode,
                     accountId = parent.accountId,
-                    parentId = parent.id,
-                    threadId = parent.threadId,
-                    parentKeyword = ParentKeywords.FORWARDED,
-                    inReplyTo = ReplyBuilder.inReplyTo(parent),
-                    references = ReplyBuilder.references(parent),
-                ),
-            )
+                    identity = identity,
+                    subject = ReplyBuilder.forwardSubject(parent.subject),
+                    bodyHtml = quote,
+                    attachments = ReplyBuilder.forwardAttachments(parent) +
+                        ReplyBuilder.quotedInlineAttachments(parent, quote),
+                    replyContext = ReplyContext(
+                        accountId = parent.accountId,
+                        parentId = parent.id,
+                        threadId = parent.threadId,
+                        parentKeyword = ParentKeywords.FORWARDED,
+                        inReplyTo = ReplyBuilder.inReplyTo(parent),
+                        references = ReplyBuilder.references(parent),
+                    ),
+                )
+            }
 
             else -> {
                 val cc = if (mode == ComposeMode.REPLY_ALL) {
@@ -127,6 +131,7 @@ class Composer(
                 } else {
                     emptyList()
                 }
+                val quote = ReplyBuilder.replyQuote(parent, sentAtLabel)
                 ComposeState(
                     mode = mode,
                     accountId = parent.accountId,
@@ -135,7 +140,8 @@ class Composer(
                     cc = cc,
                     showCc = cc.isNotEmpty(),
                     subject = ReplyBuilder.replySubject(parent.subject),
-                    bodyHtml = ReplyBuilder.replyQuote(parent, sentAtLabel),
+                    bodyHtml = quote,
+                    attachments = ReplyBuilder.quotedInlineAttachments(parent, quote),
                     replyContext = ReplyContext(
                         accountId = parent.accountId,
                         parentId = parent.id,
@@ -159,6 +165,7 @@ class Composer(
         val identity = identities.firstOrNull {
             it.accountId == draft.accountId && it.email.equals(draft.fromEmail, ignoreCase = true)
         } ?: IdentityChoice.defaultForNew(identities, accounts, draft.accountId)
+        val bodyHtml = draft.bodyHtml ?: HtmlSanitizer.fromPlainText(draft.bodyText.orEmpty())
         return ComposeState(
             mode = ComposeMode.EDIT_DRAFT,
             accountId = draft.accountId,
@@ -167,8 +174,11 @@ class Composer(
             cc = draft.ccAddresses,
             showCc = draft.ccAddresses.isNotEmpty(),
             subject = draft.subject,
-            bodyHtml = draft.bodyHtml ?: HtmlSanitizer.fromPlainText(draft.bodyText.orEmpty()),
-            attachments = ReplyBuilder.forwardAttachments(draft),
+            bodyHtml = bodyHtml,
+            // The inline parts the body points at come along, so a draft
+            // that is written, closed and sent later keeps its images.
+            attachments = ReplyBuilder.forwardAttachments(draft) +
+                ReplyBuilder.quotedInlineAttachments(draft, bodyHtml),
             replyContext = if (draft.inReplyTo.isEmpty()) {
                 null
             } else {
@@ -379,7 +389,7 @@ class Composer(
      */
     fun buildEmail(state: ComposeState, draftsMailboxId: String): JsonObject {
         val ready = state.attachments.filter { it.isReady }
-        val bodyHtml = bodyForWire(state.bodyHtml, ready)
+        val bodyHtml = bodyForWire(state.bodyHtml)
         val bodyText = HtmlText.toPlainText(bodyHtml)
         return buildJsonObject {
             putJsonObject("mailboxIds") { put(draftsMailboxId, true) }
@@ -440,17 +450,17 @@ class Composer(
     }
 
     /**
-     * The editor writes inline images as the reading pane's inline scheme,
-     * which the WebView resolves out of memory; the wire form is the
-     * `cid:` URL the MIME part carries.
+     * The body as the wire carries it.
+     *
+     * The editor writes inline images as the reading pane's inline
+     * scheme, which the WebView resolves out of memory; the wire form is
+     * the `cid:` URL the MIME part carries, for an image the user
+     * inserted as much as for one a quoted original brought with it. A
+     * remote image the editor showed blocked goes out with the URL the
+     * original carried (issue #431).
      */
-    fun bodyForWire(bodyHtml: String, ready: List<ComposeAttachment>): String {
-        var out = bodyHtml
-        ready.filter { it.inline && it.cid != null }.forEach { attachment ->
-            out = out.replace(HtmlSanitizer.INLINE_SCHEME + attachment.cid, "cid:${attachment.cid}")
-        }
-        return out
-    }
+    fun bodyForWire(bodyHtml: String): String =
+        HtmlSanitizer.restoreBlockedImages(bodyHtml.replace(HtmlSanitizer.INLINE_SCHEME, "cid:"))
 
     private fun bodyStructure(ready: List<ComposeAttachment>): JsonObject {
         val alternative = buildJsonObject {
