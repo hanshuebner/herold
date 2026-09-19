@@ -23,6 +23,8 @@ private val wireJson = Json { ignoreUnknownKeys = true }
 class EventSourceClient(
     private val httpClient: HttpClient,
     private val client: JmapClient,
+    /** What a connection that came up reports about the server (issue #433). */
+    private val reachability: ReachabilityObserver? = null,
 ) {
     /**
      * Streams `StateChange` events until the caller's scope is cancelled or
@@ -46,6 +48,10 @@ class EventSourceClient(
             header(HttpHeaders.CacheControl, "no-cache")
             lastEventId?.let { header("Last-Event-ID", it) }
         }.execute { response ->
+            // The stream is open, so the server is there - which the
+            // shell's offline indication follows even when no sync pass
+            // has finished since the last failure (issue #433).
+            reachability?.reached()
             val channel = response.bodyAsChannel()
             val data = StringBuilder()
             while (true) {

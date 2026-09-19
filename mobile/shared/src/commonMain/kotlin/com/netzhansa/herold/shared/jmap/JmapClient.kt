@@ -20,6 +20,7 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.content.PartData
 import io.ktor.http.contentType
 import io.ktor.http.isSuccess
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
@@ -62,6 +63,12 @@ class JmapClient(
     private val httpClient: HttpClient,
     val baseUrl: String,
     private val tokens: TokenProvider,
+    /**
+     * What this client's traffic reports about reaching the server
+     * (issue #433). Absent in tooling and in tests that do not look at
+     * the indication.
+     */
+    private val reachability: ReachabilityObserver? = null,
 ) : JmapApi, BugReportApi {
 
     /** A client over a token that cannot be refreshed (tooling, tests). */
@@ -731,14 +738,40 @@ class JmapClient(
      */
     private suspend fun authorized(request: suspend (String) -> HttpResponse): HttpResponse {
         val token = bearerToken()
-        val response = request(token)
+        val response = send(request, token)
         if (response.status.value != UNAUTHORIZED) return response
         val refreshed = try {
             tokens.refreshAfterUnauthorized(token)
         } catch (expired: SessionExpiredException) {
             return response
         } ?: return response
-        return request(refreshed)
+        return send(request, refreshed)
+    }
+
+    /**
+     * Sends one request and records what it met (issue #433): a status
+     * line of any kind is the server answering, and a transport
+     * exception - a name that would not resolve, a refused connection, a
+     * timeout - is it not being there. The record is made here because
+     * this is what every caller goes through, so the indication follows
+     * the traffic rather than the shape of the pass that made it: a sync
+     * the shell called off after its first answered request leaves the
+     * app online.
+     *
+     * A cancellation says nothing about the server, so it only
+     * propagates.
+     */
+    private suspend fun send(request: suspend (String) -> HttpResponse, token: String): HttpResponse {
+        val response = try {
+            request(token)
+        } catch (c: CancellationException) {
+            throw c
+        } catch (t: Throwable) {
+            reachability?.unreachable()
+            throw t
+        }
+        reachability?.reached()
+        return response
     }
 
     private suspend fun changes(
