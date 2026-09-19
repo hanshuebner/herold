@@ -165,7 +165,11 @@ class CategoryAcceptanceTest {
             compose.onAllNodesWithTag("inbox-empty").fetchSemanticsNodes().isNotEmpty()
         }
         compose.captureScreen("m4-empty-lane")
-        compose.onNodeWithTag("inbox-tab-all").performClick()
+        // Back to the lane the inbox opens on, so the next check starts
+        // where a fresh inbox does (issue #427).
+        if (compose.onAllNodesWithTag("inbox-tab-$PRIMARY").fetchSemanticsNodes().isNotEmpty()) {
+            compose.onNodeWithTag("inbox-tab-$PRIMARY").performClick()
+        }
         compose.waitForIdle()
     }
 
@@ -536,6 +540,8 @@ class CategoryAcceptanceTest {
         // The classifier's own categories, as the fake classifier
         // assigns them from a subject (`+promo`, `+updates`).
         const val DERIVED_PROMOTIONS = "promotions"
+        /** The lane the inbox opens on (REQ-CAT-03). */
+        const val PRIMARY = "primary"
         const val DERIVED_UPDATES = "updates"
 
         /** A pinned category no delivered message carries. */
