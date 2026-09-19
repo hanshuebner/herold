@@ -215,6 +215,7 @@ class SnoozeAcceptanceTest {
     /** Drives the sheet's custom row, the date dialog and the time dialog. */
     private fun pickCustomWakeTime(wakeAt: Instant) {
         val local = wakeAt.toLocalDateTime(zone)
+        compose.openThreadOverflow()
         compose.onNodeWithTag("thread-snooze").performClick()
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithTag("snooze-sheet").fetchSemanticsNodes().isNotEmpty()

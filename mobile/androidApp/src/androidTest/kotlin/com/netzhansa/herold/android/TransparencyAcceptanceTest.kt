@@ -75,7 +75,7 @@ class TransparencyAcceptanceTest {
         val records = client.llmInspect(accountId, listOf(message.id))
 
         openThread(message.threadId)
-        compose.onNodeWithTag("thread-overflow").performClick()
+        compose.openMessageOverflow(message.id)
         compose.onNodeWithTag("thread-why").performClick()
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithTag("llm-inspect-none").fetchSemanticsNodes().isNotEmpty() ||

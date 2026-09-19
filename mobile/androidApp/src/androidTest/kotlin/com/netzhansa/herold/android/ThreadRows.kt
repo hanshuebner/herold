@@ -4,6 +4,7 @@ import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.ComposeTestRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
 
 /**
@@ -47,3 +48,26 @@ fun ComposeTestRule.listLacksThread(threadId: String, listTag: String = "inbox-l
 fun ComposeTestRule.scrollListToThread(threadId: String, listTag: String = "inbox-list") {
     onNodeWithTag(listTag).performScrollToNode(hasTestTag("thread-row-$threadId"))
 }
+
+/**
+ * Opens the conversation's overflow and waits for its entries. Mute,
+ * snooze and share live there since the bar shrank to back, archive,
+ * delete and mark-unread (issue #428).
+ */
+fun ComposeTestRule.openThreadOverflow(timeoutMs: Long = OVERFLOW_TIMEOUT_MS) {
+    onNodeWithTag("thread-overflow").performClick()
+    waitUntil(timeoutMs) { onAllNodesWithTag("thread-mute").fetchSemanticsNodes().isNotEmpty() }
+}
+
+/**
+ * Opens one message's own overflow, which carries the answers and the
+ * entries that belong to a message rather than to the conversation
+ * (issue #428).
+ */
+fun ComposeTestRule.openMessageOverflow(messageId: String, timeoutMs: Long = OVERFLOW_TIMEOUT_MS) {
+    onNodeWithTag("message-overflow-$messageId").performClick()
+    waitUntil(timeoutMs) { onAllNodesWithTag("thread-why").fetchSemanticsNodes().isNotEmpty() }
+}
+
+/** How long a menu has to appear before the wait gives up. */
+private const val OVERFLOW_TIMEOUT_MS = 30_000L
