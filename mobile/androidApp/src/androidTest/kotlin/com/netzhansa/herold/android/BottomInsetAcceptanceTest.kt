@@ -53,18 +53,18 @@ class BottomInsetAcceptanceTest {
         openThread(message.threadId)
 
         report("thread")
+        compose.captureScreen("m4-bottom-inset-${navigationMode()}-thread")
         assertAboveSystemArea("thread-reply")
         assertAboveSystemArea("thread-reply-all")
         assertAboveSystemArea("thread-forward")
         // The bar's own background carries on to the bottom of the
         // screen, so the handle sits on the bar's colour rather than on
         // the conversation scrolling underneath it.
-        assertReachesTheBottomEdge("thread-reply-bar")
+        assertReachesTheBottomEdge("thread-reply-surface")
         // And it takes no more room than the device asks for: on a
         // three-button device the pills sit just above the bar, with no
         // empty band between them.
         assertNoDeadBand("thread-reply")
-        compose.captureScreen("m4-bottom-inset-${navigationMode()}-thread")
 
         backToInbox()
     }
@@ -85,7 +85,9 @@ class BottomInsetAcceptanceTest {
         report("drawer")
         assertAboveSystemArea("drawer-report-problem")
         compose.captureScreen("m4-bottom-inset-${navigationMode()}-drawer")
-        androidx.test.espresso.Espresso.pressBack()
+        // Picking the inbox closes the sheet and leaves the shell where
+        // it was; a back press here would leave the app.
+        compose.onNodeWithTag("drawer-inbox").performClick()
         compose.waitForIdle()
         backToInbox()
     }
@@ -100,7 +102,10 @@ class BottomInsetAcceptanceTest {
             compose.onAllNodesWithTag("diagnostics-screen").fetchSemanticsNodes().isNotEmpty()
         }
         report("diagnostics")
-        assertAboveSystemArea("diagnostics-screen")
+        // Nothing is pinned here: the facts and the log scroll, so the
+        // screen takes the room up to the navigation bar and stops
+        // there, with no band of empty screen above it.
+        assertEndsAtTheNavigationBar("diagnostics-screen")
         compose.captureScreen("m4-bottom-inset-${navigationMode()}-diagnostics")
         compose.onNodeWithTag("diagnostics-back").performClick()
         compose.waitUntil(TIMEOUT_MS) {
@@ -117,7 +122,7 @@ class BottomInsetAcceptanceTest {
                 compose.onAllNodesWithTag("outbox-list").fetchSemanticsNodes().isNotEmpty()
         }
         report("outbox")
-        assertAboveSystemArea(if (outboxIsEmpty()) "outbox-empty" else "outbox-list")
+        assertEndsAtTheNavigationBar("outbox-screen")
         compose.captureScreen("m4-bottom-inset-${navigationMode()}-outbox")
         backToInbox()
     }
@@ -174,22 +179,29 @@ class BottomInsetAcceptanceTest {
 
     private fun density(): Float = compose.activity.resources.displayMetrics.density
 
+    /**
+     * How the device is navigated, from the setting the platform keeps:
+     * 2 is the gesture handle, 0 the three buttons. The overlay listing
+     * shows both overlays enabled after a switch, so the setting is the
+     * only unambiguous answer.
+     */
     private fun navigationMode(): String =
-        if (shellOut("cmd overlay list android").lineSequence()
-                .any { it.trimStart().startsWith("[x]") && it.contains("navbar.gestural") }
-        ) {
-            "gesture"
-        } else {
-            "threebutton"
+        when (shellOut("settings get secure navigation_mode").trim()) {
+            "2" -> "gesture"
+            "1" -> "twobutton"
+            else -> "threebutton"
         }
 
     /** Writes what this window reports, so a failure reads without a second run. */
     private fun report(screen: String) {
         compose.waitForIdle()
+        val content = compose.activity.findViewById<android.view.View>(android.R.id.content)
+        val at = IntArray(2).also { content.getLocationInWindow(it) }
         Log.i(
             TAG,
             "$screen: window ${windowHeightPx()} px, navigation bar ${navigationBarPx()} px, " +
-                "system bottom ${systemBottomPx()} px, ${navigationMode()} navigation, density ${density()}",
+                "system bottom ${systemBottomPx()} px, ${navigationMode()} navigation, density ${density()}, " +
+                "content view at ${at[0]},${at[1]} sized ${content.width}x${content.height}",
         )
     }
 
@@ -198,6 +210,7 @@ class BottomInsetAcceptanceTest {
         compose.waitForIdle()
         val bottom = compose.onNodeWithTag(tag).fetchSemanticsNode().boundsInWindow.bottom
         val ceiling = windowHeightPx() - systemBottomPx()
+        Log.i(TAG, "\"$tag\" ends at ${bottom.toInt()} px; the system's area starts at $ceiling px")
         assertTrue(
             "\"$tag\" ends at ${bottom.toInt()} px, inside the area the system holds from " +
                 "$ceiling px down (window ${windowHeightPx()} px, navigation bar ${navigationBarPx()} px, " +
@@ -210,10 +223,29 @@ class BottomInsetAcceptanceTest {
     private fun assertReachesTheBottomEdge(tag: String) {
         compose.waitForIdle()
         val bottom = compose.onNodeWithTag(tag).fetchSemanticsNode().boundsInWindow.bottom
+        Log.i(TAG, "\"$tag\" background ends at ${bottom.toInt()} px of ${windowHeightPx()} px")
         assertTrue(
             "\"$tag\" ends at ${bottom.toInt()} px, short of the window's ${windowHeightPx()} px, " +
                 "so the system's area shows what scrolls behind it",
             bottom >= windowHeightPx() - SLACK_PX,
+        )
+    }
+
+    /**
+     * Fails when a scrolling screen stops short of the navigation bar,
+     * which is the band of unused screen a hand-placed padding leaves
+     * behind, or runs past it into the bar itself.
+     */
+    private fun assertEndsAtTheNavigationBar(tag: String) {
+        compose.waitForIdle()
+        val bottom = compose.onNodeWithTag(tag).fetchSemanticsNode().boundsInWindow.bottom
+        val bar = windowHeightPx() - navigationBarPx()
+        Log.i(TAG, "\"$tag\" ends at ${bottom.toInt()} px; the navigation bar starts at $bar px")
+        assertTrue(
+            "\"$tag\" ends at ${bottom.toInt()} px, not at the navigation bar's $bar px " +
+                "(window ${windowHeightPx()} px, navigation bar ${navigationBarPx()} px, " +
+                "${navigationMode()} navigation)",
+            bottom >= bar - SLACK_PX && bottom <= bar + SLACK_PX,
         )
     }
 
@@ -231,9 +263,6 @@ class BottomInsetAcceptanceTest {
     }
 
     // ---- helpers ---------------------------------------------------------
-
-    private fun outboxIsEmpty(): Boolean =
-        compose.onAllNodesWithTag("outbox-empty").fetchSemanticsNodes().isNotEmpty()
 
     private fun seedMessage(tag: String): Email {
         signInAndSync()

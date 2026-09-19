@@ -1032,7 +1032,7 @@ private fun ReplyBar(
     // The surface paints to the bottom of the screen; the row inside it
     // stands above whatever the system holds there, so no pill lands
     // under the gesture handle (issue #428).
-    Surface(tonalElevation = 2.dp) {
+    Surface(tonalElevation = 2.dp, modifier = Modifier.testTag("thread-reply-surface")) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
