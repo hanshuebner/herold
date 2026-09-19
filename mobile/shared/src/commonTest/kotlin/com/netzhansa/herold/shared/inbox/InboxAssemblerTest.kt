@@ -526,6 +526,20 @@ class InboxAssemblerTest {
     }
 
     @Test
+    fun theLeadingTabIsHomeWhenTheAccountBundlesItsPrimaryCategory() {
+        val lanes = CategoryLanes.from(
+            listOf(
+                label("Primary", CategoryDisposition.BUNDLED, priority = 0),
+                label("Hobby", CategoryDisposition.PINNED, priority = 1),
+            ),
+        )
+
+        assertEquals(listOf("hobby"), lanes.tabs)
+        assertEquals("hobby", lanes.select(null), "the tab the row highlights is the one the list shows")
+        assertEquals("hobby", lanes.tabOf("primary"))
+    }
+
+    @Test
     fun aPickedLaneSurvivesAReorderAndAVanishedOneFallsBackToPrimary() {
         val before = CategoryLanes.from(
             listOf(
