@@ -120,15 +120,17 @@ class ForwardHtmlAcceptanceTest {
         )
 
         // And the same copy renders in the reading pane, markup and all.
+        // The conversation is opened afresh: the forward arrived after
+        // the screen was last on it.
         val received = awaitStored(seeded.accountId, delivered.id)
+        if (compose.onAllNodesWithTag("thread-back").fetchSemanticsNodes().isNotEmpty()) {
+            compose.onNodeWithTag("thread-back").performClick()
+        }
         compose.waitUntil(TIMEOUT_MS) {
-            compose.onAllNodesWithTag("thread-messages").fetchSemanticsNodes().isNotEmpty() ||
-                compose.onAllNodesWithTag("inbox-list").fetchSemanticsNodes().isNotEmpty()
+            compose.onAllNodesWithTag("inbox-list").fetchSemanticsNodes().isNotEmpty()
         }
-        if (compose.onAllNodesWithTag("thread-messages").fetchSemanticsNodes().isEmpty()) {
-            compose.scrollListToThread(received.threadId)
-            compose.onNodeWithTag("thread-row-${received.threadId}").performClick()
-        }
+        compose.scrollListToThread(received.threadId)
+        compose.onNodeWithTag("thread-row-${received.threadId}").performClick()
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithTag("message-body-${received.id}").fetchSemanticsNodes().isNotEmpty()
         }
