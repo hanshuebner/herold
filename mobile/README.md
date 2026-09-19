@@ -285,6 +285,32 @@ device reaches at `10.0.2.2:5554`, and the listener wants the token in
 address. Without `heroldEmulatorToken` the shake check skips, so the
 class still runs on a physical device.
 
+### The bottom edge, under both navigation modes (issue #428)
+
+`BottomInsetAcceptanceTest` measures what the shell pins to the bottom
+of the window - the conversation's reply pills, the inbox's compose
+button, the drawer's pinned entries, the diagnostics and outbox
+screens, the bug reporter's action row - against the inset the window
+reports, and fails when one of them reaches into the navigation bar or
+the gesture handle. Run it once per navigation mode; the overlay
+switch restarts SystemUI, so give it a moment before the run:
+
+    adb shell cmd overlay enable com.android.internal.systemui.navbar.gestural
+    adb shell am instrument -w -r \
+      -e class com.netzhansa.herold.android.BottomInsetAcceptanceTest \
+      -e heroldBaseUrl http://10.0.2.2:<backend-port> \
+      -e heroldSmtpAddr 10.0.2.2:<smtp-port> \
+      com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+
+    adb shell cmd overlay enable com.android.internal.systemui.navbar.threebutton
+    # the same invocation again
+
+The shots it takes carry the mode in their name
+(`m4-bottom-inset-gesture-thread.png`,
+`m4-bottom-inset-threebutton-thread.png`, and one per surface), and
+each run logs the window height and the insets it measured under the
+`BottomInset` tag, which `adb logcat -d -s BottomInset` prints.
+
 ### UnifiedPush (issue #229)
 
 `UnifiedPushAcceptanceTest` and `PushTransportSettingsTest` need a
