@@ -204,6 +204,18 @@ flow that closed the app on the reporting device:
       -e heroldSmtpAddr 10.0.2.2:<smtp-port> \
       com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
 
+`ForwardHtmlAcceptanceTest` forwards a formatted message - a heading, a
+table, an inline image, a script and a style block - to the signed-in
+principal, then reads the copy that arrived over JMAP: the markup and
+the inline part are there, the script and the style block are not
+(issue #431).
+
+    adb shell am instrument -w -r \
+      -e class com.netzhansa.herold.android.ForwardHtmlAcceptanceTest \
+      -e heroldBaseUrl http://10.0.2.2:<backend-port> \
+      -e heroldSmtpAddr 10.0.2.2:<smtp-port> \
+      com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+
 `CrashRestoreAcceptanceTest` stands on a conversation, leaves the crash
 record the uncaught-exception handler writes, and recreates the
 activity: the shell comes back on the inbox, and the trace stays for the
