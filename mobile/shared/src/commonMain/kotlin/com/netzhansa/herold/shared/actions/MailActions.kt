@@ -138,7 +138,33 @@ class MailActions(
         return PendingAction(snapshot, Labels.ARCHIVE, optimistic, patches)
     }
 
-    /** Queues what [archiveLocally] or [snoozeLocally] wrote. */
+    /**
+     * Delete: into the trash mailbox and out of every other one the
+     * account holds the message in, which is where the suite's delete
+     * and herold's own retention put it. The pairing with [commit] is
+     * [archiveLocally]'s, so the undo appears with the change
+     * (issue #428).
+     */
+    suspend fun deleteLocally(emails: List<Email>, mailboxes: List<Mailbox>): PendingAction {
+        val snapshot = ActionSnapshot(emails)
+        val optimistic = mutableListOf<Email>()
+        val patches = mutableMapOf<String, JsonObject>()
+        emails.forEach { email ->
+            val trash = mailboxes.firstOrNull { it.accountId == email.accountId && it.role == MailboxRoles.TRASH }
+                ?: return@forEach
+            if (email.mailboxIds == setOf(trash.id)) return@forEach
+            val patch = buildJsonObject {
+                (email.mailboxIds - trash.id).forEach { put("mailboxIds/$it", JsonPrimitive(null as String?)) }
+                if (!email.mailboxIds.contains(trash.id)) put("mailboxIds/${trash.id}", true)
+            }
+            optimistic.add(email.copy(mailboxIds = setOf(trash.id)))
+            patches[email.id] = patch
+        }
+        optimistic.forEach { write(it) }
+        return PendingAction(snapshot, Labels.DELETE, optimistic, patches)
+    }
+
+    /** Queues what [archiveLocally], [deleteLocally] or [snoozeLocally] wrote. */
     suspend fun commit(pending: PendingAction) {
         if (pending.isEmpty) return
         enqueue(pending)
@@ -297,6 +323,7 @@ class MailActions(
     /** What the outbox screen calls each kind of action. */
     object Labels {
         const val ARCHIVE = "Archive"
+        const val DELETE = "Delete"
         const val SNOOZE = "Snooze"
         const val UNSNOOZE = "Unsnooze"
         const val STAR = "Star"
