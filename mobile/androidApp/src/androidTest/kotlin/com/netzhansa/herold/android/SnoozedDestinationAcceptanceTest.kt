@@ -100,6 +100,7 @@ class SnoozedDestinationAcceptanceTest {
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithTag("thread-messages").fetchSemanticsNodes().isNotEmpty()
         }
+        compose.openThreadOverflow()
         compose.onNodeWithTag("thread-snooze").performClick()
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithTag("snooze-sheet").fetchSemanticsNodes().isNotEmpty()
