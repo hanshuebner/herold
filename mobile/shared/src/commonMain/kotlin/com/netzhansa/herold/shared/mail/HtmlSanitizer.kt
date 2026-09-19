@@ -29,9 +29,16 @@ object HtmlSanitizer {
      * @param html the message's HTML body
      * @param loadRemoteImages whether `http(s)` images may load; false leaves
      *   a placeholder so opening a message does not report back to the sender
+     * @param collapseQuotes whether a trailing quoted history folds behind a
+     *   control the reader opens; the reading pane asks for it, the composer's
+     *   editable body does not (issue #432)
      * @return the sanitised document plus whether it held back a remote image
      */
-    fun sanitize(html: String, loadRemoteImages: Boolean = false): SanitizedHtml {
+    fun sanitize(
+        html: String,
+        loadRemoteImages: Boolean = false,
+        collapseQuotes: Boolean = false,
+    ): SanitizedHtml {
         var out = html
         activeElements.forEach { tag ->
             out = Regex("""<$tag\b[\s\S]*?</$tag\s*>""", RegexOption.IGNORE_CASE).replace(out, "")
@@ -64,11 +71,28 @@ object HtmlSanitizer {
                 else -> tag
             }
         }
+        if (collapseQuotes) out = QuotedHtml.collapse(out)
         return SanitizedHtml(html = out, blockedRemoteImages = blockedRemoteImages)
     }
 
-    /** Wraps a plain-text body so the same renderer shows it. */
-    fun fromPlainText(text: String): String =
+    /**
+     * Wraps a plain-text body so the same renderer shows it.
+     *
+     * With [collapseQuotes] the trailing citation - the run of
+     * `>`-prefixed lines and the attribution line above it - folds
+     * behind the same control the HTML path uses (issue #432). The
+     * composer asks for the plain wrapping, since what it wraps is a
+     * body about to be sent.
+     */
+    fun fromPlainText(text: String, collapseQuotes: Boolean = false): String {
+        if (!collapseQuotes) return preformatted(text)
+        val split = QuotedText.split(text)
+        if (split.collapsed.isEmpty()) return preformatted(text)
+        val head = if (split.head.isBlank()) "" else preformatted(split.head)
+        return head + QuotedHtml.foldedRegion(preformatted(split.collapsed))
+    }
+
+    private fun preformatted(text: String): String =
         "<pre style=\"white-space:pre-wrap;word-wrap:break-word;font-family:sans-serif\">" +
             text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;") +
             "</pre>"
@@ -77,6 +101,10 @@ object HtmlSanitizer {
     fun document(body: String, darkTheme: Boolean): String {
         val background = if (darkTheme) "#1b1b1b" else "#ffffff"
         val foreground = if (darkTheme) "#e6e6e6" else "#1b1b1b"
+        val muted = if (darkTheme) "#a6a6a6" else "#525252"
+        val rule = if (darkTheme) "#4a4a4a" else "#c6c6c6"
+        val chip = if (darkTheme) "#393939" else "#f0f0f0"
+        val chipOpen = if (darkTheme) "#525252" else "#e0e0e0"
         return """
             <!DOCTYPE html>
             <html><head>
@@ -98,6 +126,22 @@ object HtmlSanitizer {
               .$BODY_CLASS { overflow-x: auto; }
               table { border-collapse: collapse; }
               a { color: #4c8dff; }
+              blockquote { border-left: 3px solid $rule; margin: 0 0 0 8px;
+                           padding: 0 0 0 12px; color: $muted; }
+              /* The quoted history's fold (issue #432). <details> opens and
+                 closes on a tap with no script, which is what the reading
+                 pane's WebView allows; the two labels swap on the open
+                 state, so the chip reads as a control either way. */
+              details.${QuotedHtml.DETAILS_CLASS} { margin: 8px 0; }
+              details.${QuotedHtml.DETAILS_CLASS} > summary {
+                     cursor: pointer; list-style: none; display: inline-block;
+                     padding: 6px 14px; margin-bottom: 8px; background: $chip;
+                     color: $muted; border-radius: 16px; font-size: 14px; }
+              details.${QuotedHtml.DETAILS_CLASS} > summary::-webkit-details-marker { display: none; }
+              details.${QuotedHtml.DETAILS_CLASS}[open] > summary { background: $chipOpen; }
+              .${QuotedHtml.HIDE_CLASS} { display: none; }
+              details.${QuotedHtml.DETAILS_CLASS}[open] .${QuotedHtml.SHOW_CLASS} { display: none; }
+              details.${QuotedHtml.DETAILS_CLASS}[open] .${QuotedHtml.HIDE_CLASS} { display: inline; }
             </style>
             </head><body><div class="$BODY_CLASS">$body</div></body></html>
         """.trimIndent()

@@ -25,7 +25,8 @@ import org.junit.runners.MethodSorters
 
 /**
  * How a message body renders in the conversation view: a desktop-width
- * document fits the card (issue #430).
+ * document fits the card (issue #430) and the quoted history folds
+ * behind a control the reader opens with one tap (issue #432).
  *
  * The measurements come from the WebView's accessibility tree, which is
  * the only handle a test has on a body rendered with JavaScript off: a
@@ -152,6 +153,42 @@ class MessageBodyRenderingAcceptanceTest {
         backToInbox()
     }
 
+    /**
+     * A reply carrying an attribution line and the full quoted original
+     * shows only the fresh text, behind a control that opens the history
+     * on one tap (issue #432).
+     */
+    @Test
+    fun t30_quotedHistoryFoldsAndOpensOnATap() {
+        val message = seedHtmlMessage("Quoted", QUOTED_BODY)
+        openThread(message.threadId)
+        awaitBody(message, FRESH_MARKER)
+
+        compose.captureScreen("m4-body-quote-folded")
+        assertTrue(
+            "the quoted history rendered unfolded",
+            !device.hasObject(By.textContains(QUOTED_MARKER)),
+        )
+        assertTrue(
+            "the attribution line rendered outside the fold",
+            !device.hasObject(By.textContains(ATTRIBUTION_MARKER)),
+        )
+        val chip = device.wait(Until.findObject(By.textContains(SHOW_LABEL)), TIMEOUT_MS)
+            ?: error("the body showed no control to open the quoted history")
+
+        chip.click()
+        assertTrue(
+            "the quoted history did not open on a tap",
+            device.wait(Until.hasObject(By.textContains(QUOTED_MARKER)), TIMEOUT_MS),
+        )
+        assertTrue(
+            "the attribution line stayed hidden after the fold opened",
+            device.hasObject(By.textContains(ATTRIBUTION_MARKER)),
+        )
+        compose.captureScreen("m4-body-quote-expanded")
+        backToInbox()
+    }
+
     // ---- helpers ---------------------------------------------------------
 
     /** Delivers one HTML message and waits for the store to hold it. */
@@ -257,6 +294,10 @@ class MessageBodyRenderingAcceptanceTest {
         const val UNSHRINKABLE_MARKER = "A row that cannot be narrowed."
         const val NOWRAP_MARKER = "Unbreakable row:"
         const val ROW_END_MARKER = "the end of the row"
+        const val FRESH_MARKER = "Fresh text of the reply."
+        const val ATTRIBUTION_MARKER = "Alice Example wrote:"
+        const val QUOTED_MARKER = "The original message being answered"
+        const val SHOW_LABEL = "Show trimmed content"
 
         /** A mail authored for a desktop reading pane (issue #430). */
         val WIDE_BODY = "<html><body>" +
@@ -283,6 +324,14 @@ class MessageBodyRenderingAcceptanceTest {
             "</tr></table></body></html>\r\n"
 
         val NARROW_BODY = "<html><body><p>$NARROW_MARKER</p></body></html>\r\n"
+
+        /** A top-posted reply, the shape every client writes (issue #432). */
+        val QUOTED_BODY = "<html><body>" +
+            "<p>$FRESH_MARKER</p>" +
+            "<p>On Mon, 15 Sep 2026, $ATTRIBUTION_MARKER</p>" +
+            "<blockquote><p>$QUOTED_MARKER, which the reader should not have " +
+            "to scroll through.</p></blockquote>" +
+            "</body></html>\r\n"
 
         const val TIMEOUT_MS = 30_000L
         const val POLL_MS = 500L

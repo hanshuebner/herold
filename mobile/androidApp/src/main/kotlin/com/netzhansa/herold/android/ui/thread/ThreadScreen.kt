@@ -1195,8 +1195,14 @@ private fun MessageCard(
         }
 
         if (expanded) {
-            val body = message.bodyHtml?.let { HtmlSanitizer.sanitize(it, loadRemoteImages) }
-                ?: message.bodyText?.let { HtmlSanitizer.sanitize(HtmlSanitizer.fromPlainText(it), loadRemoteImages) }
+            val body = message.bodyHtml
+                ?.let { HtmlSanitizer.sanitize(it, loadRemoteImages, collapseQuotes = true) }
+                ?: message.bodyText?.let {
+                    HtmlSanitizer.sanitize(
+                        HtmlSanitizer.fromPlainText(it, collapseQuotes = true),
+                        loadRemoteImages,
+                    )
+                }
 
             if (body == null) {
                 Text(
