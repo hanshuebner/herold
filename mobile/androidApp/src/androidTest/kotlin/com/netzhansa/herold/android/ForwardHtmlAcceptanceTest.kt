@@ -12,6 +12,9 @@ import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.uiautomator.By
+import androidx.test.uiautomator.UiDevice
+import androidx.test.uiautomator.Until
 import com.netzhansa.herold.shared.domain.Email
 import com.netzhansa.herold.shared.sync.toStoreRow
 import kotlinx.coroutines.flow.first
@@ -41,8 +44,11 @@ class ForwardHtmlAcceptanceTest {
     @get:Rule
     val compose = createAndroidComposeRule<MainActivity>()
 
-    private val app get() = InstrumentationRegistry.getInstrumentation()
-        .targetContext.applicationContext as HeroldApplication
+    private val instrumentation get() = InstrumentationRegistry.getInstrumentation()
+
+    private val app get() = instrumentation.targetContext.applicationContext as HeroldApplication
+
+    private val device get() = UiDevice.getInstance(instrumentation)
 
     @Before
     fun signedIn() {
@@ -135,6 +141,13 @@ class ForwardHtmlAcceptanceTest {
             compose.onAllNodesWithTag("message-body-${received.id}").fetchSemanticsNodes().isNotEmpty()
         }
         compose.onNodeWithTag("thread-messages").performScrollToNode(hasTestTag("message-body-${received.id}"))
+        // The forward's quote is a quoted history, which the reading pane
+        // folds (issue #432); the shot is of what it holds.
+        device.wait(Until.findObject(By.textContains(SHOW_LABEL)), TIMEOUT_MS)?.click()
+        assertTrue(
+            "the forwarded copy must render the original's heading",
+            device.wait(Until.hasObject(By.textContains(HEADING)), TIMEOUT_MS),
+        )
         Thread.sleep(SETTLE_MS)
         compose.captureScreen("93-forward-as-received")
     }
@@ -184,5 +197,8 @@ class ForwardHtmlAcceptanceTest {
 
         /** A word that appears in the original's markup and nowhere else. */
         const val HEADING = "Release notes"
+
+        /** The reading pane's control over a folded quoted history (issue #432). */
+        const val SHOW_LABEL = "Show trimmed content"
     }
 }
