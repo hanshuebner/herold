@@ -98,6 +98,33 @@ data class CategoryLanes(
     fun dispositionOf(category: String?): CategoryDisposition =
         category?.let { dispositions[it] } ?: CategoryDisposition.NONE
 
+    /** The lanes the inbox's tab row carries, in priority order (issue #427). */
+    val tabs: List<String> get() = pinned
+
+    /**
+     * The lane that carries whatever no tab of its own claims: the
+     * primary-role category (REQ-CAT-03), or the leading tab on an
+     * account without one. A bundled category's row and a conversation
+     * whose category has no lane live here, so nothing the inbox holds
+     * is out of reach once the combined view is gone (issue #427).
+     */
+    val home: String? get() = primary ?: tabs.firstOrNull()
+
+    /**
+     * The lane the tab row stands on, given the one the reader last
+     * picked: their pick while it is still a tab, and the home lane
+     * once it is not - the account whose lanes a sync took away opens
+     * on Primary again. Null is an account with no lanes, whose inbox
+     * is one undivided list.
+     */
+    fun select(picked: String?): String? = picked?.takeIf { it in tabs } ?: home
+
+    /**
+     * The tab [category]'s conversations render under: its own when it
+     * is a tab, and the home lane otherwise.
+     */
+    fun tabOf(category: String?): String? = category?.takeIf { it in tabs } ?: home
+
     /** Where [category] sits in the priority list; an unranked one sorts last. */
     private fun rank(category: String): Int =
         order.indexOf(category).takeIf { it >= 0 } ?: Int.MAX_VALUE
@@ -273,13 +300,15 @@ object InboxAssembler {
     }
 
     /**
-     * The stream for the selected tab. [selectedCategory] null is the
-     * complete stream: a `pinned` or plain conversation stays inline, a
-     * `bundled` category collapses to one row, and a category the server
-     * defers or files keeps its conversations out (REQ-CAT-10/16).
+     * The stream for the selected tab: the conversations the tab holds,
+     * a `bundled` category among them collapsed to one row, and a
+     * category the server defers or files kept out (REQ-CAT-10/16).
+     * [selectedCategory] null is the undivided list of an account with
+     * no lanes.
      *
      * A conversation carrying several categories appears once, under the
-     * highest-priority one (REQ-CAT-01).
+     * highest-priority one (REQ-CAT-01); one whose category is no tab
+     * renders under the home lane, as does a bundle (issue #427).
      */
     fun stream(
         rows: List<ThreadRow>,
@@ -288,13 +317,15 @@ object InboxAssembler {
     ): List<InboxItem> {
         val laneOf = rows.associateWith { lanes.resolve(it.categories) }
         val visible = rows.filter { !lanes.dispositionOf(laneOf[it]).hidesFromInbox }
-        if (selectedCategory != null) {
-            return visible.filter { laneOf[it] == selectedCategory }.map { InboxItem.Conversation(it) }
+        val shown = if (selectedCategory == null) {
+            visible
+        } else {
+            visible.filter { lanes.tabOf(laneOf[it]) == selectedCategory }
         }
-        val bundledRows = visible.filter {
+        val bundledRows = shown.filter {
             lanes.dispositionOf(laneOf[it]) == CategoryDisposition.BUNDLED
         }
-        val plainRows = visible.filter { it !in bundledRows }
+        val plainRows = shown.filter { it !in bundledRows }
         val bundles = bundledRows.groupBy { laneOf[it]!! }.map { (category, threads) ->
             InboxItem.Bundle(
                 BundleRow(
@@ -311,6 +342,23 @@ object InboxAssembler {
         return (plainRows.map { InboxItem.Conversation(it) } + bundles)
             .sortedByDescending { it.receivedAt }
     }
+
+    /**
+     * How much unread mail each tab holds, by lane (issue #427). A
+     * conversation counts under the tab it renders beneath, so a
+     * bundled category's unread threads count under the home lane and
+     * a filed one's count nowhere. The rows come from the local store,
+     * so the badge follows a message being read without waiting for a
+     * sync.
+     */
+    fun unreadByLane(rows: List<ThreadRow>, lanes: CategoryLanes): Map<String, Int> =
+        rows.filter { it.isUnread }
+            .mapNotNull { row ->
+                val lane = lanes.resolve(row.categories)
+                if (lanes.dispositionOf(lane).hidesFromInbox) null else lanes.tabOf(lane)
+            }
+            .groupingBy { it }
+            .eachCount()
 
     /** Every category name the synced messages carry. */
     fun observedCategories(emails: List<Email>): Set<String> =

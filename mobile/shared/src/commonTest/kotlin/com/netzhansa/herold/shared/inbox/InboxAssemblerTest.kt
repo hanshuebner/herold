@@ -496,4 +496,184 @@ class InboxAssemblerTest {
 
         assertEquals(listOf("primary", "social", "promotions"), lanes.pinned)
     }
+
+    @Test
+    fun theTabRowIsTheLanesAloneAndOpensOnPrimary() {
+        val lanes = CategoryLanes.from(
+            listOf(
+                label("Promotions", CategoryDisposition.PINNED, priority = 1),
+                label("Primary", CategoryDisposition.PINNED, priority = 0),
+                label("Receipts", CategoryDisposition.BUNDLED, priority = 2),
+            ),
+        )
+
+        assertEquals(listOf("primary", "promotions"), lanes.tabs, "the row carries the lanes and nothing else")
+        assertEquals("primary", lanes.select(null), "the inbox opens on the primary-role lane")
+        assertEquals("primary", lanes.home)
+    }
+
+    @Test
+    fun theLeadingTabIsHomeOnAnAccountWithoutAPrimaryLane() {
+        val lanes = CategoryLanes.from(
+            listOf(
+                label("Hobby", CategoryDisposition.PINNED, priority = 0),
+                label("Promotions", CategoryDisposition.PINNED, priority = 1),
+            ),
+        )
+
+        assertEquals("hobby", lanes.select(null))
+        assertEquals("hobby", lanes.tabOf("unlaned"))
+    }
+
+    @Test
+    fun aPickedLaneSurvivesAReorderAndAVanishedOneFallsBackToPrimary() {
+        val before = CategoryLanes.from(
+            listOf(
+                label("Primary", CategoryDisposition.PINNED, priority = 0),
+                label("Promotions", CategoryDisposition.PINNED, priority = 1),
+            ),
+        )
+        assertEquals("promotions", before.select("promotions"))
+
+        val reordered = CategoryLanes.from(
+            listOf(
+                label("Promotions", CategoryDisposition.PINNED, priority = 0),
+                label("Primary", CategoryDisposition.PINNED, priority = 1),
+                label("Hobby", CategoryDisposition.PINNED, priority = 2),
+            ),
+        )
+        assertEquals("promotions", reordered.select("promotions"), "a reorder leaves the reader where they were")
+
+        val without = CategoryLanes.from(
+            listOf(
+                label("Primary", CategoryDisposition.PINNED, priority = 0),
+                label("Promotions", CategoryDisposition.BUNDLED, priority = 1),
+            ),
+        )
+        assertEquals("primary", without.select("promotions"), "a lane that is gone returns the reader to Primary")
+    }
+
+    @Test
+    fun anAccountWithNoLanesShowsOneUndividedList() {
+        val lanes = CategoryLanes.from(mailboxes, emptyList())
+        val emails = listOf(
+            email("e1", receivedAt = 2000),
+            email("e2", receivedAt = 1000, keywords = setOf(Keywords.categoryKeyword("Promotions"))),
+        )
+        val rows = InboxAssembler.threadRows(emails, accounts, mailboxes)
+
+        assertTrue(lanes.tabs.isEmpty())
+        assertNull(lanes.select(null))
+        assertEquals(2, InboxAssembler.stream(rows, lanes, lanes.select(null)).size)
+        assertEquals(emptyMap(), InboxAssembler.unreadByLane(rows, lanes))
+    }
+
+    @Test
+    fun theHomeLaneCarriesTheBundlesAndWhateverNoTabClaims() {
+        val lanes = CategoryLanes.from(
+            listOf(
+                label("Primary", CategoryDisposition.PINNED, priority = 0),
+                label("Hobby", CategoryDisposition.PINNED, priority = 1),
+                label("Promotions", CategoryDisposition.BUNDLED, priority = 2),
+                label("Projects", CategoryDisposition.NONE),
+            ),
+        )
+        val emails = listOf(
+            email("e1", receivedAt = 4000, keywords = setOf(Keywords.categoryKeyword("Promotions"))),
+            email("e2", receivedAt = 3000, keywords = setOf(Keywords.categoryKeyword("Projects"))),
+            email("e3", receivedAt = 2000, keywords = setOf(Keywords.categoryKeyword("Hobby"))),
+            email("e4", receivedAt = 1000),
+        )
+        val rows = InboxAssembler.threadRows(emails, accounts, mailboxes)
+
+        val primary = InboxAssembler.stream(rows, lanes, "primary")
+        assertEquals("promotions", (primary.first() as InboxItem.Bundle).row.category)
+        assertEquals(
+            listOf("t-e2", "t-e4"),
+            primary.filterIsInstance<InboxItem.Conversation>().map { it.row.threadId },
+            "a category with no lane of its own lands on the home lane",
+        )
+        assertEquals(
+            listOf("t-e3"),
+            InboxAssembler.stream(rows, lanes, "hobby")
+                .filterIsInstance<InboxItem.Conversation>().map { it.row.threadId },
+        )
+    }
+
+    @Test
+    fun aLanesUnreadCountIsItsUnreadRows() {
+        val lanes = CategoryLanes.from(
+            listOf(
+                label("Primary", CategoryDisposition.PINNED, priority = 0),
+                label("Promotions", CategoryDisposition.PINNED, priority = 1),
+                label("Newsletters", CategoryDisposition.FILED, priority = 2),
+            ),
+        )
+        val emails = listOf(
+            email("e1", receivedAt = 5000, keywords = emptySet()),
+            email("e2", receivedAt = 4000, keywords = setOf(Keywords.categoryKeyword("Promotions"))),
+            email(
+                "e3",
+                receivedAt = 3000,
+                keywords = setOf(Keywords.categoryKeyword("Promotions"), Keywords.SEEN),
+            ),
+            email("e4", receivedAt = 2000, keywords = setOf(Keywords.categoryKeyword("Newsletters"))),
+        )
+        val rows = InboxAssembler.threadRows(emails, accounts, mailboxes)
+
+        assertEquals(
+            mapOf("primary" to 1, "promotions" to 1),
+            InboxAssembler.unreadByLane(rows, lanes),
+            "a read conversation and a filed one count nowhere",
+        )
+    }
+
+    @Test
+    fun aBundlesUnreadMembersCountTowardsTheLaneTheBundleRendersOn() {
+        val lanes = CategoryLanes.from(
+            listOf(
+                label("Primary", CategoryDisposition.PINNED, priority = 0),
+                label("Promotions", CategoryDisposition.BUNDLED, priority = 1),
+            ),
+        )
+        val emails = listOf(
+            email("e1", receivedAt = 4000, keywords = setOf(Keywords.categoryKeyword("Promotions"))),
+            email("e2", receivedAt = 3000, keywords = setOf(Keywords.categoryKeyword("Promotions"))),
+            email(
+                "e3",
+                receivedAt = 2000,
+                keywords = setOf(Keywords.categoryKeyword("Promotions"), Keywords.SEEN),
+            ),
+            email("e4", receivedAt = 1000, keywords = emptySet()),
+        )
+        val rows = InboxAssembler.threadRows(emails, accounts, mailboxes)
+
+        assertEquals(
+            mapOf("primary" to 3),
+            InboxAssembler.unreadByLane(rows, lanes),
+            "the bundle's two unread conversations count with the home lane's own one",
+        )
+        val bundle = InboxAssembler.stream(rows, lanes, "primary").filterIsInstance<InboxItem.Bundle>().single()
+        assertEquals(2, bundle.row.unreadCount)
+    }
+
+    @Test
+    fun readingTheLastUnreadConversationEmptiesTheLanesCount() {
+        val lanes = CategoryLanes.from(
+            listOf(
+                label("Primary", CategoryDisposition.PINNED, priority = 0),
+                label("Promotions", CategoryDisposition.PINNED, priority = 1),
+            ),
+        )
+        val unread = email("e1", receivedAt = 1000, keywords = setOf(Keywords.categoryKeyword("Promotions")))
+        val rows = InboxAssembler.threadRows(listOf(unread), accounts, mailboxes)
+        assertEquals(mapOf("promotions" to 1), InboxAssembler.unreadByLane(rows, lanes))
+
+        val read = InboxAssembler.threadRows(
+            listOf(unread.copy(keywords = unread.keywords + Keywords.SEEN)),
+            accounts,
+            mailboxes,
+        )
+        assertEquals(emptyMap(), InboxAssembler.unreadByLane(read, lanes))
+    }
 }
