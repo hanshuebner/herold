@@ -59,11 +59,9 @@ import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
-import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberSwipeToDismissBoxState
-import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -160,7 +158,10 @@ fun InboxScreen(
     val status = appStatus(offline, syncStatus, pending, failedInQueue)
 
     val accountScope by container.accountScope.collectAsStateSafely(null)
-    var selectedCategory by rememberSaveable { mutableStateOf<String?>(null) }
+    // The lane the reader picked, if they have picked one. The lane the
+    // inbox stands on is derived from it below, so an account whose
+    // lanes change under a sync opens on Primary again (issue #427).
+    var pickedLane by rememberSaveable { mutableStateOf<String?>(null) }
     var expandedBundles by remember { mutableStateOf(setOf<String>()) }
     // The open destination is held as its key, so it survives process death
     // in saved instance state (REQ-AND-NAV-20).
@@ -190,9 +191,15 @@ fun InboxScreen(
     val lanes = remember(mailboxes, derivedCategories, observedCategories, accountScope) {
         CategoryLanes.from(mailboxes, derivedCategories, observedCategories, accountScope)
     }
-    val stream = remember(rows, lanes, selectedCategory) {
-        InboxAssembler.stream(rows, lanes, selectedCategory)
+    // The inbox opens on the primary-role lane (REQ-CAT-03) and stays on
+    // the reader's pick for as long as that lane exists.
+    val selectedLane = remember(lanes, pickedLane) { lanes.select(pickedLane) }
+    val stream = remember(rows, lanes, selectedLane) {
+        InboxAssembler.stream(rows, lanes, selectedLane)
     }
+    // The counts the tabs badge, read from the same rows the list
+    // renders, so opening a message clears the badge with the row.
+    val unreadByLane = remember(rows, lanes) { InboxAssembler.unreadByLane(rows, lanes) }
     val snoozedRows = remember(snoozedEmails, accounts, mailboxes, accountScope) {
         InboxAssembler.snoozedRows(snoozedEmails, accounts, mailboxes, accountScope)
     }
@@ -490,27 +497,18 @@ fun InboxScreen(
             }
 
             if (destination == MailDestination.Inbox) {
-            if (lanes.pinned.isNotEmpty()) {
-                val tabs = listOf<String?>(null) + lanes.pinned
-                ScrollableTabRow(
-                    selectedTabIndex = tabs.indexOf(selectedCategory).coerceAtLeast(0),
-                    edgePadding = 8.dp,
-                    modifier = Modifier.testTag("inbox-tabs"),
-                ) {
-                    tabs.forEach { category ->
-                        Tab(
-                            selected = selectedCategory == category,
-                            onClick = { selectedCategory = category },
-                            text = { Text(category?.let(Keywords::categoryLabel) ?: "All") },
-                            modifier = Modifier.testTag("inbox-tab-${category ?: "all"}"),
-                        )
-                    }
-                }
+            if (lanes.tabs.isNotEmpty()) {
+                CategoryTabRow(
+                    tabs = lanes.tabs,
+                    selected = selectedLane,
+                    unreadByLane = unreadByLane,
+                    onSelect = { pickedLane = it },
+                )
             }
 
             if (stream.isEmpty()) {
                 Text(
-                    text = if (selectedCategory == null) {
+                    text = if (selectedLane == null) {
                         "Your inbox is empty."
                     } else {
                         "Nothing in this category."
