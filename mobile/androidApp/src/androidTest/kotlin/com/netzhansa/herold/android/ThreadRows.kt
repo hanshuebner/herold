@@ -30,9 +30,16 @@ fun ComposeTestRule.listHoldsThread(threadId: String, listTag: String = "inbox-l
  * absent row is satisfied by whatever screen the app went to instead, so a
  * gesture that opened the conversation rather than swiping it away passes
  * the "the row is gone" wait and fails somewhere later (issue #379).
+ *
+ * Both reads go through the semantics tree rather than through an
+ * assertion: this runs as a `waitUntil` condition, where an assertion
+ * synchronises with Espresso and re-enters the layout pass it was called
+ * from ("performMeasureAndLayout called during measure layout").
  */
 fun ComposeTestRule.listLacksThread(threadId: String, listTag: String = "inbox-list"): Boolean {
-    onNodeWithTag(listTag).assertExists()
+    check(onAllNodesWithTag(listTag).fetchSemanticsNodes().isNotEmpty()) {
+        "the list \"$listTag\" is not on screen, so the absence of a row means nothing"
+    }
     return !listHoldsThread(threadId, listTag)
 }
 
