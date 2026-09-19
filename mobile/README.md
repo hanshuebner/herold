@@ -73,6 +73,12 @@ them:
     #t71 offline: the same measurements with no connection
     adb shell svc data enable && adb shell svc wifi enable
 
+`SyncFreshnessAcceptanceTest` runs online and needs no device setup. It
+measures how far behind the server the app gets (issue #436): each
+method signs in through a relay in the test process, so the check takes
+the wire away and gives it back with the radios untouched. `t92` turns
+the screen off and on, so run it on an emulator with no screen lock.
+
 `UndoSendAcceptanceTest` runs online and needs no phases.
 `t64` needs the foreign-identity seed, so start the instance with
 `HEROLD_DEV_EXTERNAL_SUBMISSION=1`.

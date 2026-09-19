@@ -36,7 +36,34 @@ The reconciler is the only writer of server-derived rows. It runs on:
 - cold start (against persisted state — usually a small delta, not a full fetch);
 - each EventSource `StateChange` while foregrounded;
 - an FCM wake (`04-push.md`) via a bounded WorkManager pass;
-- pull-to-refresh and manual retry.
+- pull-to-refresh and manual retry;
+- the sync loop's own schedule, below.
+
+## The sync loop
+
+The reconciler is prompted; the loop is what prompts it when nothing else
+does (`../requirements/02-offline-and-sync.md` REQ-AND-SYNC-14). It runs
+for as long as the shell holds the foreground: a pass, a wait, the next
+pass.
+
+```
+   pass
+    ├ reached the server → record the time; wait 60 s
+    └ failed             → wait 5 s, then 10, 20, 40, 60, 60 ... ; log the decision
+   any wait is cut short by a forced sync:
+     the refresh action, an arriving push, the inbox's own entry
+```
+
+Starting the loop is itself a pass, so returning to the foreground
+reconciles at once whatever the backoff stood at. The 60 s floor is what
+covers an event stream that is connected and silent: the stream carries a
+change in well under a second, and the floor bounds how long a change can
+sit on the server unnoticed if it does not. Outside the foreground the
+loop does not run — FCM is the wake channel there.
+
+The time of the last pass that reached the server is on the diagnostics
+screen, so a report of "the app is behind" carries the fact rather than an
+impression.
 
 Unlike the Suite, a cold start does not re-fetch from scratch — the persisted
 state strings let `Foo/changes` deliver only the delta since last sync. A full
