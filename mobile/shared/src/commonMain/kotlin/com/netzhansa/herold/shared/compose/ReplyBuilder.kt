@@ -2,6 +2,7 @@ package com.netzhansa.herold.shared.compose
 
 import com.netzhansa.herold.shared.domain.Email
 import com.netzhansa.herold.shared.domain.MailAddress
+import com.netzhansa.herold.shared.mail.HtmlSanitizer
 
 /** What the user opened the composer for. */
 enum class ComposeMode { NEW, REPLY, REPLY_ALL, FORWARD, EDIT_DRAFT }
@@ -128,12 +129,69 @@ object ReplyBuilder {
     fun isOwnMessage(parent: Email, selfEmails: Set<String>): Boolean =
         parent.deliveredTo.isNullOrBlank() && parent.fromEmail.lowercase() in selfEmails
 
+    /**
+     * The original as the quote carries it: its own markup when it has
+     * some, the paragraph form of its text otherwise (issue #431).
+     *
+     * An HTML original goes in as the sanitized fragment of what the
+     * reader saw, so a forward keeps the layout, the styling and the
+     * images of the message it forwards. The `text/plain` alternative of
+     * the outgoing message is derived from this body by the composer, so
+     * the recipient still gets the text rendering the quote used to be.
+     */
     private fun quotedBody(parent: Email): String {
+        parent.bodyHtml?.let { html ->
+            val fragment = HtmlSanitizer.quoteFragment(html)
+            if (fragment.contains("<img", ignoreCase = true) || HtmlText.toPlainText(fragment).isNotBlank()) {
+                return fragment
+            }
+        }
         val text = parent.bodyText?.takeIf { it.isNotBlank() }
-            ?: parent.bodyHtml?.let { HtmlText.toPlainText(it) }?.takeIf { it.isNotBlank() }
             ?: parent.preview.takeIf { it.isNotBlank() }
         return text?.let { HtmlText.toHtml(it) } ?: "<p>(no quoted body)</p>"
     }
+
+    /**
+     * The parent's inline parts the quoted body still points at, as
+     * entries the send carries (issue #431). They reference the parent's
+     * blobs, like the forwarded files do, so a `cid:` in the quote names
+     * a part the outgoing message actually holds. An inline entry lives
+     * in the body rather than in the chip strip (suite G8), so it does
+     * not show as an attachment.
+     *
+     * A reference the parent has no part for is left in the body as the
+     * original wrote it; there is nothing to carry for it.
+     */
+    fun quotedInlineAttachments(parent: Email, quote: String): List<ComposeAttachment> {
+        val inline = parent.attachments.filter { it.isInline }
+        if (inline.isEmpty()) return emptyList()
+        return referencedCids(quote).mapNotNull { reference ->
+            val part = inline.firstOrNull { it.cid?.trim('<', '>') == reference || it.name == reference }
+            part?.let { reference to it }
+        }.mapIndexed { index, (reference, part) ->
+            ComposeAttachment(
+                key = "quoted-$index-${part.blobId}",
+                name = part.name,
+                type = part.type.ifBlank { "application/octet-stream" },
+                size = part.size,
+                blobId = part.blobId,
+                status = AttachmentStatus.READY,
+                inline = true,
+                cid = reference,
+            )
+        }
+    }
+
+    /** The `cid:` targets a body names, in the order it names them. */
+    fun referencedCids(html: String): List<String> = inlineReference.findAll(html)
+        .map { it.groupValues[2].ifEmpty { it.groupValues[3] } }
+        .map { it.trim().trim('<', '>') }
+        .filter { it.isNotBlank() }
+        .distinct()
+        .toList()
+
+    private val inlineReference =
+        Regex("""src\s*=\s*("cid:([^"]*)"|'cid:([^']*)')""", RegexOption.IGNORE_CASE)
 
     private fun stripMarkers(subject: String, markers: List<String>): String {
         val pattern = Regex("^(?:${markers.joinToString("|")})\\s*:\\s*", RegexOption.IGNORE_CASE)

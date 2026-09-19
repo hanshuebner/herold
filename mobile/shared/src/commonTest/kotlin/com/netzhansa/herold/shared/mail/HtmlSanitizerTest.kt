@@ -56,6 +56,53 @@ class HtmlSanitizerTest {
         assertFalse(result.blockedRemoteImages)
     }
 
+    /**
+     * The fragment a quote embeds (issue #431): the reader's markup
+     * without anything that acts, styles or wraps a document.
+     */
+    @Test
+    fun aQuoteFragmentKeepsTheMarkupAndDropsTheDocument() {
+        val fragment = HtmlSanitizer.quoteFragment(
+            "<!DOCTYPE html><html><head><title>Newsletter</title>" +
+                "<style>body { display: none }</style></head>" +
+                "<body><h1>Heading</h1><table><tr><td>cell</td></tr></table>" +
+                "<script>evil()</script></body></html>",
+        )
+
+        assertContains(fragment, "<h1>Heading</h1>")
+        assertContains(fragment, "<td>cell</td>")
+        assertFalse(fragment.contains("DOCTYPE", ignoreCase = true))
+        assertFalse(fragment.contains("<html", ignoreCase = true))
+        assertFalse(fragment.contains("<body", ignoreCase = true))
+        assertFalse(fragment.contains("<style", ignoreCase = true))
+        assertFalse(fragment.contains("Newsletter"))
+        assertFalse(fragment.contains("script", ignoreCase = true))
+    }
+
+    /** A quoted image keeps the reference the original wrote. */
+    @Test
+    fun aQuoteFragmentLeavesImageSourcesAlone() {
+        val fragment = HtmlSanitizer.quoteFragment(
+            """<img src="cid:logo@example"><img src="https://tracker.example/pixel.gif">""",
+        )
+
+        assertContains(fragment, "src=\"cid:logo@example\"")
+        assertContains(fragment, "src=\"https://tracker.example/pixel.gif\"")
+    }
+
+    /** A body on its way out carries the URL the block held back. */
+    @Test
+    fun aBlockedRemoteImageGoesOutWithItsUrl() {
+        val blocked = HtmlSanitizer.sanitize("""<img src="https://tracker.example/pixel.gif" width="4">""").html
+        val restored = HtmlSanitizer.restoreBlockedImages(blocked)
+
+        assertContains(restored, "src=\"https://tracker.example/pixel.gif\"")
+        assertContains(restored, "width=\"4\"")
+        assertFalse(restored.contains("data-blocked-src"))
+        // An image that was never blocked is left as it is.
+        assertContains(HtmlSanitizer.restoreBlockedImages("""<img src="cid:logo">"""), "src=\"cid:logo\"")
+    }
+
     @Test
     fun theDocumentLaysABodyOutToTheCardsWidth() {
         val document = HtmlSanitizer.document("<p>Body</p>", darkTheme = false)
