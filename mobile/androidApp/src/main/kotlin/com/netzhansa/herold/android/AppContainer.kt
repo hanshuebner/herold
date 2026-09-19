@@ -48,6 +48,7 @@ import com.netzhansa.herold.shared.store.createDatabase
 import com.netzhansa.herold.shared.store.DatabaseDriverFactory
 import com.netzhansa.herold.shared.sync.AndroidConnectivityMonitor
 import com.netzhansa.herold.shared.sync.SyncEngine
+import com.netzhansa.herold.shared.sync.SyncScheduler
 import com.netzhansa.herold.shared.sync.Reachability
 import com.netzhansa.herold.shared.sync.offlineIndication
 import io.ktor.client.HttpClient
@@ -95,6 +96,12 @@ class SessionScope(
     val baseUrl: String,
     val client: JmapClient,
     val syncEngine: SyncEngine,
+    /**
+     * The loop that keeps the store level with the server while the
+     * shell holds the foreground, and the forced pass a refresh, a push
+     * and a return to the foreground ask for (issue #436).
+     */
+    val syncScheduler: SyncScheduler,
     /** The outbox's submitter; the shell watches its failures. */
     val drainer: OutboxDrainer,
     /**
@@ -573,10 +580,19 @@ class AppContainer(context: Context) {
             now = { System.currentTimeMillis() },
         )
         val requestDrain: (Long) -> Unit = { delayMs -> drain(syncEngine, delayMs) }
+        // What runs a pass when the event stream has nothing to say: a
+        // bounded retry after a failure and a floor under the stream
+        // while it is quiet (issue #436).
+        val scheduler = SyncScheduler(
+            pass = { syncEngine.syncAll() },
+            now = { System.currentTimeMillis() },
+            log = { message -> DiagLog.i(SYNC_TAG, message) },
+        )
         return SessionScope(
             baseUrl = baseUrl,
             client = client,
             syncEngine = syncEngine,
+            syncScheduler = scheduler,
             drainer = drainer,
             requestDrain = requestDrain,
             actions = MailActions(store, outbox) { requestDrain(0) },

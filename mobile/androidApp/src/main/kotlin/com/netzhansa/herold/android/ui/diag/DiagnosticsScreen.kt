@@ -75,6 +75,20 @@ fun DiagnosticsScreen(
         value = runCatching { container.store.pushRegistration()?.transport }.getOrNull()
     }
 
+    // When the reconciler last reached the server, and how long ago
+    // that is, so a lag is read off the screen rather than guessed at
+    // (issue #436). It ticks with the ring's poll.
+    val lastSuccessFlow = remember(session) {
+        session?.syncScheduler?.lastSuccessAtMs ?: flowOf(null)
+    }
+    val lastSuccess by lastSuccessFlow.collectAsStateSafely(null)
+    val nowMs by produceState(initialValue = System.currentTimeMillis()) {
+        while (true) {
+            value = System.currentTimeMillis()
+            delay(RING_POLL_MS)
+        }
+    }
+
     // The ring grows while the screen is open, which is the point of
     // watching it: a reproduction attempted from here is readable as it
     // happens.
@@ -130,6 +144,13 @@ fun DiagnosticsScreen(
                     SyncStatus.Syncing -> "Running"
                     is SyncStatus.Failed -> "Failed: ${current.message}"
                 },
+            )
+            Fact(
+                tag = "diagnostics-last-sync",
+                label = "Last successful sync",
+                value = lastSuccess?.let { at ->
+                    "${CLOCK.format(Date(at))} (${describeAgo(nowMs - at)})"
+                } ?: "None since this app started",
             )
             Fact(
                 tag = "diagnostics-outbox",
@@ -229,6 +250,16 @@ private fun formatLine(line: LogLine): String =
     "${CLOCK.format(Date(line.atMs))} ${line.level.first().uppercase()} ${line.ctx}: ${line.message}"
 
 private fun ringText(lines: List<LogLine>): String = lines.joinToString("\n", transform = ::formatLine)
+
+/** How long ago something happened, in the words the screen uses. */
+private fun describeAgo(elapsedMs: Long): String {
+    val seconds = (if (elapsedMs < 0) 0 else elapsedMs) / 1000
+    return when {
+        seconds < 60 -> "$seconds s ago"
+        seconds < 3600 -> "${seconds / 60} min ago"
+        else -> "${seconds / 3600} h ${(seconds % 3600) / 60} min ago"
+    }
+}
 
 /** How often the open screen re-reads the ring. */
 private const val RING_POLL_MS = 1_000L

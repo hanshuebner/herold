@@ -446,7 +446,10 @@ fun InboxScreen(
                         Icon(Icons.Filled.Search, contentDescription = "Search")
                     }
                     IconButton(
-                        onClick = { scope.launch { session.syncEngine.syncAll() } },
+                        // The forced pass goes through the loop, so a
+                        // refusal the loop is backing off from does not
+                        // hold the user's own refresh up (issue #436).
+                        onClick = { session.syncScheduler.requestSync() },
                         modifier = Modifier.testTag("inbox-refresh"),
                     ) {
                         Icon(Icons.Filled.Refresh, contentDescription = "Refresh")
@@ -617,7 +620,7 @@ fun InboxScreen(
     }
 
     LaunchedEffect(session) {
-        session.syncEngine.syncAll()
+        session.syncScheduler.requestSync()
     }
 }
 

@@ -59,6 +59,10 @@ class PushDelivery(private val context: Context) {
         val accountId = envelope.accountId
         var presentation = MailPresentation()
         if (session != null && accountId != null) {
+            // A push is news: the foreground loop, if one is running,
+            // reconciles now rather than at the end of its wait
+            // (issue #436).
+            session.syncScheduler.requestSync()
             val types = envelope.changedTypes.filter { it in SyncTypes.ALL }
                 .ifEmpty { listOf(SyncTypes.EMAIL, SyncTypes.THREAD) }
             val outcome = withTimeoutOrNull(RECONCILE_BUDGET_MS) {

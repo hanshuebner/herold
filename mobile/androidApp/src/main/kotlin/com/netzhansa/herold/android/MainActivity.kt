@@ -550,24 +550,50 @@ private fun RestoringScreen() {
  * reconciles the named account when a `StateChange` arrives; the connection
  * is dropped on background, where FCM becomes the wake channel
  * (REQ-AND-SYNC-11, REQ-AND-NAV-21).
+ *
+ * Alongside it runs the sync loop (issue #436): coming back to the
+ * foreground reconciles at once, a pass that failed is retried on a
+ * bounded backoff, and a stream that is up but quiet is covered by the
+ * loop's floor.
  */
 @Composable
 private fun ForegroundSync(session: SessionScope) {
     val lifecycleOwner = LocalLifecycleOwner.current
     LaunchedEffect(session) {
         lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
-            while (true) {
-                runCatching {
-                    session.eventSource.stateChanges().collect { event ->
-                        event.changed.forEach { (accountId, states) ->
-                            session.syncEngine.syncAccount(
-                                accountId,
-                                states.keys.filter { it in SyncTypes.ALL },
-                            )
+            DiagLog.i(STREAM_TAG, "sync loop running")
+            try {
+                session.syncScheduler.run()
+            } finally {
+                DiagLog.i(STREAM_TAG, "sync loop stopped; the shell left the foreground")
+            }
+        }
+    }
+    LaunchedEffect(session) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            DiagLog.i(STREAM_TAG, "event stream wanted")
+            try {
+                while (true) {
+                    val outcome = runCatching {
+                        session.eventSource.stateChanges().collect { event ->
+                            DiagLog.i(STREAM_TAG, "state change for ${event.changed.keys.size} account(s)")
+                            event.changed.forEach { (accountId, states) ->
+                                session.syncEngine.syncAccount(
+                                    accountId,
+                                    states.keys.filter { it in SyncTypes.ALL },
+                                )
+                            }
                         }
                     }
+                    DiagLog.i(
+                        STREAM_TAG,
+                        "event stream ended (${outcome.exceptionOrNull()?.message ?: "closed"}); " +
+                            "reconnecting in ${RECONNECT_DELAY_MS / 1000} s",
+                    )
+                    kotlinx.coroutines.delay(RECONNECT_DELAY_MS)
                 }
-                kotlinx.coroutines.delay(RECONNECT_DELAY_MS)
+            } finally {
+                DiagLog.i(STREAM_TAG, "event stream dropped; the shell left the foreground")
             }
         }
     }
@@ -622,6 +648,13 @@ private const val RECONNECT_DELAY_MS = 5_000L
 
 /** The log tag the shell's own state goes out under. */
 private const val SHELL_TAG = "herold.shell"
+
+/**
+ * What the event stream is doing, in the diagnostic ring. A report of
+ * "the app is behind the server" is answerable only if the ring says
+ * whether the stream that should have told it was up (issue #436).
+ */
+private const val STREAM_TAG = "herold.stream"
 
 /**
  * How long an empty back stack is left alone. The first composition of
