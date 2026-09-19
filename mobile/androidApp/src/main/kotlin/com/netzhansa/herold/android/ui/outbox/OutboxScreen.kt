@@ -76,7 +76,7 @@ fun OutboxScreen(
             )
         },
     ) { padding ->
-        Column(modifier = Modifier.fillMaxSize().padding(padding)) {
+        Column(modifier = Modifier.fillMaxSize().padding(padding).testTag("outbox-screen")) {
             if (entries.isEmpty()) {
                 Text(
                     text = "Everything has been sent.",

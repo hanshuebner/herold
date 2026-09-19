@@ -82,6 +82,7 @@ import com.netzhansa.herold.android.AppContainer
 import com.netzhansa.herold.android.SessionScope
 import com.netzhansa.herold.android.ui.common.LabelSheet
 import com.netzhansa.herold.android.ui.common.UndoOffers
+import com.netzhansa.herold.android.ui.common.bottomSystemBarsPadding
 import com.netzhansa.herold.shared.actions.UndoMessages
 import com.netzhansa.herold.android.ui.common.SnoozeSheet
 import com.netzhansa.herold.android.ui.common.StatusIndicator
@@ -361,6 +362,10 @@ fun InboxScreen(
                     }
                 }
               }
+              // The entries pinned to the foot of the sheet stand above
+              // what the system holds along the bottom edge, so the last
+              // of them is not under the gesture handle (issue #428).
+              Column(modifier = Modifier.bottomSystemBarsPadding()) {
                 HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
                 NavigationDrawerItem(
                     label = { Text("Filters") },
@@ -397,6 +402,7 @@ fun InboxScreen(
                     },
                     modifier = Modifier.padding(horizontal = 12.dp).testTag("drawer-report-problem"),
                 )
+              }
               }
             }
         },
