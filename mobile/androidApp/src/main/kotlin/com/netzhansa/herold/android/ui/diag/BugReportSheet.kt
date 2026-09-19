@@ -43,6 +43,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import com.netzhansa.herold.android.ui.common.bottomSystemBarsPadding
 import com.netzhansa.herold.shared.diag.BugBundleWriter
 import com.netzhansa.herold.shared.diag.BugCapture
 import com.netzhansa.herold.shared.diag.BugSubmission
@@ -98,7 +99,7 @@ fun BugReportSheet(
         sheetState = sheetState,
         modifier = Modifier.testTag("bug-sheet"),
     ) {
-      Column(modifier = Modifier.fillMaxWidth().imePadding()) {
+      Column(modifier = Modifier.fillMaxWidth().imePadding().bottomSystemBarsPadding()) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()

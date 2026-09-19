@@ -24,6 +24,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.netzhansa.herold.android.ui.common.bottomSystemBarsPadding
 import com.netzhansa.herold.android.ui.common.collectAsStateSafely
 import com.netzhansa.herold.shared.auth.StepUpCoordinator
 
@@ -52,6 +53,7 @@ fun StepUpSheet(coordinator: StepUpCoordinator) {
             modifier = Modifier
                 .fillMaxWidth()
                 .imePadding()
+                .bottomSystemBarsPadding()
                 .padding(horizontal = 16.dp)
                 .padding(bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),

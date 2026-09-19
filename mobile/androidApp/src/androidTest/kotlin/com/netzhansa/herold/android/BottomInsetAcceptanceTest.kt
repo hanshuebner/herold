@@ -2,8 +2,10 @@ package com.netzhansa.herold.android
 
 import android.util.Log
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.hasTestTag
@@ -153,6 +155,29 @@ class BottomInsetAcceptanceTest {
         backToInbox()
     }
 
+    /** The snooze sheet, whose last row is a plain button under the presets. */
+    @Test
+    fun t50_theSnoozeSheetsLastRowStandsAboveIt() {
+        val message = seedMessage("Snooze sheet")
+        openThread(message.threadId)
+
+        compose.openThreadOverflow()
+        compose.onNodeWithTag("thread-snooze").performClick()
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("snooze-sheet").fetchSemanticsNodes().isNotEmpty()
+        }
+        report("snooze sheet")
+        compose.captureScreen("m4-bottom-inset-${navigationMode()}-snooze-sheet")
+        assertAboveSystemArea("snooze-custom")
+        assertNodeAboveSystemArea(compose.onNodeWithText("Cancel"), "the snooze sheet's Cancel")
+
+        compose.onNodeWithText("Cancel").performClick()
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("snooze-sheet").fetchSemanticsNodes().isEmpty()
+        }
+        backToInbox()
+    }
+
     // ---- the measurements ------------------------------------------------
 
     /**
@@ -206,9 +231,13 @@ class BottomInsetAcceptanceTest {
     }
 
     /** Fails when [tag] reaches into the system's bottom area. */
-    private fun assertAboveSystemArea(tag: String) {
+    private fun assertAboveSystemArea(tag: String) =
+        assertNodeAboveSystemArea(compose.onNodeWithTag(tag), tag)
+
+    /** Fails when [node] reaches into the system's bottom area. */
+    private fun assertNodeAboveSystemArea(node: SemanticsNodeInteraction, tag: String) {
         compose.waitForIdle()
-        val bottom = compose.onNodeWithTag(tag).fetchSemanticsNode().boundsInWindow.bottom
+        val bottom = node.fetchSemanticsNode().boundsInWindow.bottom
         val ceiling = windowHeightPx() - systemBottomPx()
         Log.i(TAG, "\"$tag\" ends at ${bottom.toInt()} px; the system's area starts at $ceiling px")
         assertTrue(

@@ -290,10 +290,11 @@ class still runs on a physical device.
 `BottomInsetAcceptanceTest` measures what the shell pins to the bottom
 of the window - the conversation's reply pills, the inbox's compose
 button, the drawer's pinned entries, the diagnostics and outbox
-screens, the bug reporter's action row - against the inset the window
-reports, and fails when one of them reaches into the navigation bar or
-the gesture handle. Run it once per navigation mode; the overlay
-switch restarts SystemUI, so give it a moment before the run:
+screens, the bug reporter's action row, the snooze sheet's last row -
+against the inset the window reports, and fails when one of them
+reaches into the navigation bar or the gesture handle. Run it once per
+navigation mode; the overlay switch restarts SystemUI, so give it a
+moment before the run:
 
     adb shell cmd overlay enable com.android.internal.systemui.navbar.gestural
     adb shell am instrument -w -r \
