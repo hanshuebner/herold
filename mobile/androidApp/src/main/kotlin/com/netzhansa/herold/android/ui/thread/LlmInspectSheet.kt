@@ -20,6 +20,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.netzhansa.herold.android.SessionScope
+import com.netzhansa.herold.android.ui.common.bottomSystemBarsPadding
 import com.netzhansa.herold.shared.jmap.WireLlmInspect
 import com.netzhansa.herold.shared.llm.TransparencyText
 
@@ -51,6 +52,7 @@ fun LlmInspectSheet(
             modifier = Modifier
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
+                .bottomSystemBarsPadding()
                 .padding(horizontal = 16.dp, vertical = 8.dp),
         ) {
             Text(

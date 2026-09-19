@@ -26,6 +26,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TimeInput
 import androidx.compose.material3.TimePicker
 import androidx.compose.material3.rememberDatePickerState
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -74,10 +75,26 @@ fun SnoozeSheet(
     )
     when (stage) {
         CustomStage.NONE ->
-            ModalBottomSheet(onDismissRequest = onDismiss, modifier = Modifier.testTag("snooze-sheet")) {
+            ModalBottomSheet(
+                onDismissRequest = onDismiss,
+                // Opened at its full height: the presets, the custom
+                // pick and Cancel are the whole sheet, and a half-open
+                // one leaves the last of them past the bottom of the
+                // screen (issue #428).
+                sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+                modifier = Modifier.testTag("snooze-sheet"),
+            ) {
                 // A sheet sits over the keyboard's space, so its content
-                // is inset by the keyboard while it is up (issue #373).
-                Column(modifier = Modifier.fillMaxWidth().imePadding().padding(bottom = 24.dp)) {
+                // is inset by the keyboard while it is up (issue #373),
+                // and stands above what the system holds along the
+                // bottom edge.
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .imePadding()
+                        .bottomSystemBarsPadding()
+                        .padding(bottom = 24.dp),
+                ) {
                     Text(
                         text = "Snooze until",
                         style = MaterialTheme.typography.titleMedium,
@@ -263,8 +280,18 @@ fun LabelSheet(
     onToggle: (Mailbox, Boolean) -> Unit,
 ) {
     var appliedNames by remember { mutableStateOf(applied) }
-    ModalBottomSheet(onDismissRequest = onDismiss, modifier = Modifier.testTag("label-sheet")) {
-        Column(modifier = Modifier.fillMaxWidth().imePadding().padding(bottom = 24.dp)) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        modifier = Modifier.testTag("label-sheet"),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .imePadding()
+                .bottomSystemBarsPadding()
+                .padding(bottom = 24.dp),
+        ) {
             Text(
                 text = "Labels",
                 style = MaterialTheme.typography.titleMedium,
