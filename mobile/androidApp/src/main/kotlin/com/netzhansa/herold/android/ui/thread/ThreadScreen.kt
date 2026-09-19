@@ -9,24 +9,36 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Forward
 import androidx.compose.material.icons.automirrored.filled.Reply
 import androidx.compose.material.icons.automirrored.filled.ReplyAll
 import androidx.compose.material.icons.filled.Archive
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.MarkEmailUnread
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Share
@@ -45,6 +57,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.SnackbarHost
@@ -64,6 +77,8 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
@@ -71,6 +86,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
@@ -99,6 +115,8 @@ import com.netzhansa.herold.shared.domain.Email
 import com.netzhansa.herold.shared.actions.FilterActions
 import com.netzhansa.herold.shared.mail.HtmlSanitizer
 import com.netzhansa.herold.shared.mail.ListHeaders
+import com.netzhansa.herold.shared.mail.MessageDates
+import com.netzhansa.herold.shared.mail.SenderAvatar
 import com.netzhansa.herold.shared.outbox.OutboxState
 import com.netzhansa.herold.shared.outbox.PendingMessage
 import com.netzhansa.herold.shared.outbox.pendingMessagesIn
@@ -326,95 +344,107 @@ fun ThreadScreen(
     // offers this screen hands on as it pops are left for the list.
     UndoOffers(container = container, snackbar = snackbar, surface = undoSurface)
 
+    /** What the conversation's subject reads as, wherever it is shown. */
+    val subject = messages.firstOrNull { it.subject.isNotBlank() }?.subject
+        ?: if (messages.isEmpty() && unavailable) "Conversation" else "(no subject)"
+
+    /**
+     * The mailboxes and labels the conversation sits in, named beside the
+     * subject the way the suite names them on a thread (issue #428).
+     */
+    val chips = remember(conversation, mailboxes, accountId) {
+        val held = conversation.flatMap { it.mailboxIds }.toSet()
+        mailboxes.filter { it.accountId == accountId && it.id in held }
+            .sortedWith(compareBy({ it.role == null }, { it.name }))
+            .map { it.name }
+    }
+
+    /** What the system sheet is handed when the conversation is shared. */
+    fun shareConversation() {
+        context.startActivity(
+            Intent.createChooser(
+                Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_SUBJECT, subject)
+                    putExtra(Intent.EXTRA_TEXT, AppLinks.suiteThreadUrl(session.baseUrl, threadId))
+                },
+                "Share conversation",
+            ),
+        )
+    }
+
+    /**
+     * Marks [from] and every later message unread and leaves the
+     * conversation, which is what the reader asks for when they mark a
+     * conversation they are finished with (issue #428).
+     */
+    fun markUnreadFrom(from: Email?) {
+        val index = if (from == null) 0 else conversation.indexOfFirst { it.id == from.id }.coerceAtLeast(0)
+        val target = conversation.drop(index)
+        if (target.isEmpty()) return
+        scope.launch {
+            session.actions.setSeen(target, false)
+            withContext(Dispatchers.Main.immediate) { onBack() }
+        }
+    }
+
     Scaffold(
         snackbarHost = { SnackbarHost(snackbar, modifier = Modifier.testTag("thread-snackbar")) },
         topBar = {
             TopAppBar(
+                modifier = Modifier.testTag("thread-app-bar"),
                 navigationIcon = {
                     IconButton(onClick = onBack, modifier = Modifier.testTag("thread-back")) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 },
-                title = {
-                    Text(
-                        text = when {
-                            messages.isNotEmpty() ->
-                                messages.firstOrNull { it.subject.isNotBlank() }?.subject ?: "(no subject)"
-
-                            unavailable -> "Conversation"
-                            else -> ""
-                        },
-                        maxLines = 1,
-                        modifier = Modifier.testTag("thread-title"),
-                    )
-                },
+                // The subject is a heading in the content, so the bar
+                // carries the conversation's actions alone (issue #428).
+                title = {},
                 actions = {
                     // The same fixed slot the list carries, so the
                     // conversation does not move when the connection
                     // drops or a sync starts (REQ-AND-SYNC-30).
                     StatusIndicator(status = status, onOpenDiagnostics = onDiagnostics)
-                    val flagged = conversation.any { it.isFlagged }
-                    IconButton(
-                        onClick = { scope.launch { session.actions.setFlagged(conversation, !flagged) } },
-                        modifier = Modifier.testTag("thread-star"),
-                    ) {
-                        Icon(
-                            imageVector = if (flagged) Icons.Filled.Star else Icons.Outlined.StarBorder,
-                            contentDescription = if (flagged) "Unstar" else "Star",
-                        )
-                    }
-                    // Share the conversation: the subject and the Suite's
-                    // URL for the thread, through the system sheet
-                    // (REQ-AND-SYS-02).
-                    IconButton(
-                        onClick = {
-                            val subject = conversation.firstOrNull { it.subject.isNotBlank() }?.subject
-                                ?: "(no subject)"
-                            context.startActivity(
-                                Intent.createChooser(
-                                    Intent(Intent.ACTION_SEND).apply {
-                                        type = "text/plain"
-                                        putExtra(Intent.EXTRA_SUBJECT, subject)
-                                        putExtra(
-                                            Intent.EXTRA_TEXT,
-                                            AppLinks.suiteThreadUrl(session.baseUrl, threadId),
-                                        )
-                                    },
-                                    "Share conversation",
-                                ),
-                            )
-                        },
-                        modifier = Modifier.testTag("thread-share"),
-                    ) {
-                        Icon(Icons.Filled.Share, contentDescription = "Share")
-                    }
-                    IconButton(onClick = { snoozing = true }, modifier = Modifier.testTag("thread-snooze")) {
-                        Icon(Icons.Filled.Schedule, contentDescription = "Snooze")
-                    }
                     IconButton(
                         onClick = { scope.launch { leaveWith(session.actions.archiveLocally(conversation, mailboxes), UndoMessages.ARCHIVED) } },
                         modifier = Modifier.testTag("thread-archive"),
                     ) {
                         Icon(Icons.Filled.Archive, contentDescription = "Archive")
                     }
+                    IconButton(
+                        onClick = { scope.launch { leaveWith(session.actions.deleteLocally(conversation, mailboxes), UndoMessages.DELETED) } },
+                        modifier = Modifier.testTag("thread-delete"),
+                    ) {
+                        Icon(Icons.Filled.Delete, contentDescription = "Delete")
+                    }
+                    IconButton(
+                        onClick = { markUnreadFrom(conversation.firstOrNull()) },
+                        modifier = Modifier.testTag("thread-unread"),
+                    ) {
+                        Icon(Icons.Filled.MarkEmailUnread, contentDescription = "Mark unread")
+                    }
                     ThreadOverflow(
                         muted = rules.any { FilterActions.isThreadMuteRule(it, threadId) },
-                        sender = newestSender,
                         onMute = { muted ->
                             scope.launch {
                                 session.filters.setMuted(accountId, threadId, muted)
                                 snackbar.showSnackbar(if (muted) "Conversation muted" else "Conversation unmuted")
                             }
                         },
-                        onBlock = { blocking = newestSender },
-                        onCreateFilter = {
-                            val newest = conversation.lastOrNull()
-                            onCreateFilter(newest?.fromEmail.orEmpty(), newest?.subject.orEmpty())
-                        },
-                        onInspect = { inspecting = (conversation.lastOrNull { it.id == expandedId } ?: conversation.lastOrNull())?.id },
+                        onSnooze = { snoozing = true },
+                        onShare = { shareConversation() },
                         onReportProblem = onReportProblem,
                     )
                 },
+            )
+        },
+        bottomBar = {
+            ReplyBar(
+                enabled = conversation.isNotEmpty(),
+                onReply = { conversation.lastOrNull()?.let { onCompose(ComposeMode.REPLY, it.id) } },
+                onReplyAll = { conversation.lastOrNull()?.let { onCompose(ComposeMode.REPLY_ALL, it.id) } },
+                onForward = { conversation.lastOrNull()?.let { onCompose(ComposeMode.FORWARD, it.id) } },
             )
         },
     ) { padding ->
@@ -460,12 +490,6 @@ fun ThreadScreen(
                 },
             )
         }
-        ReplyBar(
-            enabled = conversation.isNotEmpty(),
-            onReply = { conversation.lastOrNull()?.let { onCompose(ComposeMode.REPLY, it.id) } },
-            onReplyAll = { conversation.lastOrNull()?.let { onCompose(ComposeMode.REPLY_ALL, it.id) } },
-            onForward = { conversation.lastOrNull()?.let { onCompose(ComposeMode.FORWARD, it.id) } },
-        )
         if (messages.isEmpty() && fetching) {
             Box(
                 modifier = Modifier.fillMaxWidth().padding(32.dp).testTag("thread-loading"),
@@ -483,6 +507,17 @@ fun ThreadScreen(
         LazyColumn(
             modifier = Modifier.fillMaxSize().testTag("thread-messages"),
         ) {
+            item(key = "subject") {
+                SubjectBlock(
+                    subject = subject,
+                    chips = chips,
+                    flagged = conversation.any { it.isFlagged },
+                    onToggleStar = {
+                        val flagged = conversation.any { it.isFlagged }
+                        scope.launch { session.actions.setFlagged(conversation, !flagged) }
+                    },
+                )
+            }
             items(conversation, key = { it.id }) { message ->
                 MessageCard(
                     message = message,
@@ -508,6 +543,16 @@ fun ThreadScreen(
                     loadBlob = { attachment -> blobOf(attachment) },
                     onOpenAttachment = { attachment -> viewing = attachment },
                     onLink = openBodyLink,
+                    actions = MessageActions(
+                        onReply = { onCompose(ComposeMode.REPLY, message.id) },
+                        onReplyAll = { onCompose(ComposeMode.REPLY_ALL, message.id) },
+                        onForward = { onCompose(ComposeMode.FORWARD, message.id) },
+                        onStar = { scope.launch { session.actions.setFlagged(listOf(message), !message.isFlagged) } },
+                        onMarkUnreadFrom = { markUnreadFrom(message) },
+                        onBlock = { blocking = message.fromEmail },
+                        onCreateFilter = { onCreateFilter(message.fromEmail, message.subject) },
+                        onInspect = { inspecting = message.id },
+                    ),
                 )
                 HorizontalDivider()
             }
@@ -692,18 +737,17 @@ private fun PendingMarker(message: PendingMessage, onOpenOutbox: () -> Unit) {
 private const val PENDING_PREVIEW_CHARS = 200
 
 /**
- * The conversation's overflow: the organise actions that are not worth a
- * toolbar slot - mute, block, a filter seeded from the message, and what
- * the classifier made of it (suite REQ-MAIL-136/138, G7).
+ * The conversation's overflow: what applies to the whole conversation
+ * rather than to one of its messages - mute, snooze, share, and the way
+ * to report a problem (suite REQ-MAIL-136, REQ-SNZ-01, REQ-AND-SYS-02).
+ * The per-message entries live on the card (issue #428).
  */
 @Composable
 private fun ThreadOverflow(
     muted: Boolean,
-    sender: String,
     onMute: (Boolean) -> Unit,
-    onBlock: () -> Unit,
-    onCreateFilter: () -> Unit,
-    onInspect: () -> Unit,
+    onSnooze: () -> Unit,
+    onShare: () -> Unit,
     onReportProblem: () -> Unit,
 ) {
     var open by remember { mutableStateOf(false) }
@@ -720,29 +764,20 @@ private fun ThreadOverflow(
             modifier = Modifier.testTag("thread-mute"),
         )
         DropdownMenuItem(
-            text = { Text("Block $sender") },
+            text = { Text("Snooze") },
             onClick = {
                 open = false
-                onBlock()
+                onSnooze()
             },
-            enabled = sender.isNotBlank(),
-            modifier = Modifier.testTag("thread-block"),
+            modifier = Modifier.testTag("thread-snooze"),
         )
         DropdownMenuItem(
-            text = { Text("Create filter from this message") },
+            text = { Text("Share") },
             onClick = {
                 open = false
-                onCreateFilter()
+                onShare()
             },
-            modifier = Modifier.testTag("thread-create-filter"),
-        )
-        DropdownMenuItem(
-            text = { Text("Why is this here?") },
-            onClick = {
-                open = false
-                onInspect()
-            },
-            modifier = Modifier.testTag("thread-why"),
+            modifier = Modifier.testTag("thread-share"),
         )
         DropdownMenuItem(
             text = { Text("Report a problem") },
@@ -751,6 +786,169 @@ private fun ThreadOverflow(
                 onReportProblem()
             },
             modifier = Modifier.testTag("thread-report-problem"),
+        )
+    }
+}
+
+/**
+ * What a message on the card can be acted on with (issue #428). A
+ * message the server does not hold yet carries none of these: it is
+ * answered from the outbox, not from the conversation.
+ */
+private class MessageActions(
+    val onReply: () -> Unit,
+    val onReplyAll: () -> Unit,
+    val onForward: () -> Unit,
+    val onStar: () -> Unit,
+    val onMarkUnreadFrom: () -> Unit,
+    val onBlock: () -> Unit,
+    val onCreateFilter: () -> Unit,
+    val onInspect: () -> Unit,
+)
+
+/**
+ * One message's own overflow: the answers, the star, marking the
+ * conversation unread from here, and the entries that belong to the
+ * message rather than to the conversation - blocking its sender, a
+ * filter seeded from it, and what the classifier made of it (suite
+ * REQ-MAIL-138, REQ-FLT-32, G7).
+ */
+@Composable
+private fun MessageOverflow(message: Email, actions: MessageActions) {
+    var open by remember { mutableStateOf(false) }
+    IconButton(
+        onClick = { open = true },
+        modifier = Modifier.size(ACTION_ICON_DP.dp).testTag("message-overflow-${message.id}"),
+    ) {
+        Icon(Icons.Filled.MoreVert, contentDescription = "More", modifier = Modifier.size(ICON_DP.dp))
+    }
+    DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+        DropdownMenuItem(
+            text = { Text("Reply") },
+            onClick = {
+                open = false
+                actions.onReply()
+            },
+            modifier = Modifier.testTag("message-menu-reply-${message.id}"),
+        )
+        DropdownMenuItem(
+            text = { Text("Reply all") },
+            onClick = {
+                open = false
+                actions.onReplyAll()
+            },
+            modifier = Modifier.testTag("message-menu-reply-all-${message.id}"),
+        )
+        DropdownMenuItem(
+            text = { Text("Forward") },
+            onClick = {
+                open = false
+                actions.onForward()
+            },
+            modifier = Modifier.testTag("message-menu-forward-${message.id}"),
+        )
+        DropdownMenuItem(
+            text = { Text(if (message.isFlagged) "Unstar this message" else "Star this message") },
+            onClick = {
+                open = false
+                actions.onStar()
+            },
+            modifier = Modifier.testTag("message-menu-star-${message.id}"),
+        )
+        DropdownMenuItem(
+            text = { Text("Mark unread from here") },
+            onClick = {
+                open = false
+                actions.onMarkUnreadFrom()
+            },
+            modifier = Modifier.testTag("message-menu-unread-${message.id}"),
+        )
+        DropdownMenuItem(
+            text = { Text("Block ${message.fromEmail}") },
+            onClick = {
+                open = false
+                actions.onBlock()
+            },
+            enabled = message.fromEmail.isNotBlank(),
+            modifier = Modifier.testTag("thread-block"),
+        )
+        DropdownMenuItem(
+            text = { Text("Create filter from this message") },
+            onClick = {
+                open = false
+                actions.onCreateFilter()
+            },
+            modifier = Modifier.testTag("thread-create-filter"),
+        )
+        DropdownMenuItem(
+            text = { Text("Why is this here?") },
+            onClick = {
+                open = false
+                actions.onInspect()
+            },
+            modifier = Modifier.testTag("thread-why"),
+        )
+    }
+}
+
+/**
+ * The conversation's heading: the subject over the mailboxes and labels
+ * it sits in, with the star at its right. It is the first row of the
+ * scrolling content, so it leaves the screen with the conversation
+ * (issue #428).
+ */
+@Composable
+private fun SubjectBlock(
+    subject: String,
+    chips: List<String>,
+    flagged: Boolean,
+    onToggleStar: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp, top = 8.dp, bottom = 4.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = subject,
+                style = MaterialTheme.typography.headlineSmall,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.testTag("thread-title"),
+            )
+            if (chips.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .padding(top = 6.dp)
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    chips.forEach { name -> LabelChip(name) }
+                }
+            }
+        }
+        IconButton(onClick = onToggleStar, modifier = Modifier.testTag("thread-star")) {
+            Icon(
+                imageVector = if (flagged) Icons.Filled.Star else Icons.Outlined.StarBorder,
+                contentDescription = if (flagged) "Unstar" else "Star",
+            )
+        }
+    }
+}
+
+/** One mailbox or label the conversation sits in. */
+@Composable
+private fun LabelChip(name: String) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        shape = MaterialTheme.shapes.small,
+        modifier = Modifier.testTag("thread-label-$name"),
+    ) {
+        Text(
+            text = name,
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
         )
     }
 }
@@ -819,8 +1017,9 @@ private fun SnoozedIndicator(
 }
 
 /**
- * Reply, reply-all and forward for the conversation, acting on its newest
- * message - the one a reply answers (suite REQ-MAIL-30).
+ * Reply, reply-all and forward for the conversation, as pills pinned
+ * below it and acting on its newest message - the one a reply answers
+ * (suite REQ-MAIL-30, issue #428).
  */
 @Composable
 private fun ReplyBar(
@@ -829,25 +1028,68 @@ private fun ReplyBar(
     onReplyAll: () -> Unit,
     onForward: () -> Unit,
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp).testTag("thread-reply-bar"),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        TextButton(onClick = onReply, enabled = enabled, modifier = Modifier.testTag("thread-reply")) {
-            Icon(Icons.AutoMirrored.Filled.Reply, contentDescription = null)
-            Text("Reply")
-        }
-        TextButton(onClick = onReplyAll, enabled = enabled, modifier = Modifier.testTag("thread-reply-all")) {
-            Icon(Icons.AutoMirrored.Filled.ReplyAll, contentDescription = null)
-            Text("Reply all")
-        }
-        TextButton(onClick = onForward, enabled = enabled, modifier = Modifier.testTag("thread-forward")) {
-            Icon(Icons.AutoMirrored.Filled.Forward, contentDescription = null)
-            Text("Forward")
+    Surface(tonalElevation = 2.dp) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp)
+                .testTag("thread-reply-bar"),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            ReplyPill("Reply", Icons.AutoMirrored.Filled.Reply, enabled, onReply, "thread-reply")
+            ReplyPill("Reply all", Icons.AutoMirrored.Filled.ReplyAll, enabled, onReplyAll, "thread-reply-all")
+            ReplyPill("Forward", Icons.AutoMirrored.Filled.Forward, enabled, onForward, "thread-forward")
         }
     }
 }
 
+@Composable
+private fun RowScope.ReplyPill(
+    label: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    tag: String,
+) {
+    OutlinedButton(
+        onClick = onClick,
+        enabled = enabled,
+        shape = CircleShape,
+        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+        modifier = Modifier.weight(1f).testTag(tag),
+    ) {
+        Icon(icon, contentDescription = null, modifier = Modifier.size(ICON_DP.dp))
+        Spacer(Modifier.width(6.dp))
+        Text(text = label, style = MaterialTheme.typography.labelLarge, maxLines = 1)
+    }
+}
+
+/** The avatar circle: the sender's initials over the colour of their address. */
+@Composable
+private fun SenderAvatarCircle(name: String, address: String, tag: String) {
+    Box(
+        modifier = Modifier
+            .size(AVATAR_DP.dp)
+            .clip(CircleShape)
+            .background(Color(SenderAvatar.colourFor(address)))
+            .testTag(tag),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = SenderAvatar.initialsFor(name, address),
+            color = Color.White,
+            style = MaterialTheme.typography.titleMedium,
+        )
+    }
+}
+
+/**
+ * One message of the conversation (issue #428): the sender's avatar, the
+ * display name with the date beside it, the recipients line that opens
+ * onto the full addresses and timestamp, and the message's own reply and
+ * overflow. Collapsed it keeps its one-line preview; expanded it renders
+ * the body, the remote-image bar and the attachments below this header.
+ */
 @Composable
 private fun MessageCard(
     message: Email,
@@ -862,39 +1104,94 @@ private fun MessageCard(
     onOpenAttachment: (Attachment) -> Unit,
     /** Where a link in the body goes (issue #425). */
     onLink: (String) -> Unit,
+    /** What this message can be acted on with; absent for a queued one. */
+    actions: MessageActions? = null,
     /** What the message is tagged with, for the instrumented checks. */
     tag: String = "message-${message.id}",
     /** The state marker a message that is not on the server yet carries. */
     status: (@Composable () -> Unit)? = null,
 ) {
+    val zone = TimeZone.currentSystemDefault()
+    var detailed by remember(message.id) { mutableStateOf(false) }
     Column(modifier = Modifier.fillMaxWidth().testTag(tag)) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .clickable(onClick = onToggle)
-                .padding(12.dp),
+                .padding(horizontal = 12.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            SenderAvatarCircle(
+                name = message.fromName,
+                address = message.fromEmail,
+                tag = "message-avatar-${message.id}",
+            )
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = message.senderDisplay.ifBlank { message.fromEmail },
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = if (message.isUnread) FontWeight.Bold else FontWeight.Normal,
-                )
-                Text(
-                    text = "to ${message.toLine}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = message.senderDisplay.ifBlank { message.fromEmail },
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = MessageDates.short(message.receivedAt, Clock.System.now().toEpochMilliseconds(), zone),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        modifier = Modifier.testTag("message-date-${message.id}"),
+                    )
+                }
+                Row(
+                    modifier = Modifier
+                        .clickable { detailed = !detailed }
+                        .testTag("message-recipients-${message.id}"),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "to " + message.toLine.ifBlank { "(no recipient)" },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    Icon(
+                        imageVector = if (detailed) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                        contentDescription = if (detailed) "Hide details" else "Show details",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(CHEVRON_DP.dp),
+                    )
+                }
+                if (detailed) {
+                    MessageDetails(message = message, zone = zone)
+                }
                 if (!expanded) {
                     Text(
                         text = message.preview,
                         style = MaterialTheme.typography.bodySmall,
                         maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
             }
             status?.invoke()
+            actions?.let {
+                IconButton(
+                    onClick = it.onReply,
+                    modifier = Modifier.size(ACTION_ICON_DP.dp).testTag("message-reply-${message.id}"),
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.Reply,
+                        contentDescription = "Reply",
+                        modifier = Modifier.size(ICON_DP.dp),
+                    )
+                }
+                MessageOverflow(message = message, actions = it)
+            }
         }
 
         if (expanded) {
@@ -946,6 +1243,41 @@ private fun MessageCard(
                 }
             }
         }
+    }
+}
+
+/**
+ * Who the message went to and when, as the chevron opens it: the full
+ * to and cc addresses and the timestamp the short date stands for
+ * (issue #428).
+ */
+@Composable
+private fun MessageDetails(message: Email, zone: TimeZone) {
+    Column(modifier = Modifier.padding(top = 4.dp, bottom = 2.dp).testTag("message-details-${message.id}")) {
+        Text(
+            text = "from " + message.fromAddress.format(),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            text = "to " + message.toAddresses.joinToString(", ") { it.format() }
+                .ifBlank { message.toLine.ifBlank { "(no recipient)" } },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (message.ccAddresses.isNotEmpty()) {
+            Text(
+                text = "cc " + message.ccAddresses.joinToString(", ") { it.format() },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Text(
+            text = MessageDates.full(message.receivedAt, zone),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.testTag("message-timestamp-${message.id}"),
+        )
     }
 }
 
@@ -1195,6 +1527,12 @@ private sealed interface AttachmentPreview {
 /** A chip's thumbnail: 56 dp on screen, decoded to a little more than that. */
 private const val THUMBNAIL_DP = 56
 private const val THUMBNAIL_PX = 256
+
+/** The avatar circle's diameter, and the sizes the card's icons work in. */
+private const val AVATAR_DP = 40
+private const val ACTION_ICON_DP = 32
+private const val ICON_DP = 20
+private const val CHEVRON_DP = 18
 
 /** What the reading pane's lines say in the diagnostic ring. */
 private const val THREAD_TAG = "herold.thread"
