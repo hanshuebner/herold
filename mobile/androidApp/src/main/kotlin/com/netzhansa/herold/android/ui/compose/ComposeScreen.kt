@@ -178,7 +178,7 @@ fun ComposeScreen(
 
             else -> session.composer.openNew(identities, accounts, accountScope ?: accountId)
         }
-        state = handoff?.let { opened.withPrefill(it.prefill) } ?: opened
+        state = (handoff?.let { opened.withPrefill(it.prefill) } ?: opened).withInlineBytes(session)
         if (handoff != null) {
             // Taken: a recomposition must not fold the same handoff in twice.
             container.composeHandoff.value = null
@@ -888,6 +888,41 @@ private fun formatSize(bytes: Int): String = when {
     bytes >= 1_000 -> "${bytes / 1_000} kB"
     else -> "$bytes B"
 }
+
+/**
+ * The bytes of the inline parts the body points at, so the editor draws
+ * a quoted original's images instead of an empty box (issue #431). They
+ * come from the blob cache, or from a download when the cache has not
+ * got them; a part that will not load is left without bytes, which
+ * costs the editor the picture and the send nothing - the message still
+ * carries the part.
+ *
+ * Bounded, because the composer opens once this returns: a body with
+ * many or large inline parts draws what fits in the budget.
+ */
+private suspend fun ComposeState.withInlineBytes(session: SessionScope): ComposeState {
+    val missing = attachments.filter { it.inline && it.bytes == null && it.blobId != null }
+    if (missing.isEmpty()) return this
+    var budget = INLINE_PREVIEW_BUDGET
+    val loaded = mutableMapOf<String, ByteArray>()
+    for (attachment in missing) {
+        if (budget <= 0) break
+        val bytes = runCatching {
+            session.syncEngine.blob(accountId, attachment.blobId!!, attachment.type, attachment.name)
+        }.getOrNull() ?: continue
+        budget -= bytes.size
+        loaded[attachment.key] = bytes
+    }
+    if (loaded.isEmpty()) return this
+    return copy(
+        attachments = attachments.map { attachment ->
+            loaded[attachment.key]?.let { attachment.copy(bytes = it) } ?: attachment
+        },
+    )
+}
+
+/** How many bytes of inline parts the composer resolves before it opens. */
+private const val INLINE_PREVIEW_BUDGET = 8 * 1024 * 1024
 
 private fun titleFor(mode: ComposeMode): String = when (mode) {
     ComposeMode.NEW -> "New message"
