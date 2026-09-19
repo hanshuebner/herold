@@ -77,6 +77,10 @@ object DevInstance {
         subject: String,
         from: String = "Bob Example <bob@example.local>",
         cid: String = "inline-" + System.nanoTime() + "@acceptance.test",
+        /** The HTML part, which references the image as `cid:<cid>`. */
+        html: String = "<html><body><p>Inline image below.</p>" +
+            "<p><img src=\"cid:$cid\" alt=\"dot\"></p></body></html>",
+        to: String = email,
     ): String {
         val boundary = "herold-acceptance-" + System.nanoTime()
         val headers = "MIME-Version: 1.0\r\n" +
@@ -84,9 +88,8 @@ object DevInstance {
         val body = buildString {
             append("--$boundary\r\n")
             append("Content-Type: text/html; charset=utf-8\r\n\r\n")
-            append("<html><body><p>Inline image below.</p>")
-            append("<p><img src=\"cid:$cid\" alt=\"dot\"></p></body></html>\r\n")
-            append("--$boundary\r\n")
+            append(html)
+            append("\r\n--$boundary\r\n")
             append("Content-Type: image/png\r\n")
             append("Content-Transfer-Encoding: base64\r\n")
             append("Content-ID: <$cid>\r\n")
@@ -94,7 +97,7 @@ object DevInstance {
             append(INLINE_PNG_BASE64)
             append("\r\n--$boundary--\r\n")
         }
-        return deliverRaw(subject, from, body, extraHeaders = headers)
+        return deliverRaw(subject, from, body, extraHeaders = headers, to = to)
     }
 
     /**
