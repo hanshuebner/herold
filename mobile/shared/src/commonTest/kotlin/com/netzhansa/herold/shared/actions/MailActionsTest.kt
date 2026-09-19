@@ -23,6 +23,7 @@ import kotlin.test.assertTrue
 private val mailboxes = listOf(
     Mailbox(accountId = "acct-a", id = "inbox-1", name = "Inbox", role = MailboxRoles.INBOX),
     Mailbox(accountId = "acct-a", id = "archive-1", name = "Archive", role = MailboxRoles.ARCHIVE),
+    Mailbox(accountId = "acct-a", id = "trash-1", name = "Trash", role = MailboxRoles.TRASH),
     Mailbox(accountId = "acct-a", id = "label-1", name = "Projects"),
 )
 
@@ -110,6 +111,26 @@ class MailActionsTest {
         assertEquals(1, h.outbox.list().size)
         h.drainer.drain()
         assertEquals(JsonNull, h.api.emailSetCalls.single().getValue("e1")["mailboxIds/inbox-1"])
+    }
+
+    @Test
+    fun deleteLeavesTheMessageInTrashAloneAndAnUndoPutsItBack() = runTest {
+        val h = harness(seeded().copy(mailboxIds = setOf("inbox-1", "label-1")))
+
+        val pending = h.actions.deleteLocally(listOf(h.store.email("acct-a", "e1")!!), mailboxes)
+
+        assertEquals(setOf("trash-1"), h.store.email("acct-a", "e1")!!.mailboxIds)
+        assertTrue(h.outbox.list().isEmpty(), "deleteLocally must not queue anything")
+
+        h.actions.commit(pending)
+        h.drainer.drain()
+        val patch = h.api.emailSetCalls.single().getValue("e1")
+        assertEquals(JsonNull, patch["mailboxIds/inbox-1"])
+        assertEquals(JsonNull, patch["mailboxIds/label-1"])
+        assertEquals(JsonPrimitive(true), patch["mailboxIds/trash-1"])
+
+        h.actions.undo(pending)
+        assertEquals(setOf("inbox-1", "label-1"), h.store.email("acct-a", "e1")!!.mailboxIds)
     }
 
     @Test

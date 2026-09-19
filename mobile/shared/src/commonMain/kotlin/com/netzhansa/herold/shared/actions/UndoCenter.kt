@@ -52,6 +52,7 @@ class UndoOffer internal constructor(
  */
 object UndoMessages {
     const val ARCHIVED = "Archived"
+    const val DELETED = "Deleted"
     const val SNOOZED = "Snoozed"
     const val SENDING = "Sending"
     const val DRAFT_SAVED = "Draft saved"
