@@ -93,6 +93,22 @@ class ServerReach(target: String) : AutoCloseable {
         pump(to, from)
     }
 
+    /**
+     * The connections open right now go silent and stay open: bytes
+     * written into them are dropped in both directions and neither end
+     * is told. It is the half-open socket a phone is left holding when
+     * its network goes out from under an established connection - the
+     * event stream the server still writes to and the client still
+     * believes in (issue #436). Connections opened afterwards are
+     * relayed as usual.
+     */
+    fun swallow() {
+        synchronized(live) { condemned.addAll(live) }
+    }
+
+    private val condemned: MutableSet<Socket> =
+        java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<Socket, Boolean>())
+
     private fun pump(from: Socket, to: Socket) {
         Thread {
             val buffer = ByteArray(8 * 1024)
@@ -100,6 +116,7 @@ class ServerReach(target: String) : AutoCloseable {
                 while (true) {
                     val read = from.getInputStream().read(buffer)
                     if (read < 0) break
+                    if (from in condemned || to in condemned) continue
                     to.getOutputStream().write(buffer, 0, read)
                     to.getOutputStream().flush()
                 }
