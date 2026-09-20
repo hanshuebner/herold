@@ -97,7 +97,7 @@ New in v1 scope. Prevents exfiltration and heavy-handed client behavior.
 
 ## Threading
 
-- **REQ-STORE-40** Messages threaded per RFC 5256 (REFERENCES algorithm).
+- **REQ-STORE-40** Messages threaded per RFC 5256 (REFERENCES algorithm): a message's `In-Reply-To` / `References` headers are resolved against the principal's own `env_message_id` index, and it inherits the resolved ancestor's `threadId`. A message whose base subject (`Re:`, `Aw:`, `Fwd:`, `Fw:`, and other reply/forward prefixes stripped, stacked, whitespace- and case-normalised) differs from the base subject of the ancestor it would attach to does not inherit that thread: it roots its own thread, and later replies to it thread normally. An empty base subject on either side is not a mismatch and inherits as usual. Two rows that carry the same `Message-ID` (e.g. a Sent copy and the delivered copy of a self-sent message, re #88) converge on one thread regardless of subject — the subject rule applies only to `In-Reply-To`/`References` resolution, never to this same-Message-ID convergence. `RethreadPrincipal` (bulk re-thread) applies the identical rule.
 - **REQ-STORE-41** `threadId` computed at delivery time, stored.
 
 ## Quotas

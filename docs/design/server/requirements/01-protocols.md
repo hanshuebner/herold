@@ -104,7 +104,7 @@ Deferred: `LIST-MYRIGHTS`, `CONTEXT=SEARCH`, `URLAUTH`, `PREVIEW` (RFC 9051 §6.
 ## JMAP (REQ-PROTO-JMAP)
 
 - **REQ-PROTO-40** MUST implement JMAP Core (RFC 8620): session, request/response envelope, error model, push.
-- **REQ-PROTO-41** MUST implement JMAP Mail (RFC 8621): `Mailbox`, `Email`, `EmailSubmission`, `Identity`, `Thread`, `SearchSnippet`, `VacationResponse`. Upload/download endpoints.
+- **REQ-PROTO-41** MUST implement JMAP Mail (RFC 8621): `Mailbox`, `Email`, `EmailSubmission`, `Identity`, `Thread`, `SearchSnippet`, `VacationResponse`. Upload/download endpoints. `Thread` grouping follows the store's `threadId` (REQ-STORE-40): the References chain, with a message whose base subject differs from the ancestor it would attach to rooting its own thread instead of joining it.
 - **REQ-PROTO-42** MUST implement `EmailSubmission` tied to the outbound SMTP queue (not a parallel submission path). Includes `sendAt` per RFC 8621 §7.5; see REQ-PROTO-58.
 - **REQ-PROTO-43** MUST serve the session endpoint at `/.well-known/jmap` per RFC 8620.
 - **REQ-PROTO-44** MUST support push via EventSource (SSE) at minimum; WebSocket push per RFC 8887 is optional.

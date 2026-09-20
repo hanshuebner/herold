@@ -44,6 +44,10 @@ func Run(t *testing.T, f Factory) {
 		{"MailboxConflict_ErrorStringIsClean", testMailboxConflictErrorStringIsClean},
 		{"InsertMessageAllocatesUIDAndModSeq", testInsertMessageAllocatesUIDAndModSeq},
 		{"InsertMessage_ThreadResolutionViaReferences", testInsertMessageThreadResolutionViaReferences},
+		// issue #437, REQ-STORE-40: a changed base subject starts a new thread.
+		{"InsertMessage_SubjectChangeStartsNewThread", testInsertMessage_SubjectChangeStartsNewThread},
+		{"RethreadPrincipal_SubjectChangeSplitsThread", testRethreadPrincipal_SubjectChangeSplitsThread},
+		{"InsertMessage_ForumNotificationSubjectSplit", testInsertMessage_ForumNotificationSubjectSplit},
 		{"InsertMessages_Batch", testInsertMessagesBatch},
 		{"CountMessages", testCountMessages},
 		{"CountThreads", testCountThreads},
@@ -2464,6 +2468,246 @@ func testInsertMessageThreadResolutionViaReferences(t *testing.T, s store.Store)
 	if k1 != k2 || k2 != k3 {
 		t.Fatalf("thread keys diverge: msg1=%d msg2=%d msg3=%d; msg3 should be linked via References",
 			k1, k2, k3)
+	}
+}
+
+// testInsertMessage_SubjectChangeStartsNewThread verifies the ingest-time
+// subject rule (issue #437, REQ-STORE-40): a References-linked message
+// whose base subject differs from the ancestor it would attach to starts
+// its own thread instead of inheriting the ancestor's thread_id, while an
+// unchanged (or Re:/Aw:-prefixed) subject, or an empty one, still
+// inherits as before. A second reply to the new-subject message then
+// threads onto it, not onto the original.
+func testInsertMessage_SubjectChangeStartsNewThread(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "subjectchange@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+	ref := putBlob(t, s, "subject-change-body")
+
+	threadKey := func(m store.Message) uint64 {
+		if m.ThreadID != 0 {
+			return m.ThreadID
+		}
+		return uint64(m.ID)
+	}
+
+	insert := func(msgID, inReplyTo, subject string) store.Message {
+		t.Helper()
+		_, _, err := s.Meta().InsertMessage(ctx, store.Message{
+			PrincipalID: p.ID,
+			Blob:        ref,
+			Size:        ref.Size,
+			Envelope: store.Envelope{
+				MessageID: msgID,
+				InReplyTo: inReplyTo,
+				Subject:   subject,
+			},
+		}, []store.MessageMailbox{{MailboxID: mb.ID}})
+		if err != nil {
+			t.Fatalf("InsertMessage %s: %v", msgID, err)
+		}
+		msgs, err := s.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 1000, WithEnvelope: true})
+		if err != nil {
+			t.Fatalf("ListMessages: %v", err)
+		}
+		for _, m := range msgs {
+			if m.Envelope.MessageID == msgID {
+				return m
+			}
+		}
+		t.Fatalf("message %s not found after insert", msgID)
+		return store.Message{}
+	}
+
+	root := insert("sc-root@test", "", "Project update")
+	// Same base subject, only a Re: added: stays in the parent's thread.
+	sameSubjectReply := insert("sc-same@test", "<sc-root@test>", "Re: Project update")
+	if threadKey(sameSubjectReply) != threadKey(root) {
+		t.Errorf("same-subject reply threadKey=%d, want root's threadKey=%d", threadKey(sameSubjectReply), threadKey(root))
+	}
+	// Empty subject: not a mismatch, still inherits.
+	emptySubjectReply := insert("sc-empty@test", "<sc-root@test>", "")
+	if threadKey(emptySubjectReply) != threadKey(root) {
+		t.Errorf("empty-subject reply threadKey=%d, want root's threadKey=%d", threadKey(emptySubjectReply), threadKey(root))
+	}
+	// Different base subject: starts its own thread.
+	newSubjectReply := insert("sc-new@test", "<sc-root@test>", "Re: Totally different topic")
+	if threadKey(newSubjectReply) == threadKey(root) {
+		t.Errorf("different-subject reply threadKey=%d, must not equal root's threadKey=%d", threadKey(newSubjectReply), threadKey(root))
+	}
+	// A second reply to the new-subject message, with a matching
+	// (Aw:-prefixed) subject, threads onto it -- not onto the original.
+	secondReply := insert("sc-second@test", "<sc-new@test>", "Aw: Totally different topic")
+	if threadKey(secondReply) != threadKey(newSubjectReply) {
+		t.Errorf("second reply threadKey=%d, want new-subject message's threadKey=%d", threadKey(secondReply), threadKey(newSubjectReply))
+	}
+	if threadKey(secondReply) == threadKey(root) {
+		t.Errorf("second reply threadKey=%d must not equal root's threadKey=%d", threadKey(secondReply), threadKey(root))
+	}
+}
+
+// testRethreadPrincipal_SubjectChangeSplitsThread verifies the bulk-rethread
+// twin of the ingest-time subject rule (issue #437, REQ-STORE-40): a
+// mailbox seeded as one References-linked chain with a subject change in
+// the middle splits into two threads at that point when RethreadPrincipal
+// runs.
+func testRethreadPrincipal_SubjectChangeSplitsThread(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "rethreadsubject@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+	ref := putBlob(t, s, "rethread-subject-body")
+
+	threadKey := func(m store.Message) uint64 {
+		if m.ThreadID != 0 {
+			return m.ThreadID
+		}
+		return uint64(m.ID)
+	}
+
+	// A (root) -> B (same subject, Re: added) -> C (different subject) -> D (same subject as C).
+	items := []store.InsertMessageItem{
+		{
+			Message: store.Message{
+				PrincipalID:  p.ID,
+				Blob:         ref,
+				Size:         ref.Size,
+				InternalDate: time.Unix(1000, 0).UTC(),
+				ReceivedAt:   time.Unix(1000, 0).UTC(),
+				Envelope:     store.Envelope{MessageID: "rts-a@test", Subject: "Project update"},
+			},
+			Targets: []store.MessageMailbox{{MailboxID: mb.ID}},
+		},
+		{
+			Message: store.Message{
+				PrincipalID:  p.ID,
+				Blob:         ref,
+				Size:         ref.Size,
+				InternalDate: time.Unix(2000, 0).UTC(),
+				ReceivedAt:   time.Unix(2000, 0).UTC(),
+				Envelope:     store.Envelope{MessageID: "rts-b@test", InReplyTo: "<rts-a@test>", Subject: "Re: Project update"},
+			},
+			Targets: []store.MessageMailbox{{MailboxID: mb.ID}},
+		},
+		{
+			Message: store.Message{
+				PrincipalID:  p.ID,
+				Blob:         ref,
+				Size:         ref.Size,
+				InternalDate: time.Unix(3000, 0).UTC(),
+				ReceivedAt:   time.Unix(3000, 0).UTC(),
+				Envelope:     store.Envelope{MessageID: "rts-c@test", InReplyTo: "<rts-b@test>", Subject: "Re: New topic"},
+			},
+			Targets: []store.MessageMailbox{{MailboxID: mb.ID}},
+		},
+		{
+			Message: store.Message{
+				PrincipalID:  p.ID,
+				Blob:         ref,
+				Size:         ref.Size,
+				InternalDate: time.Unix(4000, 0).UTC(),
+				ReceivedAt:   time.Unix(4000, 0).UTC(),
+				Envelope:     store.Envelope{MessageID: "rts-d@test", InReplyTo: "<rts-c@test>", Subject: "Aw: New topic"},
+			},
+			Targets: []store.MessageMailbox{{MailboxID: mb.ID}},
+		},
+	}
+	if _, err := s.Meta().InsertMessages(ctx, items, store.InsertMessagesOptions{SkipThreading: true}); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	n, err := s.Meta().RethreadPrincipal(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("RethreadPrincipal: %v", err)
+	}
+	if n != 4 {
+		t.Errorf("RethreadPrincipal n = %d, want 4", n)
+	}
+
+	got, err := s.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	byMID := make(map[string]store.Message, len(got))
+	for _, m := range got {
+		byMID[m.Envelope.MessageID] = m
+	}
+	a, b, c, d := byMID["rts-a@test"], byMID["rts-b@test"], byMID["rts-c@test"], byMID["rts-d@test"]
+	if threadKey(a) != threadKey(b) {
+		t.Errorf("A and B threadKeys diverge: %d vs %d, want equal (same subject)", threadKey(a), threadKey(b))
+	}
+	if threadKey(c) != threadKey(d) {
+		t.Errorf("C and D threadKeys diverge: %d vs %d, want equal (same subject)", threadKey(c), threadKey(d))
+	}
+	if threadKey(a) == threadKey(c) {
+		t.Errorf("A/B and C/D threadKeys must differ (subject changed at C): both %d", threadKey(a))
+	}
+}
+
+// testInsertMessage_ForumNotificationSubjectSplit reproduces the shape
+// from the issue #437 report: a "gestartet" (started) message followed
+// by several "geantwortet" (replied) messages that all carry a different
+// subject and reference the chain. The started message and the replies
+// must land in two distinct threads.
+func testInsertMessage_ForumNotificationSubjectSplit(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "forumnotify@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+	ref := putBlob(t, s, "forum-notification-body")
+
+	threadKey := func(m store.Message) uint64 {
+		if m.ThreadID != 0 {
+			return m.ThreadID
+		}
+		return uint64(m.ID)
+	}
+
+	insert := func(msgID, inReplyTo, subject string) store.Message {
+		t.Helper()
+		_, _, err := s.Meta().InsertMessage(ctx, store.Message{
+			PrincipalID: p.ID,
+			Blob:        ref,
+			Size:        ref.Size,
+			Envelope: store.Envelope{
+				MessageID: msgID,
+				InReplyTo: inReplyTo,
+				Subject:   subject,
+			},
+		}, []store.MessageMailbox{{MailboxID: mb.ID}})
+		if err != nil {
+			t.Fatalf("InsertMessage %s: %v", msgID, err)
+		}
+		msgs, err := s.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 1000, WithEnvelope: true})
+		if err != nil {
+			t.Fatalf("ListMessages: %v", err)
+		}
+		for _, m := range msgs {
+			if m.Envelope.MessageID == msgID {
+				return m
+			}
+		}
+		t.Fatalf("message %s not found after insert", msgID)
+		return store.Message{}
+	}
+
+	started := insert("forum-started@test", "", `Alice hat die Konversation "Sommerfest" gestartet`)
+	var replies []store.Message
+	prev := "forum-started@test"
+	for i := 0; i < 7; i++ {
+		msgID := fmt.Sprintf("forum-reply-%d@test", i)
+		reply := insert(msgID, fmt.Sprintf("<%s>", prev), `Alice hat auf die Konversation "Sommerfest" geantwortet`)
+		replies = append(replies, reply)
+		prev = msgID
+	}
+
+	startedKey := threadKey(started)
+	replyKey := threadKey(replies[0])
+	if replyKey == startedKey {
+		t.Fatalf("first reply threadKey=%d must differ from the started message's threadKey=%d", replyKey, startedKey)
+	}
+	for i, r := range replies {
+		if threadKey(r) != replyKey {
+			t.Errorf("reply[%d] threadKey=%d, want %d (all replies share one thread)", i, threadKey(r), replyKey)
+		}
 	}
 }
 

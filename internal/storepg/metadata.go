@@ -1164,18 +1164,27 @@ func (m *metadata) insertMessageTx(
 			}
 			for _, ref := range refs {
 				var ancestorID, ancestorThread int64
+				var ancestorSubject string
 				lookupErr := tx.QueryRow(ctx, `
-					SELECT m.id, m.thread_id
+					SELECT m.id, m.thread_id, m.env_subject
 					  FROM messages m
 					 WHERE m.principal_id = $1
 					   AND m.env_message_id = $2
 					 LIMIT 1`,
-					pid, ref).Scan(&ancestorID, &ancestorThread)
+					pid, ref).Scan(&ancestorID, &ancestorThread, &ancestorSubject)
 				if errors.Is(lookupErr, pgx.ErrNoRows) {
 					continue
 				}
 				if lookupErr != nil {
 					return fmt.Errorf("storepg: thread lookup: %w", lookupErr)
+				}
+				// A changed base subject starts a new thread instead of
+				// inheriting the ancestor's (issue #437, REQ-STORE-40):
+				// msg.ThreadID stays 0 and the message roots its own
+				// thread. This does not affect the same-message-id
+				// convergence above, which matches on Message-ID alone.
+				if !mailparse.SubjectsThreadTogether(msg.Envelope.Subject, ancestorSubject) {
+					break
 				}
 				if ancestorThread != 0 {
 					msg.ThreadID = uint64(ancestorThread)
@@ -1282,10 +1291,11 @@ func (m *metadata) RethreadPrincipal(ctx context.Context, pid store.PrincipalID)
 		messageID string
 		inReplyTo string
 		refs      string
+		subject   string
 		threadID  int64
 	}
 	const selectQ = `
-		SELECT id, env_message_id, env_in_reply_to, env_references, thread_id
+		SELECT id, env_message_id, env_in_reply_to, env_references, env_subject, thread_id
 		  FROM messages
 		 WHERE principal_id = $1
 		 ORDER BY internal_date_us ASC, id ASC`
@@ -1296,7 +1306,7 @@ func (m *metadata) RethreadPrincipal(ctx context.Context, pid store.PrincipalID)
 	rows := make([]row, 0, 1024)
 	for rs.Next() {
 		var r row
-		if err := rs.Scan(&r.id, &r.messageID, &r.inReplyTo, &r.refs, &r.threadID); err != nil {
+		if err := rs.Scan(&r.id, &r.messageID, &r.inReplyTo, &r.refs, &r.subject, &r.threadID); err != nil {
 			rs.Close()
 			return 0, fmt.Errorf("storepg: rethread scan: %w", err)
 		}
@@ -1357,6 +1367,13 @@ func (m *metadata) RethreadPrincipal(ctx context.Context, pid store.PrincipalID)
 			}
 			for _, ref := range all {
 				if idx, ok := byID[ref]; ok && idx != i {
+					// A changed base subject starts a new thread instead
+					// of inheriting the ancestor's (issue #437,
+					// REQ-STORE-40); resolved stays 0 and the row falls
+					// through to self-threading below.
+					if !mailparse.SubjectsThreadTogether(r.subject, rows[idx].subject) {
+						break
+					}
 					if newThread[idx] != 0 {
 						resolved = newThread[idx]
 					} else {
