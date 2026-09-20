@@ -15,6 +15,7 @@ import (
 
 	imap "github.com/emersion/go-imap/v2"
 
+	"github.com/hanshuebner/herold/internal/extimg"
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
@@ -858,6 +859,14 @@ func (ses *session) handleAPPEND(ctx context.Context, c *Command) error {
 		Envelope:     env,
 		// re #143 (maintainer finding #2): a single-literal IMAP APPEND.
 		IngestSource: store.IngestSourceIMAPAppend,
+	}
+	// REQ-EXTIMG-90/91: an APPENDed literal is stored verbatim, exactly
+	// like the IMAP-mirror and Gmail Takeout importers, so it shares
+	// their on-demand flagging decision. headerBytes already holds the
+	// full literal (bounded by maxAppendLiteral) read above for
+	// envelope extraction; no extra read is needed.
+	if extimg.ShouldFlagOnDemand(ses.s.opts.InternalizeImportsPolicy) && extimg.HasExternalHTMLImage(headerBytes) {
+		msg.InternalizePending = true
 	}
 	insertTimer := observe.StartStoreOp("insert_message")
 	uid, _, err := ses.s.store.Meta().InsertMessage(ctx, msg, []store.MessageMailbox{{MailboxID: mb.ID, Flags: flags, Keywords: kw}})

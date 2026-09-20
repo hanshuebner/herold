@@ -61,9 +61,14 @@ type accountWorkerOpts struct {
 	// though Pool always defaults it to noopSpamClassifier.
 	spamClassifier SpamClassifier
 	cfg            sysconfig.IMAPImportConfig
-	log            *slog.Logger
-	clk            clock.Clock
-	dialer         Dialer
+	// internalizeImportsPolicy controls whether ingestMessage flags a
+	// freshly-mirrored message carrying an external HTML image
+	// reference with InternalizePending (REQ-EXTIMG-91/92); see
+	// extimg.ShouldFlagOnDemand. Empty behaves as "on_demand".
+	internalizeImportsPolicy string
+	log                      *slog.Logger
+	clk                      clock.Clock
+	dialer                   Dialer
 
 	// maxConsecutiveFailures overrides the package-level constant for
 	// tests that need a small M to keep execution fast. Zero means use

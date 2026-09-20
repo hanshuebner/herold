@@ -738,9 +738,10 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		nil, // PasswordLookup: SCRAM not in Phase 1 exit scope
 		nil, // TokenVerifier: OIDC SASL not in Phase 1 exit scope
 		protoimap.Options{
-			ServerName:             cfg.Server.Hostname,
-			DefaultCommandDeadline: cfg.Performance.DefaultDeadline.AsDuration(),
-			CommandDeadlines:       imapCommandDeadlinesFromConfig(cfg.Performance.MethodDeadline),
+			ServerName:               cfg.Server.Hostname,
+			DefaultCommandDeadline:   cfg.Performance.DefaultDeadline.AsDuration(),
+			CommandDeadlines:         imapCommandDeadlinesFromConfig(cfg.Performance.MethodDeadline),
+			InternalizeImportsPolicy: extimg.ImportPolicyFromMode(cfg.ExternalImages.Mode),
 		},
 	)
 	defer imapServer.Close()
@@ -1038,13 +1039,14 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	// Dialer is nil (pool defaults to the production dialer, which wires
 	// OAuth from cfg.IMAPImport.OAuth via accountWorker.tokenSourceForProvider).
 	imapImportPool := imapimport.NewPool(imapimport.PoolOptions{
-		Store:          st,
-		DataKey:        imapImportDataKey,
-		Categoriser:    imapImportCatAdapter,
-		SpamClassifier: imapImportSpamAdapter,
-		Config:         cfg.IMAPImport,
-		Logger:         logger.With("subsystem", "imap-import"),
-		Clock:          clk,
+		Store:                    st,
+		DataKey:                  imapImportDataKey,
+		Categoriser:              imapImportCatAdapter,
+		SpamClassifier:           imapImportSpamAdapter,
+		Config:                   cfg.IMAPImport,
+		InternalizeImportsPolicy: extimg.ImportPolicyFromMode(cfg.ExternalImages.Mode),
+		Logger:                   logger.With("subsystem", "imap-import"),
+		Clock:                    clk,
 	})
 
 	// Admin HTTP handler: the real protoadmin server. Options defaults

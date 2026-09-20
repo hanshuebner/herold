@@ -49,3 +49,18 @@ func FromSysConfig(c sysconfig.ExternalImagesConfig, hostname string) Config {
 	out.resolveOptional()
 	return out
 }
+
+// ImportPolicyFromMode maps the operator's [external_images] mode to
+// the InternalizeImports policy string shared by the Gmail Takeout and
+// IMAP-mirror importers (REQ-EXTIMG-91/92): mode = "passthrough" maps
+// to "off" (never flag, reads behave like passthrough); every other
+// mode, including the empty default, maps to "on_demand" (flag
+// eligible imports for the read-time rewrite). A future dedicated
+// internalize_imports knob can decouple the two; today they share the
+// live-delivery toggle.
+func ImportPolicyFromMode(mode sysconfig.ExternalImagesMode) string {
+	if mode == sysconfig.ExternalImagesModePassthrough {
+		return "off"
+	}
+	return "on_demand"
+}

@@ -25,6 +25,7 @@ import (
 
 	imap "github.com/emersion/go-imap/v2"
 
+	"github.com/hanshuebner/herold/internal/extimg"
 	"github.com/hanshuebner/herold/internal/mailparse"
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/spam"
@@ -804,6 +805,15 @@ func (w *accountWorker) ingestMessage(
 		// SMTP arrival apart from a pulled-in import.
 		IngestSource:    store.IngestSourceIMAPImport,
 		IngestSourceRef: account.AccountName,
+	}
+	// REQ-EXTIMG-90/91: the mirror stores the upstream message verbatim
+	// (no bulk fetch at import time), so flag it for the on-demand
+	// read-time rewrite when the body looks like HTML with at least one
+	// external http(s) reference. extimg.ShouldFlagOnDemand /
+	// extimg.HasExternalHTMLImage are the same decision the Gmail
+	// Takeout importer applies, factored into one place.
+	if extimg.ShouldFlagOnDemand(w.opts.internalizeImportsPolicy) && extimg.HasExternalHTMLImage(fm.RFC822) {
+		storeMsg.InternalizePending = true
 	}
 
 	flags := storeFlagsFromIMAP(fm.Flags)

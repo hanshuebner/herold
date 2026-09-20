@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/extimg"
 	gmail "github.com/hanshuebner/herold/internal/import/gmail"
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/sysconfig"
@@ -109,18 +110,14 @@ The --source path must be an extracted Takeout directory (run
 }
 
 // importImagesPolicy reads the operator's external-image import
-// policy. The default (live mode "internalize") flags eligible
-// imported messages for on-demand rewrite at first JMAP read
-// (17-external-images.md REQ-EXTIMG-91/-93). Operators who do not
-// want any rewrite — bulk or on-demand — set
-// [external_images] mode = "passthrough" in system.toml; we map
-// that to InternalizeImports="off". A future per-policy knob
-// (REQ-EXTIMG-92) can decouple them; today they share the toggle.
+// policy via extimg.ImportPolicyFromMode, the mapping the Gmail
+// Takeout and IMAP-mirror importers share
+// (17-external-images.md REQ-EXTIMG-91/-92).
 func importImagesPolicy(cfg *sysconfig.Config) string {
-	if cfg != nil && cfg.ExternalImages.Mode == sysconfig.ExternalImagesModePassthrough {
-		return "off"
+	if cfg == nil {
+		return extimg.ImportPolicyFromMode("")
 	}
-	return "on_demand"
+	return extimg.ImportPolicyFromMode(cfg.ExternalImages.Mode)
 }
 
 // importProgressLogger returns the slog.Logger the importer writes

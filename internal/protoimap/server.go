@@ -90,6 +90,18 @@ type Options struct {
 	// this to t.TempDir() so spill accounting is isolated per test and
 	// not polluted by concurrent runs sharing the global /tmp.
 	SpillDir string
+	// InternalizeImportsPolicy controls whether an APPENDed message
+	// carrying an external HTML image reference is flagged with
+	// InternalizePending for the on-demand read-time rewrite
+	// (17-external-images.md REQ-EXTIMG-90..92): an IMAP APPEND stores
+	// its literal verbatim, exactly like the IMAP-mirror and Gmail
+	// Takeout importers, so it shares their decision
+	// (extimg.ShouldFlagOnDemand).
+	//   - "" or "on_demand" (default): flag eligible messages
+	//   - "off": never flag
+	// Callers derive this from the operator's [external_images] mode
+	// via extimg.ImportPolicyFromMode.
+	InternalizeImportsPolicy string
 }
 
 // IMAP server caps. Defaults are chosen to match the REQ-PROTO-31

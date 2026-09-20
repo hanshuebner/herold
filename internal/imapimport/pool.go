@@ -26,15 +26,16 @@ const poolPollInterval = 10 * time.Second
 //
 // Construct with NewPool; call Run to start.
 type Pool struct {
-	st             store.Store
-	dataKey        []byte
-	categoriser    Categoriser
-	spamClassifier SpamClassifier
-	cfg            sysconfig.IMAPImportConfig
-	log            *slog.Logger
-	clk            clock.Clock
-	dialer         Dialer
-	pollInterval   time.Duration
+	st                       store.Store
+	dataKey                  []byte
+	categoriser              Categoriser
+	spamClassifier           SpamClassifier
+	cfg                      sysconfig.IMAPImportConfig
+	internalizeImportsPolicy string
+	log                      *slog.Logger
+	clk                      clock.Clock
+	dialer                   Dialer
+	pollInterval             time.Duration
 
 	// registry guards the live worker map. Workers register on launch and
 	// deregister on return. Snapshot reads it under the same mutex so that
@@ -63,6 +64,16 @@ type PoolOptions struct {
 	SpamClassifier SpamClassifier
 	// Config is the resolved [imap_import] sysconfig block.
 	Config sysconfig.IMAPImportConfig
+	// InternalizeImportsPolicy controls whether a freshly-mirrored
+	// message with an external HTML image reference is flagged with
+	// InternalizePending for the on-demand read-time rewrite
+	// (17-external-images.md REQ-EXTIMG-91/-92):
+	//   - "" or "on_demand" (default): flag eligible messages
+	//   - "off": never flag; reads behave like passthrough mode
+	// Callers derive this from the operator's [external_images] mode
+	// via extimg.ImportPolicyFromMode, the same mapping the Gmail
+	// Takeout importer uses.
+	InternalizeImportsPolicy string
 	// Logger is the base logger. The pool adds activity and account
 	// labels to each child logger (REQ-IMAP-IMP-64).
 	Logger *slog.Logger
@@ -100,16 +111,17 @@ func NewPool(opts PoolOptions) *Pool {
 		poll = poolPollInterval
 	}
 	return &Pool{
-		st:             opts.Store,
-		dataKey:        opts.DataKey,
-		categoriser:    cat,
-		spamClassifier: spamCl,
-		cfg:            opts.Config,
-		log:            opts.Logger.With(slog.String("activity", "imap-import")),
-		clk:            opts.Clock,
-		dialer:         d,
-		pollInterval:   poll,
-		registry:       make(map[string]*accountWorker),
+		st:                       opts.Store,
+		dataKey:                  opts.DataKey,
+		categoriser:              cat,
+		spamClassifier:           spamCl,
+		cfg:                      opts.Config,
+		internalizeImportsPolicy: opts.InternalizeImportsPolicy,
+		log:                      opts.Logger.With(slog.String("activity", "imap-import")),
+		clk:                      opts.Clock,
+		dialer:                   d,
+		pollInterval:             poll,
+		registry:                 make(map[string]*accountWorker),
 	}
 }
 
@@ -157,12 +169,13 @@ func (p *Pool) Run(ctx context.Context) error {
 			return
 		}
 		w := newAccountWorker(accountWorkerOpts{
-			account:        acct,
-			store:          p.st,
-			dataKey:        p.dataKey,
-			categoriser:    p.categoriser,
-			spamClassifier: p.spamClassifier,
-			cfg:            p.cfg,
+			account:                  acct,
+			store:                    p.st,
+			dataKey:                  p.dataKey,
+			categoriser:              p.categoriser,
+			spamClassifier:           p.spamClassifier,
+			cfg:                      p.cfg,
+			internalizeImportsPolicy: p.internalizeImportsPolicy,
 			log: p.log.With(
 				slog.String("account_id", acct.ID),
 				slog.Any("principal_id", acct.PrincipalID),

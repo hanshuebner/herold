@@ -12,6 +12,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/hanshuebner/herold/internal/extimg"
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
@@ -98,6 +99,13 @@ func (ses *session) handleMOVE(ctx context.Context, c *Command) error {
 			// re #143 (maintainer finding #2): IMAP MOVE/COPY re-staging
 			// the blob into a fresh row.
 			IngestSource: store.IngestSourceIMAPCopy,
+			// re #446: carry the source row's on-demand rewrite marker
+			// forward. The copy shares the source's un-rewritten blob
+			// (REQ-EXTIMG-90/91); dropping the flag here would leave the
+			// copy permanently un-internalized even after the source row
+			// is rewritten and its own flag cleared, since rewriting
+			// replaces the source's Blob reference, not the copy's.
+			InternalizePending: m.InternalizePending,
 		}
 		uid, _, err := ses.s.store.Meta().InsertMessage(ctx, copyMsg, []store.MessageMailbox{{MailboxID: dest.ID, Flags: m.Flags, Keywords: m.Keywords}})
 		if err != nil {
@@ -175,6 +183,13 @@ func (ses *session) handleCOPY(ctx context.Context, c *Command) error {
 			// re #143 (maintainer finding #2): IMAP MOVE/COPY re-staging
 			// the blob into a fresh row.
 			IngestSource: store.IngestSourceIMAPCopy,
+			// re #446: carry the source row's on-demand rewrite marker
+			// forward. The copy shares the source's un-rewritten blob
+			// (REQ-EXTIMG-90/91); dropping the flag here would leave the
+			// copy permanently un-internalized even after the source row
+			// is rewritten and its own flag cleared, since rewriting
+			// replaces the source's Blob reference, not the copy's.
+			InternalizePending: m.InternalizePending,
 		}
 		uid, _, err := ses.s.store.Meta().InsertMessage(ctx, copyMsg, []store.MessageMailbox{{MailboxID: dest.ID, Flags: m.Flags, Keywords: m.Keywords}})
 		if err != nil {
@@ -321,6 +336,12 @@ func (ses *session) applyMultiAppend(ctx context.Context, c *Command, mb store.M
 			// re #143 (maintainer finding #2): one item of an RFC 3502
 			// MULTIAPPEND.
 			IngestSource: store.IngestSourceIMAPAppend,
+		}
+		// REQ-EXTIMG-90/91: see the single-APPEND path in
+		// session_mailbox.go; headerBytes already holds the full
+		// literal read above for envelope extraction.
+		if extimg.ShouldFlagOnDemand(ses.s.opts.InternalizeImportsPolicy) && extimg.HasExternalHTMLImage(headerBytes) {
+			msg.InternalizePending = true
 		}
 		insertTimer := observe.StartStoreOp("insert_message")
 		uid, _, err := ses.s.store.Meta().InsertMessage(ctx, msg, []store.MessageMailbox{{MailboxID: mb.ID, Flags: flags, Keywords: kw}})

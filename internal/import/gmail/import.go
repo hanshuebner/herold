@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hanshuebner/herold/internal/extimg"
 	"github.com/hanshuebner/herold/internal/mailparse"
 	"github.com/hanshuebner/herold/internal/store"
 )
@@ -923,10 +924,12 @@ func (imp *Importer) prepareOneMessage(
 	}
 	// REQ-EXTIMG-91 / REQ-EXTIMG-93: flag for on-demand rewrite at
 	// first read when the body looks like HTML with at least one
-	// external http(s) reference. Cheap substring scan; false
-	// positives just trigger a no-op rewrite at first read; false
-	// negatives leave the message unrewritten (no privacy harm).
-	if imp.shouldFlagOnDemand() && hasExternalHTMLImage(raw.Body) {
+	// external http(s) reference. extimg.ShouldFlagOnDemand /
+	// extimg.HasExternalHTMLImage are the same decision the
+	// IMAP-mirror importer (internal/imapimport) applies, factored
+	// into one place so the policy cannot drift between the two
+	// callers.
+	if extimg.ShouldFlagOnDemand(imp.Options.InternalizeImports) && extimg.HasExternalHTMLImage(raw.Body) {
 		msg.InternalizePending = true
 	}
 	return preparedMessage{
@@ -935,32 +938,6 @@ func (imp *Importer) prepareOneMessage(
 		byteOffset: raw.ByteOffset,
 		dedupKey:   ref.Hash,
 	}, prepDecisionInsert, nil
-}
-
-// shouldFlagOnDemand reports whether the importer should set
-// InternalizePending on eligible messages. Operator policy is set
-// through Options.InternalizeImports; default (empty / "on_demand")
-// flags, "off" suppresses.
-func (imp *Importer) shouldFlagOnDemand() bool {
-	switch imp.Options.InternalizeImports {
-	case "", "on_demand":
-		return true
-	case "off":
-		return false
-	}
-	return true
-}
-
-// hasExternalHTMLImage is the cheap heuristic that gates the pending
-// flag: substring scan for an <img tag and an http URL anywhere in
-// the body. The on-demand pass parses the body precisely and may
-// find no actual external refs (CSS-only images, false positives in
-// quoted text, etc.), in which case it clears the flag and the cost
-// is one parse — orders of magnitude cheaper than the alternative
-// of parsing every imported message at import time.
-func hasExternalHTMLImage(body []byte) bool {
-	return bytes.Contains(body, []byte("<img")) &&
-		(bytes.Contains(body, []byte("http://")) || bytes.Contains(body, []byte("https://")))
 }
 
 // parseEnvelopeOnly extracts the store.Envelope summary by reading

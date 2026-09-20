@@ -176,6 +176,14 @@ func runSyncOnceSpam(t *testing.T, ha *testharness.Server, ts *testIMAPServer, a
 // runSyncOnceCfgSpam is the shared implementation behind runSyncOnce,
 // runSyncOnceCfg, and runSyncOnceSpam.
 func runSyncOnceCfgSpam(t *testing.T, ha *testharness.Server, ts *testIMAPServer, acc store.IMAPImportAccount, cat Categoriser, spamCl SpamClassifier, cfg sysconfig.IMAPImportConfig) error {
+	return runSyncOnceCfgSpamPolicy(t, ha, ts, acc, cat, spamCl, cfg, "")
+}
+
+// runSyncOnceCfgSpamPolicy is runSyncOnceCfgSpam plus an explicit
+// internalize-imports policy (REQ-EXTIMG-91/92), so tests can exercise
+// the on-demand-flag gap independently of the other knobs. policy ""
+// behaves as "on_demand" (extimg.ShouldFlagOnDemand's default).
+func runSyncOnceCfgSpamPolicy(t *testing.T, ha *testharness.Server, ts *testIMAPServer, acc store.IMAPImportAccount, cat Categoriser, spamCl SpamClassifier, cfg sysconfig.IMAPImportConfig, policy string) error {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -188,15 +196,16 @@ func runSyncOnceCfgSpam(t *testing.T, ha *testharness.Server, ts *testIMAPServer
 	}
 
 	w := newAccountWorker(accountWorkerOpts{
-		account:        acc,
-		store:          ha.Store,
-		dataKey:        testDataKey(t),
-		cfg:            cfg,
-		log:            newTestLogger(t),
-		clk:            ha.Clock,
-		dialer:         &fakeDialer{ts: ts},
-		categoriser:    cat,
-		spamClassifier: spamCl,
+		account:                  acc,
+		store:                    ha.Store,
+		dataKey:                  testDataKey(t),
+		cfg:                      cfg,
+		internalizeImportsPolicy: policy,
+		log:                      newTestLogger(t),
+		clk:                      ha.Clock,
+		dialer:                   &fakeDialer{ts: ts},
+		categoriser:              cat,
+		spamClassifier:           spamCl,
 	})
 
 	// Dial once and run a single syncAllFolders pass without entering

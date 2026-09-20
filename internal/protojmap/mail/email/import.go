@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/hanshuebner/herold/internal/extimg"
 	"github.com/hanshuebner/herold/internal/mailparse"
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
@@ -334,6 +335,13 @@ func (i *importHandler) importOne(
 		Envelope:     env,
 		// re #143 (maintainer finding #2): a JMAP Email/import create.
 		IngestSource: store.IngestSourceJMAPImport,
+	}
+	// REQ-EXTIMG-90/91: a JMAP Email/import create lands the uploaded
+	// blob verbatim, exactly like the IMAP-mirror and Gmail Takeout
+	// importers, so it shares their on-demand flagging decision. body
+	// is already fully resident (readBlobBody above); no extra read.
+	if extimg.ShouldFlagOnDemandForMode(i.h.extImg.Mode) && extimg.HasExternalHTMLImage(body) {
+		msg.InternalizePending = true
 	}
 	memberships := make([]store.MessageMailbox, 0, len(mailboxIDs))
 	for _, mid := range mailboxIDs {

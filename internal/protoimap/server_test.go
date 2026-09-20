@@ -52,6 +52,9 @@ type fxOpts struct {
 	downloadRate    int64 // bytes/sec, 0 disables
 	downloadBurst   int64
 	spillDir        string // override the APPEND spill directory; empty means os.TempDir()
+	// internalizeImportsPolicy overrides protoimap.Options.InternalizeImportsPolicy
+	// (REQ-EXTIMG-91/92); empty behaves as "on_demand".
+	internalizeImportsPolicy string
 }
 
 func newFixture(t *testing.T, fo fxOpts) *fixture {
@@ -110,8 +113,9 @@ func newFixture(t *testing.T, fo fxOpts) *fixture {
 			ServerName:                "herold",
 			// Tests are not deadline tests; raise from the 1s default to
 			// keep slow CI hardware (arm64) from tripping LOGIN/APPEND.
-			DefaultCommandDeadline: 30 * time.Second,
-			SpillDir:               spillDir,
+			DefaultCommandDeadline:   30 * time.Second,
+			SpillDir:                 spillDir,
+			InternalizeImportsPolicy: fo.internalizeImportsPolicy,
 		},
 	)
 	mode := protoimap.ListenerModeSTARTTLS
