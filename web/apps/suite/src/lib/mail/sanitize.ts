@@ -1375,10 +1375,29 @@ function resolvedBodyColorStyle(raw: string): string | null {
  * counterpart, or a same-element pair that resolves to the same paint
  * color -- mutating `el`'s `style`/`bgcolor` attribute(s) in place exactly
  * as the pre-#441 implementation did. Returns the `InheritedColorPair`
- * `el`'s own children should see: `el`'s own surviving declared half(s)
- * where present, else `inherited` passed through unchanged -- this is the
- * O(1) replacement for what used to be a fresh ancestor walk from each
- * child (see `InheritedColorPair`'s doc comment).
+ * `el`'s own children should see.
+ *
+ * That returned pair is read back from `el` via `declaredColorHalves`
+ * AFTER every mutation above has been applied, rather than tracked through
+ * local "was this half stripped" flags during the branches above -- a
+ * fuzz-found regression (issue #441 follow-up) in an earlier version of
+ * this function used such flags and got a same-element degenerate pair
+ * wrong: `<td style="color:#4a4a4a;background-color:#4a4a4a"
+ * bgcolor="#0000ff">` strips the CSS `background-color` (the SAME-element
+ * branch below, via `stripBackground()`) but, per the #422 rule that CSS
+ * wins over `bgcolor` only when both are declared, deliberately leaves the
+ * `bgcolor` attribute itself untouched -- and that attribute still paints
+ * in a real browser. A flag that only remembers "the CSS layer was
+ * stripped" cannot express "a different presentational carrier on the
+ * same element still paints", so a descendant's lone color was judged
+ * against `null` (no background at all) instead of the surviving blue,
+ * and a legible color the sender paired against it was wrongly stripped.
+ * Re-reading `el`'s post-mutation state through the same
+ * `declaredColorHalves` the old ancestor walk used sidesteps the whole
+ * class of "which carrier survived" bookkeeping: whatever `declaredColorHalves`
+ * would find by walking up to `el` after this pass is exactly what a
+ * descendant should inherit, and it already knows to fall back to
+ * `bgcolor` when CSS declares no background (see its own doc comment).
  */
 function resolveDeclaredColorPair(el: Element, inherited: InheritedColorPair): InheritedColorPair {
   if (!el.hasAttribute('style') && !el.hasAttribute('bgcolor')) return inherited;
@@ -1422,14 +1441,9 @@ function resolveDeclaredColorPair(el: Element, inherited: InheritedColorPair): I
     }
   };
 
-  let colorStripped = false;
-  let backgroundStripped = false;
-
   if (hasColor && hasBackground && colorsAreIndistinguishable(ownColor, ownBackground)) {
     probe.style.removeProperty('color');
     stripBackground();
-    colorStripped = true;
-    backgroundStripped = true;
   } else if (hasColor && !hasBackground) {
     const ancestorBackground = inherited.background;
     const effectiveBackground = ancestorBackground ?? readingPaneTheme().backgroundColor;
@@ -1447,7 +1461,6 @@ function resolveDeclaredColorPair(el: Element, inherited: InheritedColorPair): I
       : WCAG_AA_CONTRAST_THRESHOLD;
     if (contrastBelowThreshold(ownColor, effectiveBackground, threshold)) {
       probe.style.removeProperty('color');
-      colorStripped = true;
     }
   } else if (hasBackground && !hasColor) {
     // A background is judged against the text that will actually paint
@@ -1470,7 +1483,6 @@ function resolveDeclaredColorPair(el: Element, inherited: InheritedColorPair): I
         : WCAG_AA_CONTRAST_THRESHOLD;
       if (contrastBelowThreshold(effectiveForeground, ownBackground, threshold)) {
         stripBackground();
-        backgroundStripped = true;
       }
     }
   }
@@ -1486,9 +1498,14 @@ function resolveDeclaredColorPair(el: Element, inherited: InheritedColorPair): I
     }
   }
 
+  // Read back what actually survives on `el` -- including a `bgcolor`
+  // attribute a stripped CSS background left behind -- rather than the
+  // pre-mutation `ownColor`/`ownBackground` above (see this function's
+  // doc comment for the fuzz-found regression this sidesteps).
+  const survivors = declaredColorHalves(el);
   return {
-    background: hasBackground && !backgroundStripped ? ownBackground : inherited.background,
-    foreground: hasColor && !colorStripped ? ownColor : inherited.foreground,
+    background: isDeclaredColor(survivors.backgroundColor) ? survivors.backgroundColor : inherited.background,
+    foreground: isDeclaredColor(survivors.color) ? survivors.color : inherited.foreground,
   };
 }
 

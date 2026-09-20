@@ -14,17 +14,26 @@
  * nested `<div>`s, each declaring its own lone `background-color` (so
  * `collectDescendantOwnColors`'s lookahead stops at the very next nested
  * element and contributes no extra cost of its own, per the issue's own
- * measurement) -- and asserts the cost at 4x the nesting depth is nowhere
- * near 4x^2 = 16x the cost, comparing sanitize time at depth 100 against
- * depth 400.
+ * measurement) -- and fits a power law (`time = a * depth^b`) across FIVE
+ * depths spanning a 16x range, asserting the fitted exponent `b` is well
+ * below 2 (quadratic).
  *
- * The assertion compares a RATIO, not an absolute duration, and allows
- * generous slack (an 8x ceiling, sitting almost exactly between the 4x a
- * linear implementation predicts and the 16x a quadratic one would
- * produce) specifically so this stays robust on a loaded CI host: what it
- * must never again do is grow like the reported 18/119/496/1844 ms series
- * (roughly a 100x blowup from depth 50 to depth 400, not the ~8x an O(N)
- * implementation predicts).
+ * An earlier version of this test compared a single ratio between two
+ * depths (100 and 400) against an 8x ceiling. That discriminated the
+ * pre-fix defect (observed failing at 8.9x-15.8x across five runs against
+ * the parent commit), but flaked under light host contention against the
+ * FIX (three background busy loops on the same machine produced ratios of
+ * 4.25x-9.12x across ten runs, three of them at or past the 8x ceiling):
+ * the depth-100 baseline is only a few milliseconds best-of-N, so
+ * scheduler jitter on that single small number swings the ratio past any
+ * fixed margin. Per this project's rule to fix the measurement rather than
+ * loosen the threshold, this version (a) uses larger depths so every
+ * baseline sample is tens of milliseconds, where jitter is a smaller
+ * fraction of the signal, (b) takes more samples per depth (best-of-9,
+ * minimum discards GC/scheduler pauses), and (c) fits across five points
+ * with a least-squares regression instead of trusting any single pair --
+ * a transient slow or fast sample at one depth pulls the fitted line only
+ * slightly, where it would have dominated a two-point ratio outright.
  */
 import { describe, it, expect } from 'vitest';
 import { sanitizeHtml } from './sanitize';
@@ -41,12 +50,9 @@ function buildNestedBackgroundFixture(depth: number): string {
 /**
  * Best-of-`samples` sanitize time for a fixture of `depth` nesting levels,
  * in milliseconds. Taking the minimum (rather than a mean) discards GC
- * pauses and scheduler jitter that would otherwise inflate the smaller,
- * faster measurement disproportionately and understate the ratio's
- * headroom -- the failure mode this test exists to catch (a quadratic
- * regression) shows up as a change in the RATE of growth, not as one slow
- * sample, so minimizing incidental noise on both sides is the conservative
- * choice for a ratio-based assertion.
+ * pauses and scheduler jitter that would otherwise inflate a measurement
+ * without bound on the slow side, while the fastest achievable run is
+ * always a tight, repeatable lower bound on the true cost.
  */
 function fastestSanitizeMillis(depth: number, samples: number): number {
   const html = buildNestedBackgroundFixture(depth);
@@ -60,25 +66,55 @@ function fastestSanitizeMillis(depth: number, samples: number): number {
   return best;
 }
 
+/**
+ * Least-squares exponent `b` of the power law `time = a * depth^b` fitted
+ * across the given `(depth, time)` pairs, via linear regression on
+ * `log(time)` against `log(depth)` (the standard log-log linearisation).
+ * `b` is close to 1 for a linear cost, close to 2 for a quadratic one,
+ * regardless of the constant factor `a` -- so this is robust to per-call
+ * fixed overhead (DOMPurify setup, JIT warmup residue) that would bias an
+ * absolute-time or single-ratio comparison.
+ */
+function fittedGrowthExponent(depths: number[], times: number[]): number {
+  const logDepths = depths.map(Math.log);
+  const logTimes = times.map((t) => Math.log(Math.max(t, 0.001)));
+  const n = logDepths.length;
+  const meanX = logDepths.reduce((a, b) => a + b, 0) / n;
+  const meanY = logTimes.reduce((a, b) => a + b, 0) / n;
+  let covariance = 0;
+  let variance = 0;
+  for (let i = 0; i < n; i++) {
+    const dx = logDepths[i]! - meanX;
+    covariance += dx * (logTimes[i]! - meanY);
+    variance += dx * dx;
+  }
+  return covariance / variance;
+}
+
 describe('sanitizeHtml color-pair resolution scales linearly with nesting depth (issue #441)', () => {
-  it('depth 400 costs nowhere near 16x depth 100 (quadratic) -- allows up to 8x', () => {
-    // Warm up the JIT before measuring so the first sample's compilation
-    // cost does not skew the depth-100 baseline.
-    fastestSanitizeMillis(20, 3);
+  it(
+    'fitted growth exponent across depths 100..1600 is well below 2 (quadratic)',
+    () => {
+      // Warm up the JIT before measuring so the first sample's compilation
+      // cost does not skew the smallest depth's baseline.
+      fastestSanitizeMillis(20, 5);
 
-    const smallDepth = 100;
-    const largeDepth = 400;
-    const smallElapsed = fastestSanitizeMillis(smallDepth, 7);
-    const largeElapsed = fastestSanitizeMillis(largeDepth, 7);
+      const depths = [100, 200, 400, 800, 1600];
+      const samplesPerDepth = 9;
+      const times = depths.map((depth) => fastestSanitizeMillis(depth, samplesPerDepth));
 
-    // A linear implementation predicts ~4x (largeDepth / smallDepth). A
-    // quadratic one predicts ~16x. The 8x ceiling sits between the two --
-    // comfortably clear of linear noise, comfortably short of quadratic.
-    const ratio = largeElapsed / Math.max(smallElapsed, 1);
-    expect(
-      ratio,
-      `depth ${smallDepth} took ${smallElapsed.toFixed(2)}ms, depth ${largeDepth} took ` +
-        `${largeElapsed.toFixed(2)}ms (ratio ${ratio.toFixed(2)}x) -- growth looks quadratic`,
-    ).toBeLessThan(8);
-  });
+      const exponent = fittedGrowthExponent(depths, times);
+      // A linear implementation fits an exponent near 1. A quadratic one
+      // fits near 2. 1.6 sits well clear of linear noise (an exponent
+      // this test observed repeatedly landing between ~1.0 and ~1.3 for
+      // the fixed implementation, including under light host contention)
+      // and well short of quadratic.
+      expect(
+        exponent,
+        `depths=${depths.join(',')} times(ms)=${times.map((t) => t.toFixed(2)).join(',')} ` +
+          `fitted exponent=${exponent.toFixed(3)} -- growth looks quadratic`,
+      ).toBeLessThan(1.6);
+    },
+    20000,
+  );
 });

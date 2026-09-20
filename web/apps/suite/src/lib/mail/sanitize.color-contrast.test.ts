@@ -900,3 +900,71 @@ describe('issue #422 third round -- a lone background is judged against the text
     expect(parseColor(window.getComputedStyle(copyrightSpan).color)).toEqual([255, 255, 255, 1]);
   });
 });
+
+/**
+ * Regression lock for issue #441's own follow-up: the O(N)-to-O(1)
+ * ancestor-resolution rewrite (`InheritedColorPair`, replacing the
+ * per-element ancestor walk) initially got a same-element degenerate pair
+ * wrong. A 300-trial fuzz of nested tags mixing `color`, `background-color`
+ * and `bgcolor` found the minimal case below (independent verification of
+ * commit d2e24425): a `<td>` whose CSS `color`/`background-color` are the
+ * SAME color (a same-element degenerate pair, stripped) also carries a
+ * `bgcolor` attribute. Stripping the degenerate CSS pair removes only the
+ * CSS `background-color` -- `bgcolor` is a different presentational
+ * carrier the #422 "CSS wins over bgcolor" rule never said to remove, and
+ * it still paints in a real browser. A version of `resolveDeclaredColorPair`
+ * that tracked "was this half stripped" via local flags could not express
+ * "a different carrier on the same element still paints", collapsed the
+ * td's contribution to "no background at all", and wrongly stripped a
+ * descendant's legible lone color as a result. The fix re-reads each
+ * element's actually-surviving pair off the live (post-mutation) DOM via
+ * `declaredColorHalves` -- the same function the pre-#441 ancestor walk
+ * used -- instead of tracking flags.
+ */
+describe('issue #441 fuzz regression -- a stripped same-element CSS pair leaves a surviving bgcolor for descendants', () => {
+  it('minimal fuzz case: <td> degenerate CSS pair strips CSS but bgcolor survives for a descendant lone color', () => {
+    withTheme('light');
+    const html =
+      '<table><tr><td style="color:#4a4a4a;background-color:#4a4a4a" bgcolor="#0000ff">' +
+      '<p style="color:#eeeeee">text</p>' +
+      '</td></tr></table>';
+    const srcdoc = sanitizeHtml(html, { loadImages: false });
+    const { window, document } = renderSrcdoc(srcdoc, 'light');
+    const td = document.querySelector('td')!;
+    const p = document.querySelector('p')!;
+
+    // The td's own degenerate CSS pair (identical color on both halves) is
+    // stripped from its `style`, but the DIFFERENT `bgcolor` carrier is
+    // left untouched -- it still paints blue in a real browser (happy-dom,
+    // used here, does not map the legacy presentational `bgcolor`
+    // attribute to a computed `background-color` the way a real UA does,
+    // so this locks the attribute's presence, not `getComputedStyle`; the
+    // live-browser verification in the issue thread confirms the paint).
+    expect(td.getAttribute('style')).toBeNull();
+    expect(td.getAttribute('bgcolor')).toBe('#0000ff');
+    // The paragraph's own lone color must survive: it is legible against
+    // the td's surviving `bgcolor` background (a declared counterpart),
+    // not judged against "no background at all" and held to the
+    // stricter theme-only WCAG AA bar.
+    expect(parseColor(window.getComputedStyle(p).color)).toEqual([0xee, 0xee, 0xee, 1]);
+  });
+
+  it('the surviving bgcolor carrier is two levels up, through an intervening element that declares only a foreground', () => {
+    withTheme('light');
+    const html =
+      '<table><tr><td style="color:#4a4a4a;background-color:#4a4a4a" bgcolor="#0000ff">' +
+      '<div style="color:#dddddd"><span style="color:#eeeeee">deep text</span></div>' +
+      '</td></tr></table>';
+    const srcdoc = sanitizeHtml(html, { loadImages: false });
+    const { window, document } = renderSrcdoc(srcdoc, 'light');
+    const div = document.querySelector('div')!;
+    const span = document.querySelector('span')!;
+
+    // The intervening <div> declares only a foreground -- it must pass
+    // the td's surviving `bgcolor` through to its own child unchanged,
+    // not reset the inherited background to "none" merely because the
+    // div itself declares no background of its own.
+    expect(parseColor(window.getComputedStyle(div).color)).toEqual([0xdd, 0xdd, 0xdd, 1]);
+    expect(parseColor(window.getComputedStyle(span).color)).toEqual([0xee, 0xee, 0xee, 1]);
+  });
+});
