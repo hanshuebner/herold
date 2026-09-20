@@ -1454,6 +1454,90 @@ describe('sanitizeHtml — quoted-history collapse', () => {
       expect(quotePos).toBeLessThan(detailsEnd);
     });
   });
+
+  // re #448 compound-leak follow-up: `splitLeadingFreshContent`'s "leading
+  // children are the sender's fresh text" assumption is only valid for the
+  // document's FIRST quoted region. Once an earlier region has been passed
+  // over (an unrecognised-attribution moz-cite-prefix div), the next
+  // candidate the search reaches is already inside or past quoted material
+  // -- a #292-style nested reply-before-quote shape found there is itself
+  // historical, not the current sender's writing, and must fold with the
+  // rest of the candidate rather than being lifted out as fresh.
+  describe('a passed-over div then a nested reply-before-quote does not leak the nested reply as fresh (re #448 compound-leak follow-up)', () => {
+    const nestedReplyBlockquote =
+      '<blockquote type="cite">' +
+      '<div>Older reply text that should stay hidden behind the fold.</div>' +
+      '<div>Am 10.09.26 um 18:21 schrieb John Doe:<br>' +
+      '<blockquote type="cite">Original original text.</blockquote>' +
+      '</div>' +
+      '</blockquote>';
+
+    it('leaks pre-fix, folds atomically post-fix: unrecognised-attribution div passed over, then the nested-reply blockquote', () => {
+      const html =
+        '<div class="moz-cite-prefix">Hallo Jane,<br><br>das passt mir gut.<br><br>' +
+        'Op 20-09-26 om 14:12 schreef ' +
+        '<a class="moz-txt-link-abbreviated" href="mailto:jane@example.test">jane@example.test</a>:<br></div>\n' +
+        nestedReplyBlockquote;
+      const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+      const detailsStart = body.indexOf('<details class="herold-quoted">');
+      const detailsEnd = body.indexOf('</details>');
+      expect(detailsStart).toBeGreaterThan(0);
+      // The passed-over div's own reply text stays visible, before the fold.
+      expect(body.indexOf('Hallo Jane,')).toBeLessThan(detailsStart);
+      expect(body.indexOf('das passt mir gut.')).toBeLessThan(detailsStart);
+      // The nested blockquote's OWN leading text is historical, not fresh:
+      // it must be inside the fold, never lifted out ahead of <details>.
+      const olderReplyPos = body.indexOf('Older reply text that should stay hidden behind the fold.');
+      expect(olderReplyPos).toBeGreaterThan(detailsStart);
+      expect(olderReplyPos).toBeLessThan(detailsEnd);
+      const quotePos = body.indexOf('Original original text.');
+      expect(quotePos).toBeGreaterThan(detailsStart);
+      expect(quotePos).toBeLessThan(detailsEnd);
+    });
+
+    it('control: the same nested-reply blockquote alone at top level still splits its own fresh content (unaffected regression guard)', () => {
+      // As the document's OWN first (and only) quoted region, the nested
+      // reply text is genuinely fresh and must still be lifted out ahead
+      // of the fold -- exactly the re #292 contract this must not break.
+      const html = nestedReplyBlockquote;
+      const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+      const detailsStart = body.indexOf('<details class="herold-quoted">');
+      const detailsEnd = body.indexOf('</details>');
+      expect(detailsStart).toBeGreaterThan(-1);
+      const olderReplyPos = body.indexOf('Older reply text that should stay hidden behind the fold.');
+      expect(olderReplyPos).toBeGreaterThan(-1);
+      expect(olderReplyPos).toBeLessThan(detailsStart);
+      const quotePos = body.indexOf('Original original text.');
+      expect(quotePos).toBeGreaterThan(detailsStart);
+      expect(quotePos).toBeLessThan(detailsEnd);
+    });
+
+    it('control: a RECOGNISED-attribution div preceding the same nested-reply blockquote is unaffected (the retry loop never runs)', () => {
+      // A recognised attribution passes `startsAtTheCitation` on the first
+      // candidate itself, so the retry/pass-over path this fix guards is
+      // never entered -- behaviour here must be identical whichever side
+      // of the fix is in effect.
+      const html =
+        '<div class="moz-cite-prefix">Hallo Jane,<br><br>das passt mir gut.<br><br>' +
+        'Am 20.09.26 um 14:12 schrieb ' +
+        '<a class="moz-txt-link-abbreviated" href="mailto:jane@example.test">jane@example.test</a>:<br></div>\n' +
+        nestedReplyBlockquote;
+      const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+      const detailsStart = body.indexOf('<details class="herold-quoted">');
+      const detailsEnd = body.indexOf('</details>');
+      expect(detailsStart).toBeGreaterThan(0);
+      expect(body.indexOf('Hallo Jane,')).toBeLessThan(detailsStart);
+      expect(body.indexOf('das passt mir gut.')).toBeLessThan(detailsStart);
+      // The recognised attribution folds together with the nested
+      // blockquote, unsplit -- the retry path is not involved here.
+      const olderReplyPos = body.indexOf('Older reply text that should stay hidden behind the fold.');
+      expect(olderReplyPos).toBeGreaterThan(detailsStart);
+      expect(olderReplyPos).toBeLessThan(detailsEnd);
+      const quotePos = body.indexOf('Original original text.');
+      expect(quotePos).toBeGreaterThan(detailsStart);
+      expect(quotePos).toBeLessThan(detailsEnd);
+    });
+  });
 });
 
 describe('sanitizeHtml — script/style filters', () => {

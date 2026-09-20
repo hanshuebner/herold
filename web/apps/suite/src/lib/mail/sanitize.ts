@@ -1756,14 +1756,19 @@ function collapseQuotedRegions(root: ParentNode): void {
   // so it is passed over and the search continues with the next quoted
   // region in document order — typically the `<blockquote>` the div
   // precedes — instead of folding the sender's text away with it.
+  //
+  // `splitLeadingFreshContent` only ever runs on the DOCUMENT'S first
+  // quoted region (re #448 compound-leak follow-up): its "leading children
+  // are the sender's fresh text" assumption holds only there. Once a
+  // region has been passed over, everything reached afterwards is already
+  // inside or past quoted material — a nested reply-before-quote shape
+  // (re #292) inside that later candidate is itself historical, not fresh,
+  // and must fold with the rest of the candidate rather than being lifted
+  // out as if newly written.
   const passedOver: Element[] = [];
   let candidate: Element | null = findFirstQuotedRegion(root, passedOver);
-  while (candidate) {
-    // Split fresh content nested as leading CHILDREN of the matched element
-    // back out before the rest of this function ever inspects candidate's
-    // siblings (re #292) — see splitLeadingFreshContent's doc comment.
-    splitLeadingFreshContent(candidate);
-    if (startsAtTheCitation(candidate)) break;
+  if (candidate) splitLeadingFreshContent(candidate);
+  while (candidate && !startsAtTheCitation(candidate)) {
     passedOver.push(candidate);
     candidate = findFirstQuotedRegion(root, passedOver);
   }
