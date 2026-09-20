@@ -377,8 +377,9 @@ cancel it, do it again. A reply opens carrying the address it answers,
 a `Re:` subject and the quoted original, so the check is that the
 conversation ends where it started - no draft row, no draft card, and
 nothing in the server's Drafts mailbox - and that a reply the reader
-did type in is still kept and still discarded. `t100` leaves the
-composer by back rather than by its close control.
+did type in is still kept, and the Discard on its card in the
+conversation still takes it away. `t100` leaves the composer by back
+rather than by its close control.
 
     adb shell am instrument -w -r \
       -e class com.netzhansa.herold.android.EmptyDraftAcceptanceTest \

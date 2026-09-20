@@ -127,6 +127,24 @@ class DraftDiscardTest {
         assertTrue(h.outbox.list().isEmpty(), "the drained entry must be gone")
     }
 
+    /**
+     * The conversation's own Discard, which names the message rather
+     * than a compose: the way out for a draft whose snackbar offer has
+     * come down (issue #371).
+     */
+    @Test
+    fun theConversationsDiscardTakesASavedDraftAway() = runTest {
+        val h = harness()
+        h.store.upsertEmails(listOf(draftRow("draft-6")))
+
+        h.drafts.discardSaved("acct-a", "draft-6")
+
+        assertNull(h.store.email("acct-a", "draft-6"), "the draft row must be gone")
+        h.drainer.drain()
+        assertEquals(listOf(listOf("draft-6")), h.api.emailDestroys)
+        assertTrue(h.outbox.list().isEmpty(), "the drained entry must be gone")
+    }
+
     /** A queued save the drain has not reached leaves nothing behind. */
     @Test
     fun aDiscardOfAQueuedSaveDropsTheEntry() = runTest {
