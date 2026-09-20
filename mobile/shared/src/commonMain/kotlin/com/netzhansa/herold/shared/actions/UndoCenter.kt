@@ -56,12 +56,18 @@ object UndoMessages {
     const val SNOOZED = "Snoozed"
     const val SENDING = "Sending"
     const val DRAFT_SAVED = "Draft saved"
+
+    /** A discard the server refused; the draft is back where it was. */
+    const val DISCARD_FAILED = "The draft was not discarded"
 }
 
 /** What an offer's action reads. */
 object UndoActions {
     const val UNDO = "Undo"
     const val DISCARD = "Discard"
+
+    /** What a message with nothing to take back offers. */
+    const val DISMISS = "Dismiss"
 }
 
 /**
