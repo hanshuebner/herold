@@ -574,13 +574,27 @@ class JmapClient(
         )
     }
 
-    override suspend fun emailDestroy(accountId: String, ids: List<String>) {
-        if (ids.isEmpty()) return
+    override suspend fun emailDestroy(accountId: String, ids: List<String>): DestroyOutcome {
+        if (ids.isEmpty()) return DestroyOutcome(emptySet(), emptyMap())
         val args = buildJsonObject {
             put("accountId", accountId)
             putJsonArray("destroy") { ids.forEach { add(it) } }
         }
-        call("Email/set", args, listOf(Capability.CORE, Capability.MAIL))
+        val result = call("Email/set", args, listOf(Capability.CORE, Capability.MAIL))
+        val destroyed = result["destroyed"]?.jsonArray?.map { it.jsonPrimitive.content }?.toMutableSet()
+            ?: mutableSetOf()
+        val notDestroyed = mutableMapOf<String, String>()
+        result["notDestroyed"]?.jsonObject?.forEach { (id, value) ->
+            val type = value.jsonObject["type"]?.jsonPrimitive?.content
+            // A message the server does not have is one the destroy set
+            // out to remove: the entry is done, not refused.
+            if (type == "notFound") {
+                destroyed.add(id)
+                return@forEach
+            }
+            notDestroyed[id] = value.jsonObject["description"]?.jsonPrimitive?.content ?: type ?: "rejected"
+        }
+        return DestroyOutcome(destroyed, notDestroyed)
     }
 
     override suspend fun sendEmail(

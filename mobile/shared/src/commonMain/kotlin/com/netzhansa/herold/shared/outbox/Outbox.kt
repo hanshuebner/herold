@@ -2,6 +2,8 @@ package com.netzhansa.herold.shared.outbox
 
 import com.netzhansa.herold.shared.domain.Email
 import com.netzhansa.herold.shared.store.LocalStore
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.json.JsonObject
@@ -16,6 +18,17 @@ class Outbox(
     private val store: LocalStore,
     private val now: () -> Long = { 0L },
 ) {
+    private val writtenMutex = Mutex()
+
+    /**
+     * The message each compose entry wrote, for a discard that arrives
+     * after the drain has taken the entry away (issue #371). The entry
+     * id is what a compose still waiting for its save is known by, so
+     * this is how that name reaches the message the save created. The
+     * last few are kept, which covers the offers that can still be
+     * taken.
+     */
+    private val written = mutableMapOf<Long, String>()
     /** Every entry, oldest first; what the outbox screen renders. */
     val entries: Flow<List<OutboxEntry>> = store.outbox()
 
@@ -43,6 +56,28 @@ class Outbox(
             payload = outboxJson.encodeToString(ActionPayload(patches)),
             revertJson = outboxJson.encodeToString(snapshot.map { it.toSnapshot() }),
             entityIds = patches.keys.toList(),
+            createdAt = now(),
+        ),
+    )
+
+    /**
+     * Queues the destroy of messages whose local rows are already gone
+     * (issue #371): the draft a discard threw away. It travels like
+     * every other write, so a destroy that could not be submitted is
+     * retried, and one the server refuses is listed with its reason
+     * rather than swallowed.
+     */
+    suspend fun enqueueDestroy(
+        accountId: String,
+        label: String,
+        ids: List<String>,
+    ): Long = store.enqueueOutbox(
+        NewOutboxEntry(
+            accountId = accountId,
+            kind = OutboxKind.DESTROY,
+            label = label,
+            payload = outboxJson.encodeToString(DestroyPayload(accountId, ids)),
+            entityIds = ids,
             createdAt = now(),
         ),
     )
@@ -151,6 +186,25 @@ class Outbox(
         store.updateOutboxPayload(id, outboxJson.encodeToString(payload))
     }
 
+    /** The compose an entry carries, or null when it is not one. */
+    suspend fun composePayload(id: Long): ComposePayload? {
+        val entry = store.outboxEntry(id) ?: return null
+        if (entry.kind != OutboxKind.DRAFT && entry.kind != OutboxKind.SEND) return null
+        return runCatching { outboxJson.decodeFromString<ComposePayload>(entry.payload) }.getOrNull()
+    }
+
+    /**
+     * Marks a compose already being submitted as discarded, so the
+     * drain takes the draft it writes off the server again rather than
+     * leaving one the user threw away (issue #371). Returns false when
+     * the entry is gone.
+     */
+    suspend fun markDiscardAfterWrite(id: Long): Boolean {
+        val payload = composePayload(id) ?: return false
+        updatePayload(id, payload.copy(discardAfterWrite = true))
+        return true
+    }
+
     /**
      * Drops an entry that has not been submitted yet, for an undo taken
      * before the drain reached it. Returns the entry when it was still
@@ -172,6 +226,19 @@ class Outbox(
         val entry = cancelIfQueued(id) ?: return null
         return runCatching { outboxJson.decodeFromString<ComposePayload>(entry.payload) }.getOrNull()
     }
+
+    /** Records the message a compose entry wrote. */
+    suspend fun noteWritten(entryId: Long, draftId: String) {
+        writtenMutex.withLock {
+            written[entryId] = draftId
+            while (written.size > WRITTEN_KEPT) {
+                written.remove(written.keys.first())
+            }
+        }
+    }
+
+    /** The message entry [entryId] wrote, as far as this process knows. */
+    suspend fun writtenDraftId(entryId: Long): String? = writtenMutex.withLock { written[entryId] }
 
     /** Drops an entry outright, whatever its state; the outbox screen's discard. */
     suspend fun remove(id: Long) = store.deleteOutbox(id)
@@ -218,6 +285,9 @@ class Outbox(
         return superseded
     }
 }
+
+/** How many written compose entries are remembered for a late discard. */
+private const val WRITTEN_KEPT = 32
 
 /** The membership snapshot an action's revert restores. */
 fun Email.toSnapshot(): MembershipSnapshot = MembershipSnapshot(

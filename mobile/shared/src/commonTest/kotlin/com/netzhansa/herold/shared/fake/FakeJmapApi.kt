@@ -3,6 +3,7 @@ package com.netzhansa.herold.shared.fake
 import com.netzhansa.herold.shared.jmap.ChangesOutcome
 import com.netzhansa.herold.shared.jmap.EmailWriteOutcome
 import com.netzhansa.herold.shared.jmap.Envelope
+import com.netzhansa.herold.shared.jmap.DestroyOutcome
 import com.netzhansa.herold.shared.jmap.DownloadedBlob
 import com.netzhansa.herold.shared.jmap.PushSubscriptionCreate
 import com.netzhansa.herold.shared.jmap.GetResult
@@ -249,6 +250,12 @@ class FakeJmapApi(
     val emailCreates = mutableListOf<Pair<String, JsonObject>>()
     val emailReplaces = mutableListOf<Triple<String, String, JsonObject>>()
     val emailDestroys = mutableListOf<List<String>>()
+
+    /** Thrown out of [emailDestroy], for the transport failures. */
+    var destroyFailure: Throwable? = null
+
+    /** What the server refuses a destroy with, when it refuses one. */
+    var destroyRefusal: String? = null
     val sendCalls = mutableListOf<SendCall>()
 
     /** One recorded [sendEmail], so a test can assert the whole batch's shape. */
@@ -322,9 +329,14 @@ class FakeJmapApi(
         return EmailWriteOutcome(id = id, newState = emailState, error = emailCreateError)
     }
 
-    override suspend fun emailDestroy(accountId: String, ids: List<String>) {
+    override suspend fun emailDestroy(accountId: String, ids: List<String>): DestroyOutcome {
         composeFailure?.let { throw it }
+        destroyFailure?.let { throw it }
         emailDestroys.add(ids)
+        destroyRefusal?.let { reason ->
+            return DestroyOutcome(emptySet(), ids.associateWith { reason })
+        }
+        return DestroyOutcome(ids.toSet(), emptyMap())
     }
 
     override suspend fun sendEmail(

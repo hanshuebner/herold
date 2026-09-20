@@ -108,6 +108,20 @@ A send's entry carries a not-before time: the undo window
 an entry whose time has not come and carries on with the ones behind it,
 which is what distinguishes a hold from a backoff.
 
+Taking a message away is an outbox entry like any other write: the row goes
+from the local store at once, so the screen it was on stops rendering it, and
+a destroy entry carries the ids to the server with the same retries, backoff
+and refusal handling. A destroy the server refuses puts the message back where
+the server still has it and says so, rather than leaving a screen that
+disagrees with the account.
+
+A message the client deleted locally is held against writes for two minutes:
+a reconciliation pass writes whatever its `Email/get` answered, and a response
+prepared before the delete carries the message, so without the hold a fetch in
+flight puts a discarded draft back and the card returns to its conversation. A
+destroy the server refuses forgets the hold, which is how the message comes
+back on the next pass.
+
 Cross-update precedence: if reconciliation delivers a server state for an entity
 that is ahead of a pending optimistic write on that entity, the server truth
 wins and the optimistic version is discarded (Suite architecture § Optimistic

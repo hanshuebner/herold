@@ -87,7 +87,7 @@ interface JmapApi {
     /** `Email/set { update }` for one message with a full property set (draft autosave). */
     suspend fun emailReplace(accountId: String, id: String, email: JsonObject): EmailWriteOutcome
 
-    suspend fun emailDestroy(accountId: String, ids: List<String>)
+    suspend fun emailDestroy(accountId: String, ids: List<String>): DestroyOutcome
 
     /**
      * The send batch: `Email/set` writing the draft, then

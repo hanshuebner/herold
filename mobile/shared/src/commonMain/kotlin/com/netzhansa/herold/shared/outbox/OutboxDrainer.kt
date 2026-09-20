@@ -1,6 +1,7 @@
 package com.netzhansa.herold.shared.outbox
 
 import com.netzhansa.herold.shared.actions.CategoryActions
+import com.netzhansa.herold.shared.actions.MailActions
 import com.netzhansa.herold.shared.compose.AttachmentStatus
 import com.netzhansa.herold.shared.compose.ComposeAttachment
 import com.netzhansa.herold.shared.compose.ComposeMode
@@ -18,6 +19,7 @@ import com.netzhansa.herold.shared.jmap.JmapApi
 import com.netzhansa.herold.shared.jmap.classifyFailure
 import com.netzhansa.herold.shared.sync.Reachability
 import com.netzhansa.herold.shared.store.LocalStore
+import com.netzhansa.herold.shared.store.Tombstones
 import com.netzhansa.herold.shared.sync.toRuleRow
 import com.netzhansa.herold.shared.sync.toStoreRow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -48,7 +50,12 @@ private sealed interface StepResult {
 }
 
 /** An entry the server refused, for the snackbar the shell raises. */
-data class OutboxFailure(val entryId: Long, val label: String, val message: String)
+data class OutboxFailure(
+    val entryId: Long,
+    val kind: OutboxKind,
+    val label: String,
+    val message: String,
+)
 
 /** What a drain pass did, for a background worker's result. */
 data class DrainOutcome(
@@ -89,6 +96,8 @@ class OutboxDrainer(
      * than holding it forever.
      */
     private val bugReports: BugReportApi? = api as? BugReportApi,
+    /** What a local delete holds away from a fetch in flight (issue #371). */
+    private val tombstones: Tombstones = Tombstones(),
     private val reachability: Reachability = Reachability(),
     /** Where transport failures go: the developer log, never the screen. */
     private val log: (String) -> Unit = {},
@@ -150,7 +159,7 @@ class OutboxDrainer(
                             permanent = true,
                             nextAttemptAt = 0,
                         )
-                        _failures.tryEmit(OutboxFailure(entry.id, entry.label, result.message))
+                        _failures.tryEmit(OutboxFailure(entry.id, entry.kind, entry.label, result.message))
                         rejected++
                     }
 
@@ -166,6 +175,15 @@ class OutboxDrainer(
                             permanent = false,
                             nextAttemptAt = if (exhausted) 0 else now() + backoff(attempts),
                         )
+                        // An entry that has spent its attempts is as
+                        // done for as a refused one: the user hears
+                        // about it rather than the queue holding it
+                        // silently (issue #371).
+                        if (exhausted) {
+                            _failures.tryEmit(
+                                OutboxFailure(entry.id, entry.kind, entry.label, result.message),
+                            )
+                        }
                         retryable++
                         break
                     }
@@ -202,6 +220,7 @@ class OutboxDrainer(
 
     private suspend fun submit(entry: OutboxEntry): StepResult = when (entry.kind) {
         OutboxKind.ACTION -> submitAction(entry)
+        OutboxKind.DESTROY -> submitDestroy(entry)
         OutboxKind.DRAFT -> submitCompose(entry, submitToQueue = false)
         OutboxKind.SEND -> submitCompose(entry, submitToQueue = true)
         OutboxKind.RULE -> submitRule(entry)
@@ -335,6 +354,36 @@ class OutboxDrainer(
         store.upsertManagedRules(fetched.list.map { it.toRuleRow(accountId) })
     }
 
+    /**
+     * Messages the user took away: the draft a discard threw away
+     * (issue #371). The local rows went when the discard was made, so
+     * there is nothing to write back on success. A refusal puts the
+     * message the server still holds back into the store, so the screen
+     * and the server agree again, and the reason reaches the user.
+     */
+    private suspend fun submitDestroy(entry: OutboxEntry): StepResult {
+        val payload = runCatching {
+            outboxJson.decodeFromString<DestroyPayload>(entry.payload)
+        }.getOrNull() ?: return StepResult.Rejected("the queued discard could not be read")
+        if (payload.ids.isEmpty()) return StepResult.Done
+        val outcome = try {
+            api.emailDestroy(payload.accountId, payload.ids)
+        } catch (t: Throwable) {
+            return failureOf(t)
+        }
+        if (outcome.notDestroyed.isNotEmpty()) {
+            restore(payload.accountId, outcome.notDestroyed.keys)
+            return StepResult.Rejected(outcome.notDestroyed.values.first())
+        }
+        return StepResult.Done
+    }
+
+    /** Brings messages a destroy did not take back into the store. */
+    private suspend fun restore(accountId: String, ids: Collection<String>) {
+        tombstones.forget(accountId, ids)
+        takeServerVersion(accountId, ids)
+    }
+
     private suspend fun submitAction(entry: OutboxEntry): StepResult {
         val payload = runCatching {
             outboxJson.decodeFromString<ActionPayload>(entry.payload)
@@ -395,6 +444,7 @@ class OutboxDrainer(
             }
             payload = payload.copy(draftId = draftId)
             outbox.updatePayload(entry.id, payload)
+            outbox.noteWritten(entry.id, draftId)
         } else if (!submitToQueue) {
             val written = try {
                 api.emailReplace(payload.accountId, payload.draftId, email)
@@ -404,7 +454,22 @@ class OutboxDrainer(
             if (written.error != null) return StepResult.Rejected(written.error)
         }
 
-        if (!submitToQueue) return StepResult.Done
+        if (!submitToQueue) {
+            // The user threw this draft away while the entry was being
+            // submitted, so it could not be taken out of the queue: the
+            // message the write has just left on the server goes the
+            // way its local row already did (issue #371).
+            val written = payload.draftId
+            if (written != null && discardedMeanwhile(entry.id)) {
+                store.deleteEmails(payload.accountId, listOf(written))
+                outbox.enqueueDestroy(
+                    payload.accountId,
+                    MailActions.Labels.DISCARD_DRAFT,
+                    listOf(written),
+                )
+            }
+            return StepResult.Done
+        }
 
         val outcome = try {
             api.sendEmail(
@@ -426,6 +491,14 @@ class OutboxDrainer(
         if (outcome.error != null) return StepResult.Rejected(outcome.error)
         return StepResult.Done
     }
+
+    /**
+     * True when a discard landed while this entry was in flight, so the
+     * entry could not be taken out of the queue and the draft it has
+     * just written has to come off the server (issue #371).
+     */
+    private suspend fun discardedMeanwhile(entryId: Long): Boolean =
+        outbox.composePayload(entryId)?.discardAfterWrite == true
 
     /** The patch that moves a sent draft into Sent, as compose writes it. */
     private fun onSuccessUpdate(payload: ComposePayload): JsonObject = buildJsonObject {

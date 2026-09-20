@@ -294,11 +294,6 @@ class Composer(
         }
     }
 
-    /** Drops a draft the user discarded (suite REQ-DFT-42). */
-    suspend fun discardDraft(accountId: String, draftId: String) {
-        runCatching { api.emailDestroy(accountId, listOf(draftId)) }
-    }
-
     /**
      * Hands the message to the durable outbox. It leaves as soon as the
      * drain reaches it - after [holdMs], the undo window the user can take

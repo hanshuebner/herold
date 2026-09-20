@@ -222,6 +222,18 @@ data class SetOutcome(
     val isCompleteSuccess: Boolean get() = notUpdated.isEmpty()
 }
 
+/**
+ * What an `Email/set { destroy }` did (RFC 8621 section 5.3). A message
+ * the server no longer has counts as destroyed, so a retried destroy
+ * finishes rather than reporting a refusal.
+ */
+data class DestroyOutcome(
+    val destroyed: Set<String>,
+    val notDestroyed: Map<String, String>,
+) {
+    val isCompleteSuccess: Boolean get() = notDestroyed.isEmpty()
+}
+
 /** A blob fetched from `/jmap/download/...`. */
 data class DownloadedBlob(
     val contentType: String,
