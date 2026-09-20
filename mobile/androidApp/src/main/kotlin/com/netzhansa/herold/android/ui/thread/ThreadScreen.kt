@@ -14,6 +14,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -114,6 +115,8 @@ import com.netzhansa.herold.shared.links.BodyLinkAction
 import com.netzhansa.herold.shared.links.BodyLinks
 import com.netzhansa.herold.shared.domain.Email
 import com.netzhansa.herold.shared.actions.FilterActions
+import com.netzhansa.herold.shared.mail.BodyPreference
+import com.netzhansa.herold.shared.mail.BodyVariant
 import com.netzhansa.herold.shared.mail.HtmlSanitizer
 import com.netzhansa.herold.shared.mail.ListHeaders
 import com.netzhansa.herold.shared.mail.MessageDates
@@ -1200,43 +1203,81 @@ private fun MessageCard(
         }
 
         if (expanded) {
-            val body = message.bodyHtml
-                ?.let { HtmlSanitizer.sanitize(it, loadRemoteImages, collapseQuotes = true) }
-                ?: message.bodyText?.let {
+            // Which half of a multipart/alternative the reader asked
+            // for, once they have asked (issue #430).
+            var readerChose by remember(message.id) { mutableStateOf<BodyVariant?>(null) }
+            BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                // What the card gives the body, in the CSS pixels the
+                // WebView lays the document out in: at the document's
+                // own `width=device-width, initial-scale=1` one CSS
+                // pixel is one density-independent pixel.
+                val content = HtmlSanitizer.contentWidthCssPx(maxWidth.value.toInt())
+                val htmlBody = message.bodyHtml?.let {
                     HtmlSanitizer.sanitize(
-                        HtmlSanitizer.fromPlainText(it, collapseQuotes = true),
+                        it,
                         loadRemoteImages,
+                        collapseQuotes = true,
+                        fitToWidthCssPx = content,
                     )
                 }
-
-            if (body == null) {
-                Text(
-                    text = "Not downloaded. Connect to load this message.",
-                    modifier = Modifier.padding(12.dp).testTag("message-body-missing-${message.id}"),
+                val choice = BodyPreference.choose(
+                    hasHtml = htmlBody != null,
+                    text = message.bodyText,
+                    minimumWidthCssPx = htmlBody?.minimumWidthCssPx ?: 0,
+                    contentWidthCssPx = content,
+                    readerChose = readerChose,
                 )
-            } else {
-                if (body.blockedRemoteImages && !loadRemoteImages) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
-                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = "Remote images are blocked until you ask for them",
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.weight(1f),
+                val body = when (choice.show) {
+                    BodyVariant.Html -> htmlBody
+                    BodyVariant.Text -> message.bodyText?.let {
+                        HtmlSanitizer.sanitize(
+                            HtmlSanitizer.fromPlainText(it, collapseQuotes = true),
+                            loadRemoteImages,
                         )
-                        TextButton(onClick = onShowRemoteImages, modifier = Modifier.testTag("show-images-${message.id}")) {
-                            Text("Show images")
-                        }
                     }
                 }
-                MessageBodyWebView(
-                    html = HtmlSanitizer.document(body.html, darkTheme),
-                    resolveInlineImage = resolveInlineImage,
-                    resolveRemoteImage = if (loadRemoteImages) resolveRemoteImage else { _ -> null },
-                    onLink = onLink,
-                    modifier = Modifier.fillMaxWidth().testTag("message-body-${message.id}"),
-                )
+
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    if (body == null) {
+                        Text(
+                            text = "Not downloaded. Connect to load this message.",
+                            modifier = Modifier.padding(12.dp).testTag("message-body-missing-${message.id}"),
+                        )
+                    } else {
+                        if (body.blockedRemoteImages && !loadRemoteImages) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    text = "Remote images are blocked until you ask for them",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                TextButton(
+                                    onClick = onShowRemoteImages,
+                                    modifier = Modifier.testTag("show-images-${message.id}"),
+                                ) {
+                                    Text("Show images")
+                                }
+                            }
+                        }
+                        choice.offer?.let { other ->
+                            BodyVariantBar(
+                                messageId = message.id,
+                                offer = other,
+                                onSwitch = { readerChose = other },
+                            )
+                        }
+                        MessageBodyWebView(
+                            html = HtmlSanitizer.document(body.html, darkTheme, content),
+                            resolveInlineImage = resolveInlineImage,
+                            resolveRemoteImage = if (loadRemoteImages) resolveRemoteImage else { _ -> null },
+                            onLink = onLink,
+                            modifier = Modifier.fillMaxWidth().testTag("message-body-${message.id}"),
+                        )
+                    }
+                }
             }
 
             if (message.attachments.any { !it.isInline }) {
@@ -1253,6 +1294,46 @@ private fun MessageCard(
                     )
                 }
             }
+        }
+    }
+}
+
+/**
+ * The control that swaps a message's two bodies (issue #430).
+ *
+ * A `multipart/alternative` whose HTML cannot narrow to the card is read
+ * as its text alternative, and the sender's own layout is one tap away;
+ * from there the text is one tap back.
+ */
+@Composable
+private fun BodyVariantBar(messageId: String, offer: BodyVariant, onSwitch: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = when (offer) {
+                BodyVariant.Html -> "Shown as text: the sender's layout is wider than the screen"
+                BodyVariant.Text -> "Shown as the sender laid it out"
+            },
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.weight(1f),
+        )
+        TextButton(
+            onClick = onSwitch,
+            modifier = Modifier.testTag(
+                when (offer) {
+                    BodyVariant.Html -> "show-html-$messageId"
+                    BodyVariant.Text -> "show-text-$messageId"
+                },
+            ),
+        ) {
+            Text(
+                when (offer) {
+                    BodyVariant.Html -> "Show original"
+                    BodyVariant.Text -> "Show text"
+                },
+            )
         }
     }
 }
