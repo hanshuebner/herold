@@ -1068,7 +1068,7 @@ function readingPaneTheme(): typeof READING_PANE_THEME.light | typeof READING_PA
  * the browser paints, regardless of tag), or `''` when absent or
  * unparseable as a CSS color. Kept by DOMPurify -- it is not in
  * `FORBID_ATTR` -- so the background it describes actually paints even
- * though `resolveEffectiveBackground`'s ancestor walk, before this fix,
+ * though the ancestor's declared-background resolution, before this fix,
  * never saw it (issue #422 second round, maintainer hand-back on comment
  * 5358: an Icelandair check-in mail's footer cell carried
  * `bgcolor="#001B71"` with no CSS `background-color` at all). Goes through
@@ -1124,30 +1124,29 @@ function declaredColorHalves(el: Element): { color: string; backgroundColor: str
 }
 
 /**
- * The background `el` actually paints against: the nearest ancestor's own
- * declared `background-color`, walking up through the wrapper div that
- * carries the message body's own color pair (see `resolvedBodyColorStyle`),
- * or `null` when no ancestor declares one at all -- callers fall back to
- * `readingPaneTheme()` in that case. Ancestors are read AFTER this same
- * pass has potentially already stripped their own lone half, since
- * `sanitizeInlineColorPairs` processes elements in document order
- * (ancestors before descendants).
+ * The background/foreground `el` actually paints against: the nearest
+ * ancestor's own declared `background-color`/`color`, from the wrapper div
+ * that carries the message body's own color pair (see
+ * `resolvedBodyColorStyle`) down, or `null` on either side when no ancestor
+ * declares that half at all -- callers fall back to `readingPaneTheme()` in
+ * that case.
+ *
+ * Carried top-down through `sanitizeInlineColorPairs`'s single traversal
+ * instead of re-walked from each element up to the wrapper (issue #441): a
+ * child's ancestor chain is always its parent's ancestor chain plus the
+ * parent itself, so the parent's own already-decided pair -- settled the
+ * moment before its children are visited, in the same document-order pass
+ * that used to re-walk past it -- is everything a child needs.
+ * `resolveDeclaredColorPair` below computes each element's contribution
+ * once and returns the pair its children see, so resolution is O(1) per
+ * element (O(N) overall) instead of the pre-#441 O(N) walk per element
+ * (O(N^2) overall for a chain of N nested elements that each declare a lone
+ * half). Ancestors' values already reflect this same pass having
+ * potentially stripped their own lone half, exactly as the walk did.
  */
-function resolveEffectiveBackground(el: Element): string | null {
-  for (let node = el.parentElement; node; node = node.parentElement) {
-    const bg = declaredColorHalves(node).backgroundColor;
-    if (isDeclaredColor(bg)) return bg;
-  }
-  return null;
-}
-
-/** Symmetric counterpart of `resolveEffectiveBackground` for `color`. */
-function resolveEffectiveForeground(el: Element): string | null {
-  for (let node = el.parentElement; node; node = node.parentElement) {
-    const fg = declaredColorHalves(node).color;
-    if (isDeclaredColor(fg)) return fg;
-  }
-  return null;
+interface InheritedColorPair {
+  background: string | null;
+  foreground: string | null;
 }
 
 /**
@@ -1304,15 +1303,16 @@ function resolvedBodyColorStyle(raw: string): string | null {
  *
  * `sanitizeInlineColorPairs` is called on the wrapper div (`wrap` in
  * `sanitizeHtml`), which may itself carry the message's `<body>` color
- * pair (see `resolvedBodyColorStyle`) and is processed first -- before
- * `querySelectorAll` reaches any descendant -- so a descendant's ancestor
- * walk (`resolveEffectiveBackground` / `resolveEffectiveForeground`)
- * always sees the wrapper's *final*, already-decided pair. Elements are
- * otherwise visited in document order (ancestors before descendants) for
- * the same reason: a nested chain of lone halves (a `<td>` declaring only
+ * pair (see `resolvedBodyColorStyle`) and is processed first -- before any
+ * descendant -- so a descendant's ancestor resolution (the
+ * `InheritedColorPair` `resolveDeclaredColorPair` carries down) always sees
+ * the wrapper's *final*, already-decided pair. Elements are otherwise
+ * visited in document order (ancestors before descendants) for the same
+ * reason: a nested chain of lone halves (a `<td>` declaring only
  * `background-color`, a `<span>` inside it declaring only `color`)
  * resolves correctly in one top-down pass, each descendant consulting its
- * ancestors' settled style.
+ * parent's settled pair rather than re-walking every ancestor above it
+ * (issue #441).
  *
  * A pair declared on the same element, or a lone half resolved against an
  * ancestor's (or the carried-over `<body>`'s) own declared counterpart, is
@@ -1355,8 +1355,8 @@ function resolvedBodyColorStyle(raw: string): string | null {
  * resolves against this now-settled background correctly. A descendant
  * whose own declared color is NOT legible against this background is not
  * grounds to strip the background on its behalf; it is stripped
- * individually when the walk reaches it (same ancestor-background lookup
- * every other lone color goes through). Only when NO descendant declares
+ * individually when the traversal reaches it (same ancestor-background
+ * lookup every other lone color goes through). Only when NO descendant declares
  * a color at all does the check fall back to the inherited ancestor (or
  * `<body>`, or theme) foreground, exactly as before -- e.g. a background
  * whose only text is inherited from a colliding ancestor color is still
@@ -1369,107 +1369,137 @@ function resolvedBodyColorStyle(raw: string): string | null {
  * environment) and a live Chrome instance for every fixture this file's
  * acceptance tests cover.
  */
-function sanitizeInlineColorPairs(root: Element): void {
-  const candidates: Element[] = [];
-  if (root.hasAttribute('style') || root.hasAttribute('bgcolor')) candidates.push(root);
-  candidates.push(...root.querySelectorAll<HTMLElement>('[style], [bgcolor]'));
+/**
+ * Applies the per-element decision documented on `sanitizeInlineColorPairs`
+ * to `el` -- strips a lone half that collides with its resolved
+ * counterpart, or a same-element pair that resolves to the same paint
+ * color -- mutating `el`'s `style`/`bgcolor` attribute(s) in place exactly
+ * as the pre-#441 implementation did. Returns the `InheritedColorPair`
+ * `el`'s own children should see: `el`'s own surviving declared half(s)
+ * where present, else `inherited` passed through unchanged -- this is the
+ * O(1) replacement for what used to be a fresh ancestor walk from each
+ * child (see `InheritedColorPair`'s doc comment).
+ */
+function resolveDeclaredColorPair(el: Element, inherited: InheritedColorPair): InheritedColorPair {
+  if (!el.hasAttribute('style') && !el.hasAttribute('bgcolor')) return inherited;
 
-  for (const el of candidates) {
-    const style = el.getAttribute('style');
-    const probe = document.createElement('div');
-    if (style) probe.setAttribute('style', style);
+  const style = el.getAttribute('style');
+  const probe = document.createElement('div');
+  if (style) probe.setAttribute('style', style);
 
-    if (isCurrentColorKeyword(probe.style.color)) probe.style.removeProperty('color');
-    if (isCurrentColorKeyword(probe.style.backgroundColor)) {
+  if (isCurrentColorKeyword(probe.style.color)) probe.style.removeProperty('color');
+  if (isCurrentColorKeyword(probe.style.backgroundColor)) {
+    probe.style.removeProperty('background-color');
+    probe.style.removeProperty('background');
+  }
+
+  const ownColor = probe.style.color;
+  // A CSS background-color on this SAME element always wins over its own
+  // `bgcolor` attribute (issue #422 second round); `bgcolor` is consulted
+  // only when the element declares no CSS background-color of its own --
+  // e.g. the ticket's reduced case, `<td bgcolor="#001B71" style="color:
+  // #FFFFFF">`, where the background and the lone color sit on the same
+  // element rather than an ancestor/descendant pair.
+  const backgroundFromStyle = isDeclaredColor(probe.style.backgroundColor);
+  const ownBackground = backgroundFromStyle
+    ? probe.style.backgroundColor
+    : presentationalBackgroundColor(el);
+
+  const hasColor = isDeclaredColor(ownColor);
+  const hasBackground = isDeclaredColor(ownBackground);
+
+  // Removes whichever half actually carries the background: the CSS
+  // property when the element declared one, or the presentational
+  // `bgcolor` attribute otherwise (DOMPurify keeps `bgcolor` -- it is not
+  // in FORBID_ATTR -- so leaving it in place would still paint the
+  // stripped-color pair's background).
+  const stripBackground = () => {
+    if (backgroundFromStyle) {
       probe.style.removeProperty('background-color');
       probe.style.removeProperty('background');
+    } else {
+      el.removeAttribute('bgcolor');
     }
+  };
 
-    const ownColor = probe.style.color;
-    // A CSS background-color on this SAME element always wins over its own
-    // `bgcolor` attribute (issue #422 second round); `bgcolor` is consulted
-    // only when the element declares no CSS background-color of its own --
-    // e.g. the ticket's reduced case, `<td bgcolor="#001B71" style="color:
-    // #FFFFFF">`, where the background and the lone color sit on the same
-    // element rather than an ancestor/descendant pair.
-    const backgroundFromStyle = isDeclaredColor(probe.style.backgroundColor);
-    const ownBackground = backgroundFromStyle
-      ? probe.style.backgroundColor
-      : presentationalBackgroundColor(el);
+  let colorStripped = false;
+  let backgroundStripped = false;
 
-    const hasColor = isDeclaredColor(ownColor);
-    const hasBackground = isDeclaredColor(ownBackground);
-
-    // Removes whichever half actually carries the background: the CSS
-    // property when the element declared one, or the presentational
-    // `bgcolor` attribute otherwise (DOMPurify keeps `bgcolor` -- it is not
-    // in FORBID_ATTR -- so leaving it in place would still paint the
-    // stripped-color pair's background).
-    const stripBackground = () => {
-      if (backgroundFromStyle) {
-        probe.style.removeProperty('background-color');
-        probe.style.removeProperty('background');
-      } else {
-        el.removeAttribute('bgcolor');
-      }
-    };
-
-    if (hasColor && hasBackground && colorsAreIndistinguishable(ownColor, ownBackground)) {
+  if (hasColor && hasBackground && colorsAreIndistinguishable(ownColor, ownBackground)) {
+    probe.style.removeProperty('color');
+    stripBackground();
+    colorStripped = true;
+    backgroundStripped = true;
+  } else if (hasColor && !hasBackground) {
+    const ancestorBackground = inherited.background;
+    const effectiveBackground = ancestorBackground ?? readingPaneTheme().backgroundColor;
+    // An ancestor (or the carried-over <body> pair) declaring the
+    // counterpart means the sender expressed an intended pairing for
+    // this element -- only a near-invisible collision overrides it
+    // (issue #422). No ancestor/body pair at all means the sender
+    // expressed no legibility intent here, so the bar is full WCAG AA,
+    // matching issue #231's original behaviour for that scenario. The
+    // counterpart may be a CSS `background-color` or a `bgcolor`
+    // attribute on the ancestor (or on `<body>`, carried onto the
+    // wrapper) -- both count as declared (issue #422 second round).
+    const threshold = ancestorBackground !== null
+      ? DEGENERATE_CONTRAST_THRESHOLD
+      : WCAG_AA_CONTRAST_THRESHOLD;
+    if (contrastBelowThreshold(ownColor, effectiveBackground, threshold)) {
       probe.style.removeProperty('color');
-      stripBackground();
-    } else if (hasColor && !hasBackground) {
-      const ancestorBackground = resolveEffectiveBackground(el);
-      const effectiveBackground = ancestorBackground ?? readingPaneTheme().backgroundColor;
-      // An ancestor (or the carried-over <body> pair) declaring the
-      // counterpart means the sender expressed an intended pairing for
-      // this element -- only a near-invisible collision overrides it
-      // (issue #422). No ancestor/body pair at all means the sender
-      // expressed no legibility intent here, so the bar is full WCAG AA,
-      // matching issue #231's original behaviour for that scenario. The
-      // counterpart may be a CSS `background-color` or a `bgcolor`
-      // attribute on the ancestor (or on `<body>`, carried onto the
-      // wrapper) -- both count as declared (issue #422 second round).
-      const threshold = ancestorBackground !== null
+      colorStripped = true;
+    }
+  } else if (hasBackground && !hasColor) {
+    // A background is judged against the text that will actually paint
+    // on it (issue #422 third round): if ANY descendant declares its own
+    // color that is legible against this background, the background
+    // stays -- that descendant's own pass (which runs next, in document
+    // order) resolves ITS color against this now-kept background and
+    // keeps it too. Only when NO descendant declares a legible color of
+    // its own does the check fall back to the inherited/ancestor
+    // foreground (or the theme), exactly as before.
+    const descendantColors = collectDescendantOwnColors(el);
+    const hasLegibleDescendantColor = descendantColors.some(
+      (color) => !colorsAreIndistinguishable(color, ownBackground),
+    );
+    if (!hasLegibleDescendantColor) {
+      const ancestorForeground = inherited.foreground;
+      const effectiveForeground = ancestorForeground ?? readingPaneTheme().color;
+      const threshold = ancestorForeground !== null
         ? DEGENERATE_CONTRAST_THRESHOLD
         : WCAG_AA_CONTRAST_THRESHOLD;
-      if (contrastBelowThreshold(ownColor, effectiveBackground, threshold)) {
-        probe.style.removeProperty('color');
-      }
-    } else if (hasBackground && !hasColor) {
-      // A background is judged against the text that will actually paint
-      // on it (issue #422 third round): if ANY descendant declares its own
-      // color that is legible against this background, the background
-      // stays -- that descendant's own pass (which runs next, in document
-      // order) resolves ITS color against this now-kept background and
-      // keeps it too. Only when NO descendant declares a legible color of
-      // its own does the check fall back to the inherited/ancestor
-      // foreground (or the theme), exactly as before.
-      const descendantColors = collectDescendantOwnColors(el);
-      const hasLegibleDescendantColor = descendantColors.some(
-        (color) => !colorsAreIndistinguishable(color, ownBackground),
-      );
-      if (!hasLegibleDescendantColor) {
-        const ancestorForeground = resolveEffectiveForeground(el);
-        const effectiveForeground = ancestorForeground ?? readingPaneTheme().color;
-        const threshold = ancestorForeground !== null
-          ? DEGENERATE_CONTRAST_THRESHOLD
-          : WCAG_AA_CONTRAST_THRESHOLD;
-        if (contrastBelowThreshold(effectiveForeground, ownBackground, threshold)) {
-          stripBackground();
-        }
+      if (contrastBelowThreshold(effectiveForeground, ownBackground, threshold)) {
+        stripBackground();
+        backgroundStripped = true;
       }
     }
-    // both true and distinguishable (a genuine, legible, complete pair) or
-    // both false (nothing declared) -- no further mutation.
+  }
+  // both true and distinguishable (a genuine, legible, complete pair) or
+  // both false (nothing declared) -- no further mutation.
 
-    const kept = probe.getAttribute('style');
-    if (kept === style) continue; // nothing changed -- keep original text byte-for-byte.
+  const kept = probe.getAttribute('style');
+  if (kept !== style) {
     if (kept) {
       el.setAttribute('style', kept);
     } else if (style !== null) {
       el.removeAttribute('style');
     }
   }
+
+  return {
+    background: hasBackground && !backgroundStripped ? ownBackground : inherited.background,
+    foreground: hasColor && !colorStripped ? ownColor : inherited.foreground,
+  };
+}
+
+function sanitizeInlineColorPairs(root: Element): void {
+  const visit = (el: Element, inherited: InheritedColorPair): void => {
+    const next = resolveDeclaredColorPair(el, inherited);
+    for (const child of Array.from(el.children)) {
+      visit(child, next);
+    }
+  };
+  visit(root, { background: null, foreground: null });
 }
 
 /**
