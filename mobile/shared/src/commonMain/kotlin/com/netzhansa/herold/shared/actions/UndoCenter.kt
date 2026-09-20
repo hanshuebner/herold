@@ -25,8 +25,12 @@ class UndoOffer internal constructor(
      * to comes down when the hold is up, not a full window later.
      */
     val expiresAtMs: Long?,
-    /** What the snackbar's action reads: "Undo", or "Discard" for a saved draft. */
-    val actionLabel: String,
+    /**
+     * What the snackbar's action reads: "Undo", or "Discard" for a saved
+     * draft. Null when the message is a confirmation with nothing to
+     * take back, which is what a sent bug report leaves (issue #438).
+     */
+    val actionLabel: String?,
     /**
      * The surface that parked the offer on its way off screen, when the
      * offer belongs to the screen the user lands on; null when whichever
@@ -98,12 +102,14 @@ class UndoCenter(private val now: () -> Long = { 0L }) {
 
     /**
      * Parks an offer whose undo is something other than a mail action.
-     * [windowMs] is how long it may still be taken back from now.
+     * [windowMs] is how long it may still be taken back from now, and a
+     * null [actionLabel] leaves the snackbar a confirmation with no
+     * action on it.
      */
     fun offer(
         message: String,
         windowMs: Long?,
-        actionLabel: String = UndoActions.UNDO,
+        actionLabel: String? = UndoActions.UNDO,
         handOnFrom: Any? = null,
         undo: suspend () -> Unit,
     ): UndoOffer {

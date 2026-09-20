@@ -9,21 +9,18 @@ import com.netzhansa.herold.shared.outbox.Outbox
 /**
  * Hands a bug report to the durable outbox, which posts it to the
  * account server's `POST /api/v1/bug-reports` (REQ-AND-SYS-53, issue
- * #416). The bundle's files are spooled the way an attachment is, the
- * entry waits out the undo window, and it leaves when there is a
- * connection - so a report written on a train goes out when the train
- * arrives. Nothing of it is filed in the user's mailboxes.
+ * #416). The bundle's files are spooled the way an attachment is and
+ * the entry is drainable the moment it is written, so the upload starts
+ * on the tap (issue #438); with no connection it waits in the queue and
+ * leaves when there is one - a report written on a train goes out when
+ * the train arrives. Nothing of it is filed in the user's mailboxes.
  */
 class BugReportSender(
     private val outbox: Outbox,
     private val spool: BlobSpool,
-    private val now: () -> Long = { 0L },
 ) {
-    /**
-     * Queues [bundle] for [accountId]. [holdMs] is the undo window the
-     * entry waits out before the drain may post it.
-     */
-    suspend fun queue(bundle: BugBundle, accountId: String, holdMs: Long = 0): ComposeResult {
+    /** Queues [bundle] for [accountId], ready for the next drain. */
+    suspend fun queue(bundle: BugBundle, accountId: String): ComposeResult {
         val parts = bundle.files.map { file ->
             BugReportSpooledPart(
                 name = file.name,
@@ -32,7 +29,6 @@ class BugReportSender(
                 spool = spool.put(file.bytes, file.name),
             )
         }
-        val heldUntil = if (holdMs > 0) now() + holdMs else 0
         val entryId = outbox.enqueueBugReport(
             label = label(bundle.title),
             payload = BugReportPayload(
@@ -40,9 +36,8 @@ class BugReportSender(
                 title = bundle.title,
                 parts = parts,
             ),
-            holdUntilMs = heldUntil,
         )
-        return ComposeResult.Queued(entryId, heldUntil)
+        return ComposeResult.Queued(entryId)
     }
 
     companion object {

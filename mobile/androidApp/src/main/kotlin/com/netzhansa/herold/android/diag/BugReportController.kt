@@ -79,14 +79,13 @@ class BugReportController(private val container: AppContainer) {
 
     /**
      * Builds the bundle and queues it for the server's bug-reports
-     * endpoint. The account it goes out on is the one in scope, or the
-     * primary.
+     * endpoint, due at once (issue #438). The account it goes out on is
+     * the one in scope, or the primary.
      */
     suspend fun send(
         submission: BugSubmission,
         capture: BugCapture,
         session: SessionScope?,
-        holdMs: Long,
     ): ComposeResult {
         val accountId = container.accountScope.value
             ?: container.store.accountList().firstOrNull { it.isPrimary }?.id
@@ -102,7 +101,7 @@ class BugReportController(private val container: AppContainer) {
             System.currentTimeMillis(),
             crash,
         )
-        val result = container.bugReports.queue(bundle, accountId, holdMs)
+        val result = container.bugReports.queue(bundle, accountId)
         if (result is ComposeResult.Queued) {
             if (crash != null) {
                 DiagLog.i(TAG, "the report carries the crash of ${crash.exception}")

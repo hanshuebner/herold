@@ -204,7 +204,7 @@ class AppContainer(context: Context) {
     val outbox = Outbox(store) { System.currentTimeMillis() }
 
     /** The bug reporter's send path: the bug-reports API through the outbox (REQ-AND-SYS-53). */
-    val bugReports = BugReportSender(outbox, spool) { System.currentTimeMillis() }
+    val bugReports = BugReportSender(outbox, spool)
 
     /**
      * The report the maintainer is still adding screens to, kept in app
