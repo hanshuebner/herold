@@ -64,6 +64,11 @@ class SqlDelightLocalStore(
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
     private val blobBudgetBytes: Long = DEFAULT_BLOB_BUDGET_BYTES,
     private val now: () -> Long = { 0L },
+    /**
+     * The rows the client has taken away, held against the fetches
+     * still on their way in (issue #371).
+     */
+    private val tombstones: Tombstones = Tombstones(now),
 ) : LocalStore {
 
     override fun accounts(): Flow<List<DomainAccount>> =
@@ -168,45 +173,64 @@ class SqlDelightLocalStore(
             database.emailQueries.searchCached(pattern, limit).executeAsList().map { it.toDomain() }
         }
 
-    override suspend fun upsertEmails(rows: List<DomainEmail>) = withContext(dispatcher) {
-        database.transaction {
-            rows.forEach { email ->
-                database.emailQueries.insertIfAbsent(email.accountId, email.id, email.threadId)
-                database.emailQueries.updateMeta(
-                    threadId = email.threadId,
-                    blobId = email.blobId,
-                    fromName = email.fromName,
-                    fromEmail = email.fromEmail,
-                    toLine = email.toLine,
-                    toJson = email.toAddresses.encodeAddresses(),
-                    ccJson = email.ccAddresses.encodeAddresses(),
-                    messageIdJson = email.messageId.encodeStrings(),
-                    inReplyToJson = email.inReplyTo.encodeStrings(),
-                    referencesJson = email.references.encodeStrings(),
-                    deliveredTo = email.deliveredTo,
-                    listUnsubscribe = email.listUnsubscribe,
-                    listUnsubscribePost = email.listUnsubscribePost,
-                    subject = email.subject,
-                    preview = email.preview,
-                    receivedAt = email.receivedAt,
-                    size = email.size,
-                    hasAttachment = if (email.hasAttachment) 1L else 0L,
-                    snoozedUntil = email.snoozedUntil,
-                    keywords = email.keywords.joinToString(" "),
-                    mailboxIds = email.mailboxIds.joinToString(" "),
-                    accountId = email.accountId,
-                    id = email.id,
-                )
-                writeMembership(email.accountId, email.id, email.mailboxIds)
+    override suspend fun upsertEmails(rows: List<DomainEmail>) {
+        // A row the user took away stays away, whatever a fetch that
+        // read it before the delete is carrying (issue #371).
+        val writable = writable(rows)
+        if (writable.isEmpty()) return
+        withContext(dispatcher) {
+            database.transaction {
+                writable.forEach { email ->
+                    database.emailQueries.insertIfAbsent(email.accountId, email.id, email.threadId)
+                    database.emailQueries.updateMeta(
+                        threadId = email.threadId,
+                        blobId = email.blobId,
+                        fromName = email.fromName,
+                        fromEmail = email.fromEmail,
+                        toLine = email.toLine,
+                        toJson = email.toAddresses.encodeAddresses(),
+                        ccJson = email.ccAddresses.encodeAddresses(),
+                        messageIdJson = email.messageId.encodeStrings(),
+                        inReplyToJson = email.inReplyTo.encodeStrings(),
+                        referencesJson = email.references.encodeStrings(),
+                        deliveredTo = email.deliveredTo,
+                        listUnsubscribe = email.listUnsubscribe,
+                        listUnsubscribePost = email.listUnsubscribePost,
+                        subject = email.subject,
+                        preview = email.preview,
+                        receivedAt = email.receivedAt,
+                        size = email.size,
+                        hasAttachment = if (email.hasAttachment) 1L else 0L,
+                        snoozedUntil = email.snoozedUntil,
+                        keywords = email.keywords.joinToString(" "),
+                        mailboxIds = email.mailboxIds.joinToString(" "),
+                        accountId = email.accountId,
+                        id = email.id,
+                    )
+                    writeMembership(email.accountId, email.id, email.mailboxIds)
+                }
             }
         }
     }
 
-    override suspend fun deleteEmails(accountId: String, ids: List<String>) = withContext(dispatcher) {
-        database.transaction {
-            ids.forEach {
-                database.emailQueries.deleteById(accountId, it)
-                database.emailQueries.deleteMembership(accountId, it)
+    /** [rows] less the ones a local delete is still holding away. */
+    private suspend fun writable(rows: List<DomainEmail>): List<DomainEmail> {
+        if (rows.isEmpty()) return rows
+        val byAccount = rows.groupBy { it.accountId }
+        val held = byAccount.mapValues { (accountId, accountRows) ->
+            tombstones.heldOf(accountId, accountRows.map { it.id })
+        }
+        return rows.filterNot { it.id in held.getValue(it.accountId) }
+    }
+
+    override suspend fun deleteEmails(accountId: String, ids: List<String>) {
+        tombstones.mark(accountId, ids)
+        withContext(dispatcher) {
+            database.transaction {
+                ids.forEach {
+                    database.emailQueries.deleteById(accountId, it)
+                    database.emailQueries.deleteMembership(accountId, it)
+                }
             }
         }
     }
@@ -532,6 +556,7 @@ class SqlDelightLocalStore(
             database.accountQueries.deleteAll()
         }
         blobFiles.deleteAll()
+        tombstones.clear()
     }
 
     private fun writeMembership(accountId: String, emailId: String, mailboxIds: Set<String>) {
