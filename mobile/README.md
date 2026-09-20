@@ -293,6 +293,19 @@ next report.
       -e heroldSmtpAddr 10.0.2.2:<smtp-port> \
       com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
 
+`InboxLaneShrinkAcceptanceTest` archives the last conversation of a
+lane while the reader stands on it, and then delivers into that lane
+again (issue #447): the tab goes with the mail and comes back with it,
+and the inbox stays up through both. It delivers its own mail and
+archives whatever else the lane holds, so the lane under it holds the
+one conversation it acts on.
+
+    adb shell am instrument -w -r \
+      -e class com.netzhansa.herold.android.InboxLaneShrinkAcceptanceTest \
+      -e heroldBaseUrl http://10.0.2.2:<backend-port> \
+      -e heroldSmtpAddr 10.0.2.2:<smtp-port> \
+      com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+
 ### The bug reporter (issues #407, #417)
 
 `BugReportAcceptanceTest` drives the in-app reporter against the dev
