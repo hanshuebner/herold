@@ -228,13 +228,20 @@ type Metadata interface {
 	// RethreadPrincipal walks every message of principalID in
 	// internal-date order and assigns thread_id by looking up each
 	// message's In-Reply-To / References headers against the
-	// principal's own message-id index. Used after a bulk import where
-	// InsertMessages was called with SkipThreading=true.
+	// principal's own message-id index. With the zero-value
+	// RethreadOptions this only fills messages whose thread_id is 0
+	// (used after a bulk import where InsertMessages was called with
+	// SkipThreading=true, or after a sub-account migration copies
+	// messages in); opts.Force additionally recomputes messages that
+	// already carry a non-zero thread_id, so a `diag rethread` run can
+	// apply a threading-rule change (issue #442) retroactively.
+	// opts.DryRun computes the same result set but performs no write,
+	// so the returned count previews what an apply run would do.
 	//
-	// Single transaction, single fsync at end. Returns the count of
-	// messages whose thread_id was changed (0 means no work was needed
-	// because every message already had a thread_id).
-	RethreadPrincipal(ctx context.Context, principalID PrincipalID) (int, error)
+	// Single transaction (skipped entirely for a dry run), single
+	// fsync at end. Returns the count of messages whose thread_id
+	// would change (0 means no work was needed).
+	RethreadPrincipal(ctx context.Context, principalID PrincipalID, opts RethreadOptions) (int, error)
 
 	// AddMessageToMailbox adds an existing message (by msgID) to
 	// mailboxID, allocating a fresh UID and ModSeq for that mailbox.

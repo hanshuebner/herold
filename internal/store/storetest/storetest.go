@@ -57,6 +57,8 @@ func Run(t *testing.T, f Factory) {
 		// re #88, REQ-STORE-40: duplicate message-id copies share one thread.
 		{"InsertMessage_DuplicateMessageID_SameThread", testInsertMessage_DuplicateMessageID_SameThread},
 		{"RethreadPrincipal_DuplicateMessageID", testRethreadPrincipal_DuplicateMessageID},
+		// issue #442: diag rethread's Force + DryRun seam.
+		{"RethreadPrincipal_ForceAppliesCurrentRule", testRethreadPrincipal_ForceAppliesCurrentRule},
 		{"ListPrincipalBlobHashes", testListPrincipalBlobHashes},
 		{"UpdateFlagsBumpsModSeq", testUpdateFlagsBumpsModSeq},
 		{"UpdateFlagsUnchangedSince", testUpdateFlagsUnchangedSince},
@@ -2121,7 +2123,7 @@ func testRethreadPrincipal(t *testing.T, s store.Store) {
 		t.Fatalf("InsertMessages: %v", err)
 	}
 
-	n, err := s.Meta().RethreadPrincipal(ctx, p.ID)
+	n, err := s.Meta().RethreadPrincipal(ctx, p.ID, store.RethreadOptions{})
 	if err != nil {
 		t.Fatalf("RethreadPrincipal: %v", err)
 	}
@@ -2290,7 +2292,7 @@ func testRethreadPrincipal_DuplicateMessageID(t *testing.T, s store.Store) {
 		t.Fatalf("InsertMessages: %v", err)
 	}
 
-	n, err := s.Meta().RethreadPrincipal(ctx, p.ID)
+	n, err := s.Meta().RethreadPrincipal(ctx, p.ID, store.RethreadOptions{})
 	if err != nil {
 		t.Fatalf("RethreadPrincipal: %v", err)
 	}
@@ -2615,7 +2617,7 @@ func testRethreadPrincipal_SubjectChangeSplitsThread(t *testing.T, s store.Store
 		t.Fatalf("InsertMessages: %v", err)
 	}
 
-	n, err := s.Meta().RethreadPrincipal(ctx, p.ID)
+	n, err := s.Meta().RethreadPrincipal(ctx, p.ID, store.RethreadOptions{})
 	if err != nil {
 		t.Fatalf("RethreadPrincipal: %v", err)
 	}
@@ -2640,6 +2642,129 @@ func testRethreadPrincipal_SubjectChangeSplitsThread(t *testing.T, s store.Store
 	}
 	if threadKey(a) == threadKey(c) {
 		t.Errorf("A/B and C/D threadKeys must differ (subject changed at C): both %d", threadKey(a))
+	}
+}
+
+// testRethreadPrincipal_ForceAppliesCurrentRule verifies the diag
+// rethread seam (issue #442): a mailbox whose four messages already
+// carry a thread_id merging all of them into one thread -- the shape a
+// pre-#437 ingest would have produced, since the base-subject-mismatch
+// rule (REQ-STORE-40) did not exist yet -- gets split into two threads
+// by a RethreadOptions{Force: true} pass, matching what
+// mailparse.SubjectsThreadTogether computes today. A DryRun pass first
+// reports the same count and leaves every thread_id unchanged.
+func testRethreadPrincipal_ForceAppliesCurrentRule(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "rethreadforce@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+	ref := putBlob(t, s, "rethread-force-body")
+
+	// A (root) -> B (same subject) -> C (different subject) -> D (same
+	// subject as C), inserted with SkipThreading so nothing threads at
+	// ingest time.
+	items := []store.InsertMessageItem{
+		{Message: store.Message{PrincipalID: p.ID, Blob: ref, Size: ref.Size,
+			InternalDate: time.Unix(1000, 0).UTC(), ReceivedAt: time.Unix(1000, 0).UTC(),
+			Envelope: store.Envelope{MessageID: "rtf-a@test", Subject: "Project update"}},
+			Targets: []store.MessageMailbox{{MailboxID: mb.ID}}},
+		{Message: store.Message{PrincipalID: p.ID, Blob: ref, Size: ref.Size,
+			InternalDate: time.Unix(2000, 0).UTC(), ReceivedAt: time.Unix(2000, 0).UTC(),
+			Envelope: store.Envelope{MessageID: "rtf-b@test", InReplyTo: "<rtf-a@test>", Subject: "Re: Project update"}},
+			Targets: []store.MessageMailbox{{MailboxID: mb.ID}}},
+		{Message: store.Message{PrincipalID: p.ID, Blob: ref, Size: ref.Size,
+			InternalDate: time.Unix(3000, 0).UTC(), ReceivedAt: time.Unix(3000, 0).UTC(),
+			Envelope: store.Envelope{MessageID: "rtf-c@test", InReplyTo: "<rtf-b@test>", Subject: "Re: New topic"}},
+			Targets: []store.MessageMailbox{{MailboxID: mb.ID}}},
+		{Message: store.Message{PrincipalID: p.ID, Blob: ref, Size: ref.Size,
+			InternalDate: time.Unix(4000, 0).UTC(), ReceivedAt: time.Unix(4000, 0).UTC(),
+			Envelope: store.Envelope{MessageID: "rtf-d@test", InReplyTo: "<rtf-c@test>", Subject: "Aw: New topic"}},
+			Targets: []store.MessageMailbox{{MailboxID: mb.ID}}},
+	}
+	if _, err := s.Meta().InsertMessages(ctx, items, store.InsertMessagesOptions{SkipThreading: true}); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	byMID := func() map[string]store.Message {
+		got, err := s.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 10})
+		if err != nil {
+			t.Fatalf("ListMessages: %v", err)
+		}
+		m := make(map[string]store.Message, len(got))
+		for _, msg := range got {
+			m[msg.Envelope.MessageID] = msg
+		}
+		return m
+	}
+
+	before := byMID()
+	rootID := before["rtf-a@test"].ID
+
+	// Simulate the pre-#437 shape: every row shares the root's
+	// thread_id, the way ingest merged them before the base-subject
+	// mismatch rule existed.
+	for _, mid := range []string{"rtf-a@test", "rtf-b@test", "rtf-c@test", "rtf-d@test"} {
+		if err := s.Meta().UpdateMessageThreadID(ctx, before[mid].ID, uint64(rootID)); err != nil {
+			t.Fatalf("UpdateMessageThreadID(%s): %v", mid, err)
+		}
+	}
+
+	// A plain (non-force) pass must leave the old shape alone: every
+	// row already has a non-zero thread_id.
+	if n, err := s.Meta().RethreadPrincipal(ctx, p.ID, store.RethreadOptions{}); err != nil {
+		t.Fatalf("RethreadPrincipal (no force): %v", err)
+	} else if n != 0 {
+		t.Errorf("RethreadPrincipal (no force) n = %d, want 0 (already-threaded rows must be left alone)", n)
+	}
+
+	// Dry run: reports what a Force apply would change, writes nothing.
+	dryN, err := s.Meta().RethreadPrincipal(ctx, p.ID, store.RethreadOptions{Force: true, DryRun: true})
+	if err != nil {
+		t.Fatalf("RethreadPrincipal (dry run): %v", err)
+	}
+	if dryN != 2 {
+		t.Errorf("RethreadPrincipal (dry run) n = %d, want 2 (C and D move to their own thread)", dryN)
+	}
+	afterDry := byMID()
+	for mid, m := range afterDry {
+		if m.ThreadID != uint64(rootID) {
+			t.Errorf("dry run changed thread_id of %s: got %d, want unchanged %d", mid, m.ThreadID, rootID)
+		}
+	}
+
+	// Real force run: same count, and the store now reflects the
+	// current rule -- A/B stay together, C/D split into their own
+	// thread, distinct from A/B's.
+	applyN, err := s.Meta().RethreadPrincipal(ctx, p.ID, store.RethreadOptions{Force: true})
+	if err != nil {
+		t.Fatalf("RethreadPrincipal (force apply): %v", err)
+	}
+	if applyN != dryN {
+		t.Errorf("RethreadPrincipal (force apply) n = %d, want dry run's %d", applyN, dryN)
+	}
+
+	after := byMID()
+	threadKey := func(m store.Message) uint64 {
+		if m.ThreadID != 0 {
+			return m.ThreadID
+		}
+		return uint64(m.ID)
+	}
+	a, b, c, d := after["rtf-a@test"], after["rtf-b@test"], after["rtf-c@test"], after["rtf-d@test"]
+	if threadKey(a) != threadKey(b) {
+		t.Errorf("A and B threadKeys diverge: %d vs %d, want equal", threadKey(a), threadKey(b))
+	}
+	if threadKey(c) != threadKey(d) {
+		t.Errorf("C and D threadKeys diverge: %d vs %d, want equal", threadKey(c), threadKey(d))
+	}
+	if threadKey(a) == threadKey(c) {
+		t.Errorf("A/B and C/D threadKeys must differ after the force rethread: both %d", threadKey(a))
+	}
+
+	// A second force pass is idempotent: nothing left to change.
+	if n, err := s.Meta().RethreadPrincipal(ctx, p.ID, store.RethreadOptions{Force: true}); err != nil {
+		t.Fatalf("RethreadPrincipal (force apply, second pass): %v", err)
+	} else if n != 0 {
+		t.Errorf("RethreadPrincipal (force apply, second pass) n = %d, want 0 (idempotent)", n)
 	}
 }
 

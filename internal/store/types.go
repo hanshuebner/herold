@@ -498,6 +498,23 @@ type InsertMessagesOptions struct {
 	SkipThreading bool
 }
 
+// RethreadOptions controls Metadata.RethreadPrincipal. The zero value
+// is the bulk-import / sub-account-migration default: fill in
+// thread_id for messages that don't have one yet, and write the
+// result.
+type RethreadOptions struct {
+	// Force recomputes thread_id for every message, including ones
+	// that already carry a non-zero value, so a stale assignment made
+	// under an older threading rule is replaced by what the current
+	// rule computes. False leaves already-threaded rows untouched.
+	Force bool
+
+	// DryRun computes the result without writing it back to the
+	// store, so the returned count previews what an apply run would
+	// change.
+	DryRun bool
+}
+
 // EmailQueryFastSort selects the column the SQL fast path orders by.
 // Only numeric columns are supported; text-collation sorts (subject,
 // from, to) require ICU-aware ORDER BY which the SQL backends do not

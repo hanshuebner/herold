@@ -1285,7 +1285,7 @@ func (m *metadata) insertMessageTx(
 // RethreadPrincipal scans every message of pid in internal-date order
 // and assigns thread_id from the principal's own message-id index.
 // See store.Metadata for the contract.
-func (m *metadata) RethreadPrincipal(ctx context.Context, pid store.PrincipalID) (int, error) {
+func (m *metadata) RethreadPrincipal(ctx context.Context, pid store.PrincipalID, opts store.RethreadOptions) (int, error) {
 	type row struct {
 		id        int64
 		messageID string
@@ -1335,7 +1335,7 @@ func (m *metadata) RethreadPrincipal(ctx context.Context, pid store.PrincipalID)
 		newThread[i] = rows[i].threadID
 	}
 	for i, r := range rows {
-		if newThread[i] != 0 {
+		if !opts.Force && newThread[i] != 0 {
 			continue
 		}
 		var resolved int64
@@ -1387,6 +1387,18 @@ func (m *metadata) RethreadPrincipal(ctx context.Context, pid store.PrincipalID)
 			resolved = r.id
 		}
 		newThread[i] = resolved
+	}
+
+	// A dry run reports the same count a real run would apply (the
+	// same computed newThread) but performs no write.
+	if opts.DryRun {
+		updated := 0
+		for i, r := range rows {
+			if newThread[i] != r.threadID {
+				updated++
+			}
+		}
+		return updated, nil
 	}
 
 	updated := 0

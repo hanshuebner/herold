@@ -1325,10 +1325,10 @@ func (m *metadata) InsertMessages(ctx context.Context, items []store.InsertMessa
 
 // RethreadPrincipal scans every message of pid in internal-date order
 // and assigns thread_id from the principal's own message-id index. It
-// runs in one transaction; for a 200k-message principal the in-memory
-// (env_message_id -> id) map is around 30 MB. See store.Metadata for
-// the contract.
-func (m *metadata) RethreadPrincipal(ctx context.Context, pid store.PrincipalID) (int, error) {
+// runs in one transaction (skipped for a dry run); for a 200k-message
+// principal the in-memory (env_message_id -> id) map is around 30 MB.
+// See store.Metadata for the contract.
+func (m *metadata) RethreadPrincipal(ctx context.Context, pid store.PrincipalID, opts store.RethreadOptions) (int, error) {
 	type row struct {
 		id        int64
 		messageID string
@@ -1376,7 +1376,8 @@ func (m *metadata) RethreadPrincipal(ctx context.Context, pid store.PrincipalID)
 	}
 
 	// Compute new thread ids in memory. For each row in date order:
-	//  - if it already has a non-placeholder thread_id, leave it
+	//  - if it already has a non-placeholder thread_id and opts.Force
+	//    is false, leave it
 	//  - else if another (earlier) row shares the same Message-ID,
 	//    inherit that row's thread (same-message-id convergence for
 	//    duplicate Sent + delivered copies)
@@ -1389,7 +1390,7 @@ func (m *metadata) RethreadPrincipal(ctx context.Context, pid store.PrincipalID)
 		newThread[i] = rows[i].threadID
 	}
 	for i, r := range rows {
-		if newThread[i] != 0 {
+		if !opts.Force && newThread[i] != 0 {
 			continue
 		}
 		var resolved int64
@@ -1441,6 +1442,18 @@ func (m *metadata) RethreadPrincipal(ctx context.Context, pid store.PrincipalID)
 			resolved = r.id // self-thread
 		}
 		newThread[i] = resolved
+	}
+
+	// A dry run reports the same count a real run would apply (the
+	// same computed newThread) but performs no write.
+	if opts.DryRun {
+		updated := 0
+		for i, r := range rows {
+			if newThread[i] != r.threadID {
+				updated++
+			}
+		}
+		return updated, nil
 	}
 
 	// Apply updates in a single tx. Skip rows whose thread_id is

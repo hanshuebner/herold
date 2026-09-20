@@ -382,7 +382,7 @@ func RunSubAccountMigration(ctx context.Context, st Store, id string) (SubAccoun
 	// been reparented or copied. Re-threading the sub-account picks up
 	// the copied messages (inserted with SkipThreading) into their own
 	// thread groups, matching the bulk-import convention.
-	if _, err := st.Meta().RethreadPrincipal(ctx, mig.SubPrincipalID); err != nil {
+	if _, err := st.Meta().RethreadPrincipal(ctx, mig.SubPrincipalID, RethreadOptions{}); err != nil {
 		return SubAccountMigration{}, err
 	}
 

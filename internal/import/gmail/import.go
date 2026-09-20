@@ -207,7 +207,7 @@ func (imp *Importer) Run(ctx context.Context) (Result, error) {
 	if !imp.Options.SkipMail && !imp.Options.DryRun && res.MessagesImported > 0 {
 		log.Info("rethread: starting", "activity", "user")
 		rethreadStart := time.Now()
-		n, rerr := imp.Store.Meta().RethreadPrincipal(ctx, imp.Principal.ID)
+		n, rerr := imp.Store.Meta().RethreadPrincipal(ctx, imp.Principal.ID, store.RethreadOptions{})
 		if rerr != nil {
 			return res, fmt.Errorf("import: rethread: %w", rerr)
 		}

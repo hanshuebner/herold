@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -369,5 +370,176 @@ func TestCLI_DiagRecomputeBodyMeta_DryRunThenApply(t *testing.T) {
 	const wantPreview = "hello world"
 	if got2.Preview != wantPreview {
 		t.Fatalf("Preview after apply = %q, want %q", got2.Preview, wantPreview)
+	}
+}
+
+// TestCLI_DiagRethread_DryRunThenApply pins the `diag rethread` cobra
+// wiring (re #442): principal resolution by canonical email, the
+// dry-run-by-default / --apply flag convention shared with
+// reparse-envelopes / recompute-bodymeta, and that a dry run reports
+// the same count an apply run performs while writing nothing.
+//
+// Dual-backend coverage of the underlying Force/DryRun recompute logic
+// lives in internal/store/storetest (RethreadPrincipal_ForceAppliesCurrentRule);
+// this test only exercises the command surface, against sqlite.
+func TestCLI_DiagRethread_DryRunThenApply(t *testing.T) {
+	t.Parallel()
+	systomlPath, cfg := minimalConfigFixture(t)
+	ctx := context.Background()
+	clk := clock.NewReal()
+
+	st, err := openStore(ctx, cfg, discardLogger(), clk)
+	if err != nil {
+		t.Fatalf("openStore: %v", err)
+	}
+	p, err := st.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind:           store.PrincipalKindUser,
+		CanonicalEmail: "rethread-cli@test.local",
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal: %v", err)
+	}
+	mb, err := st.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: p.ID, Name: "INBOX", Attributes: store.MailboxAttrInbox,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox: %v", err)
+	}
+	ref, err := st.Blobs().Put(ctx, strings.NewReader("rethread-cli-body"))
+	if err != nil {
+		t.Fatalf("Blobs.Put: %v", err)
+	}
+
+	// A (root) -> B (same subject) -> C (different subject), inserted
+	// with SkipThreading so nothing threads at ingest time, then merged
+	// into one thread by hand -- the shape a pre-#437 ingest would have
+	// produced.
+	items := []store.InsertMessageItem{
+		{Message: store.Message{PrincipalID: p.ID, Blob: ref, Size: ref.Size,
+			InternalDate: time.Unix(1000, 0).UTC(), ReceivedAt: time.Unix(1000, 0).UTC(),
+			Envelope: store.Envelope{MessageID: "cli-a@test", Subject: "Project update"}},
+			Targets: []store.MessageMailbox{{MailboxID: mb.ID}}},
+		{Message: store.Message{PrincipalID: p.ID, Blob: ref, Size: ref.Size,
+			InternalDate: time.Unix(2000, 0).UTC(), ReceivedAt: time.Unix(2000, 0).UTC(),
+			Envelope: store.Envelope{MessageID: "cli-b@test", InReplyTo: "<cli-a@test>", Subject: "Re: Project update"}},
+			Targets: []store.MessageMailbox{{MailboxID: mb.ID}}},
+		{Message: store.Message{PrincipalID: p.ID, Blob: ref, Size: ref.Size,
+			InternalDate: time.Unix(3000, 0).UTC(), ReceivedAt: time.Unix(3000, 0).UTC(),
+			Envelope: store.Envelope{MessageID: "cli-c@test", InReplyTo: "<cli-b@test>", Subject: "Re: New topic"}},
+			Targets: []store.MessageMailbox{{MailboxID: mb.ID}}},
+	}
+	if _, err := st.Meta().InsertMessages(ctx, items, store.InsertMessagesOptions{SkipThreading: true}); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+	msgs, err := st.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	byMID := make(map[string]store.Message, len(msgs))
+	for _, m := range msgs {
+		byMID[m.Envelope.MessageID] = m
+	}
+	rootID := byMID["cli-a@test"].ID
+	for _, mid := range []string{"cli-a@test", "cli-b@test", "cli-c@test"} {
+		if err := st.Meta().UpdateMessageThreadID(ctx, byMID[mid].ID, uint64(rootID)); err != nil {
+			t.Fatalf("UpdateMessageThreadID(%s): %v", mid, err)
+		}
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Default invocation omits --apply: must be a dry-run that writes
+	// nothing and reports 1 (only C moves to its own thread).
+	root := NewRootCmd()
+	var stdout, stderr bytes.Buffer
+	root.SetOut(&stdout)
+	root.SetErr(&stderr)
+	root.SetArgs([]string{"--system-config", systomlPath, "diag", "rethread", "rethread-cli@test.local"})
+	root.SetContext(context.Background())
+	if err := root.Execute(); err != nil {
+		t.Fatalf("dry-run: %v\nstderr=%s", err, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "dry-run") {
+		t.Errorf("expected dry-run mode in output, got: %s", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "rethreaded: 1") {
+		t.Errorf("expected dry-run count 1 in output, got: %s", stderr.String())
+	}
+
+	checkSt, err := openStore(ctx, cfg, discardLogger(), clk)
+	if err != nil {
+		t.Fatalf("re-open after dry-run: %v", err)
+	}
+	checkMsgs, err := checkSt.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListMessages after dry-run: %v", err)
+	}
+	for _, m := range checkMsgs {
+		if m.ThreadID != uint64(rootID) {
+			t.Errorf("dry-run changed thread_id of %s: got %d, want unchanged %d", m.Envelope.MessageID, m.ThreadID, rootID)
+		}
+	}
+	if err := checkSt.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// --apply performs the split, resolving the principal by numeric
+	// ID this time.
+	root = NewRootCmd()
+	stdout.Reset()
+	stderr.Reset()
+	root.SetOut(&stdout)
+	root.SetErr(&stderr)
+	root.SetArgs([]string{"--system-config", systomlPath, "diag", "rethread",
+		strconv.FormatUint(uint64(p.ID), 10), "--apply"})
+	root.SetContext(context.Background())
+	if err := root.Execute(); err != nil {
+		t.Fatalf("apply: %v\nstderr=%s", err, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "apply") {
+		t.Errorf("expected apply mode in output, got: %s", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "rethreaded: 1") {
+		t.Errorf("expected apply count 1 in output, got: %s", stderr.String())
+	}
+
+	checkSt2, err := openStore(ctx, cfg, discardLogger(), clk)
+	if err != nil {
+		t.Fatalf("re-open after apply: %v", err)
+	}
+	defer checkSt2.Close()
+	finalMsgs, err := checkSt2.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListMessages after apply: %v", err)
+	}
+	finalByMID := make(map[string]store.Message, len(finalMsgs))
+	for _, m := range finalMsgs {
+		finalByMID[m.Envelope.MessageID] = m
+	}
+	threadKey := func(m store.Message) uint64 {
+		if m.ThreadID != 0 {
+			return m.ThreadID
+		}
+		return uint64(m.ID)
+	}
+	a, b, c := finalByMID["cli-a@test"], finalByMID["cli-b@test"], finalByMID["cli-c@test"]
+	if threadKey(a) != threadKey(b) {
+		t.Errorf("A and B threadKeys diverge: %d vs %d, want equal", threadKey(a), threadKey(b))
+	}
+	if threadKey(c) == threadKey(a) {
+		t.Errorf("C must split into its own thread, got same threadKey as A: %d", threadKey(c))
+	}
+
+	// An unknown principal reference is a clear operator-facing error.
+	root = NewRootCmd()
+	stdout.Reset()
+	stderr.Reset()
+	root.SetOut(&stdout)
+	root.SetErr(&stderr)
+	root.SetArgs([]string{"--system-config", systomlPath, "diag", "rethread", "no-such-principal@test.local"})
+	root.SetContext(context.Background())
+	if err := root.Execute(); err == nil {
+		t.Fatalf("expected an error for an unknown principal, got none")
 	}
 }
