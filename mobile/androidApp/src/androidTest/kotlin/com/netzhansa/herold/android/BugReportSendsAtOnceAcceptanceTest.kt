@@ -94,14 +94,16 @@ class BugReportSendsAtOnceAcceptanceTest {
             "the report's confirmation offers an Undo",
             compose.onAllNodesWithText("Undo", substring = true).fetchSemanticsNodes().isEmpty(),
         )
-        compose.captureScreen("101-report-on-its-way")
 
+        // Measured before the screenshot, whose settle would otherwise
+        // be counted as part of the upload.
         val elapsed = awaitReport(title) - tapped
         Log.i(TAG, "the report reached the server ${elapsed}ms after the tap")
         assertTrue(
             "the report took ${elapsed}ms to reach the server",
             elapsed <= ARRIVAL_BUDGET_MS,
         )
+        compose.captureScreen("101-report-on-its-way")
     }
 
     /**
@@ -194,7 +196,7 @@ class BugReportSendsAtOnceAcceptanceTest {
         const val OFFLINE_TIMEOUT_MS = 30_000L
 
         /** What "on the tap" is worth in wall-clock time on the emulator. */
-        const val ARRIVAL_BUDGET_MS = 5_000L
+        const val ARRIVAL_BUDGET_MS = 4_000L
 
         const val ARRIVAL_POLLS = 60
         const val ARRIVAL_POLL_MS = 200L
