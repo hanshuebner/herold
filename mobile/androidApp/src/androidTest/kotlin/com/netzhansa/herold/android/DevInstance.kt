@@ -104,6 +104,11 @@ object DevInstance {
      * An HTML message carrying [bytes] as an image, inline or attached, so
      * the reading pane's handling of a camera-sized photo can be driven
      * from a seeded message (issue #341).
+     *
+     * @param type the part's content type, since what the pane does with
+     *   an image depends on the format it arrives in (issue #445)
+     * @param html the body, for a sender's own markup around the image;
+     *   `%CID%` in it is replaced by the part's Content-ID
      */
     fun deliverMailWithImage(
         subject: String,
@@ -111,6 +116,8 @@ object DevInstance {
         name: String,
         inline: Boolean,
         from: String = "Bob Example <bob@example.local>",
+        type: String = "image/jpeg",
+        html: String? = null,
     ): String {
         val cid = "image-" + System.nanoTime() + "@acceptance.test"
         val boundary = "herold-acceptance-" + System.nanoTime()
@@ -120,13 +127,16 @@ object DevInstance {
         val body = buildString {
             append("--$boundary\r\n")
             append("Content-Type: text/html; charset=utf-8\r\n\r\n")
-            if (inline) {
+            if (html != null) {
+                append(html.replace("%CID%", cid))
+                append("\r\n")
+            } else if (inline) {
                 append("<html><body><p>Photo below.</p><p><img src=\"cid:$cid\" alt=\"photo\"></p></body></html>\r\n")
             } else {
                 append("<html><body><p>Photo attached.</p></body></html>\r\n")
             }
             append("--$boundary\r\n")
-            append("Content-Type: image/jpeg\r\n")
+            append("Content-Type: $type\r\n")
             append("Content-Transfer-Encoding: base64\r\n")
             if (inline) append("Content-ID: <$cid>\r\n")
             append("Content-Disposition: ${if (inline) "inline" else "attachment"}; filename=$name\r\n\r\n")

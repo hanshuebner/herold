@@ -229,6 +229,26 @@ flow that closed the app on the reporting device:
       -e heroldSmtpAddr 10.0.2.2:<smtp-port> \
       com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
 
+`LargeInlineImageAcceptanceTest` also delivers a transparent banner in
+the reported sender's markup and reads the pixels where it is drawn: the
+sender's cell shows through it rather than a rectangle of some colour
+the scaling chose (issue #445).
+
+`InlineImageAlphaAcceptanceTest` needs no instance: it drives the body
+surface with an oversized transparent PNG in both themes and asserts the
+colours on screen, so an image flattened onto black fails the light
+check and one flattened onto white fails the dark one.
+
+    adb shell am instrument -w -r \
+      -e class com.netzhansa.herold.android.InlineImageAlphaAcceptanceTest \
+      com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+
+The decision behind it - whether an image carries an alpha channel, what
+format that leads to, what the display bound leaves it at - has a
+host-JVM test that needs no device:
+
+    ./gradlew :androidApp:testDebugUnitTest
+
 `BodyImageSourceAcceptanceTest` needs no instance either: it drives the
 reading pane's body surface on its own, with resolvers it owns, and
 asserts that asking for the remote images loads them into the message
