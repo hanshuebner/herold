@@ -1,6 +1,7 @@
 package com.netzhansa.herold.android
 
 import android.graphics.Bitmap
+import android.graphics.Color
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
@@ -11,6 +12,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.netzhansa.herold.shared.domain.Email
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.FixMethodOrder
@@ -26,6 +28,10 @@ import java.io.ByteArrayOutputStream
  * the app running. On the reporting device the same shape closed the
  * app as the thread was tapped, and again on the restart that restored
  * the route.
+ *
+ * The second check delivers the other shape the display path has to
+ * handle: a banner with an alpha channel, whose transparency has to
+ * survive the scaling and reach the screen (issue #445).
  */
 @RunWith(AndroidJUnit4::class)
 @FixMethodOrder(MethodSorters.NAME_ASCENDING)
@@ -92,6 +98,48 @@ class LargeInlineImageAcceptanceTest {
     }
 
     /**
+     * A transparent logo in a delivered message (issue #445): the banner
+     * is wider than the pane decodes at, so the part goes through the
+     * display path on its way to the WebView, and what the reader sees
+     * has to be the sender's own cell behind it rather than a rectangle
+     * of some colour the scaling chose.
+     */
+    @Test
+    fun t93_aTransparentInlineLogoIsDrawnOnTheSendersBackground() {
+        val banner = transparentBannerPng()
+        assertEquals("the fixture is not a colour-type 6 PNG", 6, pngColourType(banner))
+        val subject = "transparent inline logo " + System.currentTimeMillis()
+        DevInstance.deliverMailWithImage(
+            subject = subject,
+            bytes = banner,
+            name = "logo.png",
+            inline = true,
+            type = "image/png",
+            html = SENDER_MARKUP,
+        )
+        val seeded = awaitInbox(subject)
+
+        compose.scrollListToThread(seeded.threadId)
+        compose.onNodeWithTag("thread-row-${seeded.threadId}").performClick()
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("thread-messages").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("message-body-${seeded.id}").fetchSemanticsNodes().isNotEmpty()
+        }
+
+        val logo = awaitBodyImage("logo")
+        compose.captureScreen("93-transparent-inline-logo")
+        assertShowsThrough(
+            deviceScreen(),
+            logo,
+            Color.rgb(0xf5, 0xf5, 0xf5),
+            "the sender's cell",
+            "a delivered message",
+        )
+    }
+
+    /**
      * The blob id of the message's inline part. The list row carries no
      * parts; they arrive with the body the thread screen loads.
      */
@@ -133,6 +181,21 @@ class LargeInlineImageAcceptanceTest {
     }
 
     private companion object {
+        /**
+         * The reported sender's shape: the logo in a cell declaring a
+         * light grey, inside a container declaring white.
+         */
+        val SENDER_MARKUP = """
+            <html><body>
+              <div style="background-color:white">
+                <div style="background-color:#F5F5F5">
+                  <img src="cid:%CID%" alt="logo">
+                </div>
+              </div>
+              <p>Below the logo.</p>
+            </body></html>
+        """.trimIndent()
+
         const val TIMEOUT_MS = 60_000L
         const val SETTLE_MS = 2_000L
         const val POLLS = 30
