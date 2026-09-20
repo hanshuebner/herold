@@ -83,7 +83,13 @@ internal fun String.normaliseMessageId(): String = trim().removePrefix("<").remo
 
 internal fun WireEmail.toDomain(accountId: String): Email {
     val htmlPart = htmlBody?.firstOrNull { it.type == "text/html" } ?: htmlBody?.firstOrNull()
-    val textPart = textBody?.firstOrNull()
+    // `textBody` names the HTML part itself for a message that carries no
+    // text/plain (RFC 8621 4.1.4), so the text body is the message's own
+    // text alternative only when it is one - otherwise the reading pane
+    // would offer the HTML's source as the readable version of it
+    // (issue #430).
+    val textPart = textBody?.firstOrNull { it.type == "text/plain" }
+        ?: textBody?.firstOrNull()?.takeIf { it.partId != htmlPart?.partId }
     return Email(
         accountId = accountId,
         id = id,
