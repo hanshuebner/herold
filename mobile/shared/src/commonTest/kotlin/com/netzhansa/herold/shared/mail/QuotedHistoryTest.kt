@@ -411,6 +411,45 @@ class QuotedHistoryTest {
     }
 
     @Test
+    fun keepsTheSecondRegionsLeadingTextInsideTheFold() {
+        // The fold is passed over the citation-prefix div, whose
+        // attribution the heuristic does not know, and begins at the
+        // blockquote after it. What that blockquote leads with is the
+        // correspondent's own reply from the message being quoted, not
+        // the sender's: it belongs behind the chip.
+        val html = folded(
+            "<div class=\"moz-cite-prefix\">Hallo Jane,<br><br>Danke fuer die Nachricht.<br><br>" +
+                "20.09.2026 14:12 &gt;&gt; jane@example.test<br></div>" +
+                "<blockquote type=\"cite\">" +
+                "<p>Was written above the quote in the message being answered.</p>" +
+                "<div class=\"moz-cite-prefix\">Am 19.09.26 um 09:00 schrieb john@example.test:<br></div>" +
+                "<blockquote type=\"cite\">The oldest message.</blockquote></blockquote>",
+        )
+
+        assertBeforeFold(html, "Danke fuer die Nachricht.")
+        assertInsideFold(html, "Was written above the quote in the message being answered.")
+        assertInsideFold(html, "The oldest message.")
+    }
+
+    @Test
+    fun keepsTheSecondRegionsLeadingTextInsideTheFoldWithASplitAttribution() {
+        // The same pass-over, with the quoted message's own attribution
+        // written over several nodes: reading it as one line must not
+        // turn the line above it into the sender's text.
+        val html = folded(
+            "<div class=\"moz-cite-prefix\">Reply text in a shape the heuristic does not know.<br></div>" +
+                "<blockquote type=\"cite\">Quoted line one.<br>" +
+                "Am 19.09.26 um 09:00 schrieb " +
+                "<a href=\"mailto:john@example.test\">john@example.test</a>:<br>" +
+                "<blockquote type=\"cite\">The oldest message.</blockquote></blockquote>",
+        )
+
+        assertBeforeFold(html, "Reply text in a shape the heuristic does not know.")
+        assertInsideFold(html, "Quoted line one.")
+        assertInsideFold(html, "The oldest message.")
+    }
+
+    @Test
     fun leavesTheComposersBodyUnfolded() {
         val source = "<p>My reply.</p><blockquote>Original message body.</blockquote>"
 

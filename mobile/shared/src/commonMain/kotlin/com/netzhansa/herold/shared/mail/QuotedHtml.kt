@@ -72,12 +72,43 @@ internal object QuotedHtml {
      */
     private fun collapseIn(root: HtmlElement): Boolean {
         val passedOver = mutableListOf<HtmlElement>()
+        var atTheFirstRegion = true
         while (true) {
             val candidate = firstQuotedRegion(root, passedOver) ?: return false
-            splitLeadingFreshContent(candidate)
+            // The sender's text is either outside the quote or among
+            // its leading children, never both: a quote element can
+            // hold it only when the body opens with that element.
+            // Anywhere else, what leads a quoted region is the quoted
+            // message's own top-posted reply, and lifting it out would
+            // put the correspondent's words on screen as the sender's.
+            if (atTheFirstRegion && nothingPrecedes(root, candidate)) {
+                splitLeadingFreshContent(candidate)
+            }
+            atTheFirstRegion = false
             if (startsAtTheCitation(candidate)) return fold(candidate)
             passedOver.add(candidate)
         }
+    }
+
+    /** True when [candidate] is the first thing in the body that reads. */
+    private fun nothingPrecedes(root: HtmlElement, candidate: HtmlElement): Boolean {
+        val ahead = StringBuilder()
+        var reached = false
+
+        fun walk(node: HtmlNode) {
+            if (reached) return
+            if (node === candidate) {
+                reached = true
+                return
+            }
+            when (node) {
+                is HtmlText -> node.text(ahead)
+                is HtmlElement -> node.children.forEach { walk(it) }
+            }
+        }
+
+        root.children.forEach { walk(it) }
+        return ahead.toString().isBlank()
     }
 
     private fun fold(candidate: HtmlElement): Boolean {
@@ -102,6 +133,31 @@ internal object QuotedHtml {
                 }
             }
             end++
+        }
+
+        // The rest of the document after the element the citation sits
+        // in counts too: a client that wraps the citation and its quote
+        // in a container of their own leaves a bottom-posted reply
+        // outside that container, where the sibling walk above never
+        // reaches it. Those nodes stay where they are - only the
+        // candidate's own siblings are absorbed - but text among them
+        // means the quote is not what the message ends with.
+        var wrapper: HtmlElement? = parent
+        while (wrapper != null) {
+            val above = wrapper.parent ?: break
+            var next = above.indexOf(wrapper) + 1
+            while (next < above.children.size) {
+                val node = above.children[next]
+                if (!inSignature) {
+                    if (isSignatureDelimiter(node)) {
+                        inSignature = true
+                    } else if (!isQuoteOrEmpty(node)) {
+                        return false
+                    }
+                }
+                next++
+            }
+            wrapper = above
         }
 
         // A citation-introducer line ahead of the quote folds with it.
