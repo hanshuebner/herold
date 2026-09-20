@@ -2,6 +2,7 @@ package com.netzhansa.herold.shared.sync
 
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
@@ -131,6 +132,83 @@ class SyncSchedulerTest {
         scheduler.requestSync()
         runCurrent()
         assertEquals(listOf(0L, 1_000L), at)
+        loop.cancelAndJoin()
+    }
+
+    /**
+     * What the inbox's pull to refresh stands on (issue #444): the call
+     * returns when the pass it asked for has finished, so the indicator
+     * runs for as long as the sync does.
+     */
+    @Test
+    fun aForcedSyncReturnsWhenItsPassHasFinished() = runTest {
+        val gate = Channel<Unit>(Channel.UNLIMITED)
+        var started = 0
+        val scheduler = SyncScheduler(
+            pass = {
+                started++
+                gate.receive()
+                SyncStatus.Idle
+            },
+            now = { currentTime },
+        )
+        val loop = launch { scheduler.run() }
+        runCurrent()
+        // The loop's own first pass is under way; the refresh asks for
+        // one of its own and waits for that one.
+        assertEquals(1, started)
+
+        var returned = false
+        val refresh = launch {
+            scheduler.syncNow()
+            returned = true
+        }
+        runCurrent()
+
+        gate.send(Unit)
+        runCurrent()
+        assertEquals(2, started)
+        assertTrue(!returned, "the refresh ended on a pass it did not ask for")
+
+        gate.send(Unit)
+        runCurrent()
+        assertTrue(returned, "the refresh did not end with its pass")
+
+        refresh.join()
+        loop.cancelAndJoin()
+    }
+
+    /** A refresh asked for between passes waits for the one it wakes. */
+    @Test
+    fun aForcedSyncBetweenPassesWaitsForTheOneItWakes() = runTest {
+        val gate = Channel<Unit>(Channel.UNLIMITED)
+        var started = 0
+        val scheduler = SyncScheduler(
+            pass = {
+                started++
+                if (started > 1) gate.receive()
+                SyncStatus.Idle
+            },
+            now = { currentTime },
+        )
+        val loop = launch { scheduler.run() }
+        runCurrent()
+        assertEquals(1, started)
+
+        var returned = false
+        val refresh = launch {
+            scheduler.syncNow()
+            returned = true
+        }
+        runCurrent()
+        assertEquals(2, started)
+        assertTrue(!returned, "the refresh ended before its pass did")
+
+        gate.send(Unit)
+        runCurrent()
+        assertTrue(returned, "the refresh did not end with its pass")
+
+        refresh.join()
         loop.cancelAndJoin()
     }
 
