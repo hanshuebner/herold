@@ -250,7 +250,9 @@ fun ThreadScreen(
      * decoded at the width the column draws them at (issue #341). A part
      * that cannot be loaded or decoded resolves to nothing and the body
      * draws the image as missing, which is what keeps a newsletter with
-     * an oversized inline image readable (issue #420).
+     * an oversized inline image readable (issue #420). The type comes
+     * back with the bytes, since scaling an image can change the format
+     * it is written in (issue #445).
      */
     fun inlineImageOf(attachments: List<Attachment>, cid: String): Pair<String, ByteArray>? {
         val attachment = attachments.firstOrNull {
@@ -258,7 +260,7 @@ fun ThreadScreen(
         } ?: return null
         return runBlocking(Dispatchers.IO) {
             val bytes = blobOf(attachment) ?: return@runBlocking null
-            runCatching { attachment.type to ImageScaling.forDisplay(bytes, displayWidthPx) }
+            runCatching { ImageScaling.forDisplay(attachment.type, bytes, displayWidthPx) }
                 .onFailure {
                     DiagLog.e(
                         THREAD_TAG,

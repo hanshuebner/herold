@@ -50,30 +50,40 @@ object ImageScaling {
         return scaleTo(name, type, bytes, bound)
     }
 
-    /** The same, bounded by an explicit pixel edge. */
+    /**
+     * The same, bounded by an explicit pixel edge.
+     *
+     * The format the result is written in follows the source: an image
+     * carrying an alpha channel is re-encoded as PNG, which keeps it,
+     * and everything else as JPEG, which is worth its loss on a
+     * photograph (issue #445). Nothing is composited onto a background
+     * colour at any point, so the transparency the sender drew reaches
+     * whatever is behind the image where it is shown.
+     */
     fun scaleTo(name: String, type: String, bytes: ByteArray, bound: Int): ScaledImage {
         val (width, height) = dimensions(bytes) ?: return ScaledImage(name, type, bytes)
-        if (maxOf(width, height) <= bound) return ScaledImage(name, type, bytes)
+        // An image already within the bound is handed back as it is.
+        if (ImageFormats.boundedTo(width, height, bound) == null) return ScaledImage(name, type, bytes)
 
         val decoded = decodeSampled(bytes, bound) ?: return ScaledImage(name, type, bytes)
-        val factor = bound.toFloat() / maxOf(decoded.width, decoded.height)
-        val target = if (factor < 1f) {
-            Bitmap.createScaledBitmap(
-                decoded,
-                (decoded.width * factor).toInt().coerceAtLeast(1),
-                (decoded.height * factor).toInt().coerceAtLeast(1),
-                true,
-            )
-        } else {
-            decoded
-        }
+        val target = ImageFormats.boundedTo(decoded.width, decoded.height, bound)?.let { (w, h) ->
+            Bitmap.createScaledBitmap(decoded, w, h, true)
+        } ?: decoded
+        val encoding = ImageFormats.encodingFor(bytes, decodedHasAlpha = target.hasAlpha())
         val out = ByteArrayOutputStream()
-        target.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, out)
+        when (encoding) {
+            // PNG's quality argument is ignored: the encoding is lossless.
+            ImageEncoding.PNG -> target.compress(Bitmap.CompressFormat.PNG, 100, out)
+            ImageEncoding.JPEG -> target.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, out)
+        }
         if (target !== decoded) target.recycle()
         decoded.recycle()
         val encoded = out.toByteArray()
+        // A re-encode that buys nothing is dropped and the image is used
+        // as it arrived: the size the sender chose, in the format they
+        // chose, which is heavier but never wrong.
         if (encoded.isEmpty() || encoded.size >= bytes.size) return ScaledImage(name, type, bytes)
-        return ScaledImage(jpegName(name), "image/jpeg", encoded)
+        return ScaledImage(ImageFormats.rename(name, encoding), encoding.type, encoded)
     }
 
     /**
@@ -100,16 +110,15 @@ object ImageScaling {
      * that, for the reading pane's inline images: the WebView bounds them
      * to the column width anyway, and decoding the original is what makes
      * a thread with a camera photo in it stall on open.
+     *
+     * @param type the part's declared content type
+     * @return the type of the bytes that come back and the bytes
+     *   themselves, so the WebView is told what it is actually being
+     *   served rather than what the part declared (issue #445)
      */
-    fun forDisplay(bytes: ByteArray, maxEdgePx: Int): ByteArray {
-        val (width, height) = dimensions(bytes) ?: return bytes
-        if (maxOf(width, height) <= maxEdgePx) return bytes
-        return scaleTo("inline.jpg", "image/jpeg", bytes, maxEdgePx).bytes
-    }
-
-    private fun jpegName(name: String): String {
-        val stem = name.substringBeforeLast('.', name)
-        return if (name.endsWith(".jpg", true) || name.endsWith(".jpeg", true)) name else "$stem.jpg"
+    fun forDisplay(type: String, bytes: ByteArray, maxEdgePx: Int): Pair<String, ByteArray> {
+        val scaled = scaleTo("inline", type, bytes, maxEdgePx)
+        return scaled.type to scaled.bytes
     }
 }
 

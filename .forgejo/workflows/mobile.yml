@@ -110,10 +110,14 @@ jobs:
       - name: shared build + unit tests
         run: ./gradlew --no-daemon :shared:build
 
-      # androidApp has no unit tests yet (only the androidTest
-      # instrumented source set, which needs a device/emulator);
-      # assembleDebug is the same command the "Delivered" acceptance in
-      # #251 verified from a clean checkout.
+      # androidApp's host-JVM unit tests: the parts of the app that hold
+      # a decision rather than a screen (ImageFormatsTest, issue #445).
+      # The instrumented source set is a separate emulator-driven run and
+      # is not built here. assembleDebug is the same command the
+      # "Delivered" acceptance in #251 verified from a clean checkout.
+      - name: androidApp unit tests
+        run: ./gradlew --no-daemon :androidApp:testDebugUnitTest
+
       - name: androidApp assembleDebug
         run: ./gradlew --no-daemon :androidApp:assembleDebug
 

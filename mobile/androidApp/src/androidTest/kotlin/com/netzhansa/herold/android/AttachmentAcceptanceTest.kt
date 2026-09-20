@@ -101,9 +101,12 @@ class AttachmentAcceptanceTest {
         val thumbnail = ImageScaling.thumbnail(photo, 256)
         assertNotNull("an image attachment must produce a thumbnail", thumbnail)
         assertTrue("the thumbnail must be small, saw ${thumbnail!!.width}", thumbnail.width <= 512)
-        val display = ImageScaling.forDisplay(photo, 1080)
+        val (displayType, display) = ImageScaling.forDisplay("image/jpeg", photo, 1080)
         assertTrue("an inline image is decoded at display size", display.size < photo.size)
         assertEquals(1080, ImageScaling.dimensions(display)!!.first)
+        // A photograph has no alpha channel to keep, so it takes the
+        // lossy path and the type says so (issue #445).
+        assertEquals("image/jpeg", displayType)
     }
 
     @Test
