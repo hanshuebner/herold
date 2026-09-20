@@ -42,7 +42,6 @@ import com.netzhansa.herold.android.diag.DiagLog
 import com.netzhansa.herold.android.diag.DiagPreferences
 import com.netzhansa.herold.android.diag.ShakeToReport
 import com.netzhansa.herold.android.ui.common.collectAsStateSafely
-import com.netzhansa.herold.android.ui.settings.UndoSendPreference
 import com.netzhansa.herold.shared.compose.ComposeResult
 import com.netzhansa.herold.shared.diag.BugCapture
 import com.netzhansa.herold.shared.diag.BugSubmission
@@ -68,9 +67,11 @@ import kotlin.math.roundToInt
  * is held is written to app storage, so the captures survive the app
  * being killed between two of them.
  *
- * Sending goes through the outbox with the undo window the user chose
- * for mail, so a report asked for by mistake is taken back the same way
- * a message is.
+ * Sending goes through the outbox and leaves at once: a report is not
+ * correspondence and has nothing to take back, so it is queued with no
+ * hold and the drain is asked for on the tap (issue #438). The
+ * confirmation says the report is on its way, or that it waits for a
+ * connection when there is none.
  */
 @Composable
 fun BugReportHost(
@@ -379,20 +380,26 @@ fun BugReportHost(
         onSend = { submission ->
             sheetOpen = false
             holdReport(null)
-            val window = UndoSendPreference.current(context).millis
             scope.launch {
                 val outcome = runCatching {
-                    reporter.send(submission, report.capture, session, window)
+                    reporter.send(submission, report.capture, session)
                 }
                 outcome.exceptionOrNull()?.let { failure ->
                     DiagLog.w(TAG, "the report could not be queued: ${failure.message}")
                 }
                 when (val result = outcome.getOrNull() ?: ComposeResult.Failed("the report could not be queued")) {
                     is ComposeResult.Queued -> {
-                        container.undo.offer(SENDING, windowMs = window.takeIf { it > 0 }) {
-                            container.outbox.remove(result.entryId)
-                        }
-                        session?.requestDrain?.invoke(window)
+                        // A report has nothing to take back, so the
+                        // confirmation carries no action and the drain
+                        // is asked for at once (issue #438). With no
+                        // connection the entry stays in the queue and
+                        // the confirmation says so.
+                        container.undo.offer(
+                            if (container.offline.value) WAITING_FOR_A_CONNECTION else ON_ITS_WAY,
+                            windowMs = null,
+                            actionLabel = null,
+                        ) {}
+                        session?.requestDrain?.invoke(0)
                     }
 
                     is ComposeResult.Failed -> {
@@ -416,8 +423,12 @@ private fun markerLabel(count: Int): String = "Add to report (${captures(count)}
 /** How many captures, said so one of them does not read as several. */
 private fun captures(count: Int): String = if (count == 1) "1 capture" else "$count captures"
 
-/** What the snackbar says while the report waits out its undo window. */
-private const val SENDING = "Sending the report to the server"
+/** What the snackbar says once the report is queued and its upload has started. */
+private const val ON_ITS_WAY = "The report is on its way to the server"
+
+/** What it says instead when there is no connection to send it over. */
+private const val WAITING_FOR_A_CONNECTION =
+    "Offline - the report goes out when the connection is back"
 
 private const val TAG = "herold.bugreport"
 

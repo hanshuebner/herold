@@ -48,7 +48,7 @@ class BugReportQueueTest {
         val api = FakeJmapApi()
         val reports = FakeBugReportApi()
         val logs = mutableListOf<String>()
-        val sender = BugReportSender(outbox, spool) { now }
+        val sender = BugReportSender(outbox, spool)
         val drainer = OutboxDrainer(
             api = api,
             store = store,
@@ -79,11 +79,9 @@ class BugReportQueueTest {
     private suspend fun queue(
         h: Harness,
         submission: BugSubmission = BugSubmission(title = "the thread view is blank"),
-        holdMs: Long = 0,
     ): ComposeResult = h.sender.queue(
         BugBundleWriter.build(submission, capture, createdAtMs = 1_700_000_002_000),
         accountId = "acct-a",
-        holdMs = holdMs,
     )
 
     @Test
@@ -122,28 +120,48 @@ class BugReportQueueTest {
         assertTrue(h.api.mailboxSetCalls.isEmpty())
     }
 
+    /**
+     * A report leaves on the tap (issue #438): it is written due, and a
+     * drain run at the very instant of the tap - the clock has not
+     * moved - posts it.
+     */
     @Test
-    fun aReportInsideItsUndoWindowIsNotPostedYet() = runTest {
+    fun aQueuedReportCarriesNoHoldAndTheDrainTakesItAtOnce() = runTest {
         val h = Harness()
-        val queued = queue(h, holdMs = 5_000) as ComposeResult.Queued
-        h.drainer.drain()
+        val queued = queue(h)
 
-        assertTrue(h.reports.posts.isEmpty(), "the report left before its undo window")
-        // Undo inside the window drops the entry outright.
-        assertEquals(queued.entryId, h.outbox.cancelIfQueued(queued.entryId)?.id)
-        h.now += 10_000
-        h.drainer.drain()
-        assertTrue(h.reports.posts.isEmpty())
+        assertTrue(queued is ComposeResult.Queued, "the report was not queued: $queued")
+        assertEquals(0, queued.heldUntilMs, "the report was queued behind a hold")
+        val entry = h.outbox.list().single()
+        assertEquals(OutboxState.QUEUED, entry.state)
+        assertEquals(0, entry.nextAttemptAt, "the drain is held off until ${entry.nextAttemptAt}")
+
+        val outcome = h.drainer.drain()
+        assertEquals(1, outcome.submitted)
+        assertEquals(1, h.reports.posts.size)
     }
 
+    /**
+     * A report the server refused is retried from the outbox screen:
+     * the retry puts it back in the queue, its spooled files are still
+     * on the device, and the next drain posts it.
+     */
     @Test
-    fun theWindowOverTheReportGoesOut() = runTest {
+    fun aRefusedReportGoesOutOnARetry() = runTest {
         val h = Harness()
-        queue(h, holdMs = 5_000)
-        h.now += 6_000
+        h.reports.failure = JmapException("the bug report was refused: unknown part", status = 400)
+        queue(h)
         h.drainer.drain()
+        val failed = h.outbox.list().single()
+        assertEquals(OutboxState.FAILED, failed.state)
 
+        h.reports.failure = null
+        h.outbox.retry(failed.id)
+        val outcome = h.drainer.drain()
+
+        assertEquals(1, outcome.submitted)
         assertEquals(1, h.reports.posts.size)
+        assertTrue(h.outbox.list().isEmpty(), "the retried report is still queued")
     }
 
     @Test

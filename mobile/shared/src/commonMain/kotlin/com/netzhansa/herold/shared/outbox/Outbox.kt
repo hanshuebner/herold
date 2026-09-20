@@ -124,16 +124,14 @@ class Outbox(
     )
 
     /**
-     * Queues a bug report (issue #417). [holdUntilMs] is the instant the
-     * drain may first post it, which is the undo window the reporter
-     * shares with a send: until then the entry sits in the queue and an
-     * undo removes it and its spooled files.
+     * Queues a bug report (issues #417, #438). It is due the moment it
+     * is written: a report has nothing to take back, so the next drain
+     * posts it.
      */
     suspend fun enqueueBugReport(
         label: String,
         payload: BugReportPayload,
-        holdUntilMs: Long = 0,
-    ): Long = enqueueHeld(
+    ): Long = store.enqueueOutbox(
         NewOutboxEntry(
             accountId = payload.accountId,
             kind = OutboxKind.BUG_REPORT,
@@ -141,7 +139,6 @@ class Outbox(
             payload = outboxJson.encodeToString(payload),
             createdAt = now(),
         ),
-        holdUntilMs,
     )
 
     /**
