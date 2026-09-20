@@ -105,13 +105,18 @@ class HtmlSanitizerTest {
 
     @Test
     fun theDocumentLaysABodyOutToTheCardsWidth() {
-        val document = HtmlSanitizer.document("<p>Body</p>", darkTheme = false)
+        val document = HtmlSanitizer.document("<p>Body</p>", darkTheme = false, contentWidthCssPx = 387)
 
-        // The viewport the WebView's wide-viewport setting reads.
+        // The body renders at the device's width and the pane's text
+        // size; nothing is zoomed out to make a wide page fit.
         assertContains(document, "width=device-width, initial-scale=1")
-        // Every box is capped at the width it was given, and what cannot
-        // be narrowed scrolls inside the body's own box (issue #430).
-        assertContains(document, "body * { max-width: 100%; }")
+        // Every box, and every image, is capped at what the card gives
+        // the body, padding counted inside it (issue #430).
+        assertContains(document, "body * { max-width: min(100%, 387px); }")
+        assertContains(document, "img { max-width: min(100%, 387px); height: auto; }")
+        assertContains(document, "box-sizing: border-box")
+        assertContains(document, "overflow-wrap: anywhere")
+        // What cannot be narrowed scrolls inside the body's own box.
         assertContains(document, ".${HtmlSanitizer.BODY_CLASS} { overflow-x: auto; }")
         assertContains(document, "<div class=\"${HtmlSanitizer.BODY_CLASS}\"><p>Body</p></div>")
     }

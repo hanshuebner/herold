@@ -18,6 +18,12 @@ object HtmlSanitizer {
     /** The box the body renders in, which is as wide as the card. */
     const val BODY_CLASS = "herold-body"
 
+    /** The margin the body document keeps between its text and the card's edge. */
+    const val BODY_PADDING_PX = 12
+
+    /** What the body's own content has to fit into inside a card [cardWidthCssPx] wide. */
+    fun contentWidthCssPx(cardWidthCssPx: Int): Int = cardWidthCssPx - 2 * BODY_PADDING_PX
+
     private val activeElements = listOf("script", "iframe", "object", "embed", "applet", "form", "meta", "link")
 
     /**
@@ -46,12 +52,19 @@ object HtmlSanitizer {
      * @param collapseQuotes whether a trailing quoted history folds behind a
      *   control the reader opens; the reading pane asks for it, the composer's
      *   editable body does not (issue #432)
-     * @return the sanitised document plus whether it held back a remote image
+     * @param fitToWidthCssPx what the card gives the body, in CSS pixels
+     *   ([contentWidthCssPx]): the widths a desktop template declares beyond
+     *   it are made to yield and what is left of them is measured
+     *   ([HtmlWidths], issue #430). The composer's editable body passes
+     *   null, since what it holds is on its way out rather than on screen.
+     * @return the sanitised document, whether it held back a remote image,
+     *   and how wide it still needs to be
      */
     fun sanitize(
         html: String,
         loadRemoteImages: Boolean = false,
         collapseQuotes: Boolean = false,
+        fitToWidthCssPx: Int? = null,
     ): SanitizedHtml {
         var out = html
         activeElements.forEach { tag ->
@@ -86,7 +99,12 @@ object HtmlSanitizer {
             }
         }
         if (collapseQuotes) out = QuotedHtml.collapse(out)
-        return SanitizedHtml(html = out, blockedRemoteImages = blockedRemoteImages)
+        if (fitToWidthCssPx != null) out = HtmlWidths.neutralise(out, fitToWidthCssPx)
+        return SanitizedHtml(
+            html = out,
+            blockedRemoteImages = blockedRemoteImages,
+            minimumWidthCssPx = if (fitToWidthCssPx == null) 0 else HtmlWidths.minimumWidthCssPx(out),
+        )
     }
 
     /**
@@ -160,34 +178,62 @@ object HtmlSanitizer {
             text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;") +
             "</pre>"
 
-    /** Adds the viewport and colour rules the reading pane renders with. */
-    fun document(body: String, darkTheme: Boolean): String {
+    /**
+     * Adds the viewport and colour rules the reading pane renders with.
+     *
+     * The viewport is the device's own width at scale 1, so the body's
+     * text is the size the pane asks for and stays there: a page laid
+     * out wider than the screen and then zoomed out to fit would render
+     * this 15px text at nine or ten. The document is made to fit at that
+     * size instead - [HtmlWidths.neutralise] takes the declared widths
+     * down and the rules below cap every box, its images and its tables
+     * at what the card gives them ([contentWidthCssPx], issue #430).
+     *
+     * @param contentWidthCssPx what the card gives the body; null leaves
+     *   the caps relative, for a caller that has not measured
+     */
+    fun document(body: String, darkTheme: Boolean, contentWidthCssPx: Int? = null): String {
         val background = if (darkTheme) "#1b1b1b" else "#ffffff"
         val foreground = if (darkTheme) "#e6e6e6" else "#1b1b1b"
         val muted = if (darkTheme) "#a6a6a6" else "#525252"
         val rule = if (darkTheme) "#4a4a4a" else "#c6c6c6"
         val chip = if (darkTheme) "#393939" else "#f0f0f0"
         val chipOpen = if (darkTheme) "#525252" else "#e0e0e0"
+        // A percentage cap resolves against whatever box holds it, so a
+        // cell inside an oversized table is capped at an oversized
+        // width. The measured width caps it at the card as well, and
+        // limits what an image contributes to the width its table asks
+        // for, which a percentage does not.
+        val cap = contentWidthCssPx?.let { "min(100%, ${it}px)" } ?: "100%"
         return """
             <!DOCTYPE html>
             <html><head>
             <meta name="viewport" content="width=device-width, initial-scale=1">
             <style>
-              body { margin: 0; padding: 12px; background: $background; color: $foreground;
+              /* The sender's padding and borders count inside the width
+                 they were given, so a 20px-padded wrapper capped at the
+                 card stays inside it. */
+              *, *::before, *::after { box-sizing: border-box; }
+              body { margin: 0; padding: ${BODY_PADDING_PX}px; background: $background; color: $foreground;
                      font-family: sans-serif; font-size: 15px; line-height: 1.45;
-                     overflow-wrap: break-word; }
-              img { max-width: 100%; height: auto; }
+                     /* A long word or URL breaks where it has to, which
+                        also tells a table how narrow its column may be. */
+                     overflow-wrap: anywhere; }
+              img { max-width: $cap; height: auto; }
               /* A document written for a desktop pane declares pixel widths
                  a phone does not have. Capping every box at the width it was
                  given reflows the document to the card at its own text size
                  (issue #430). */
-              body * { max-width: 100%; }
+              body * { max-width: $cap; }
               /* What no reflow can narrow - a row that refuses to wrap, a
                  fixed table - keeps its width and scrolls sideways in this
                  box, which is as wide as the card. The conversation around
                  it only ever scrolls up and down. */
               .$BODY_CLASS { overflow-x: auto; }
-              table { border-collapse: collapse; }
+              table { border-collapse: collapse; table-layout: auto; }
+              /* Preformatted text the sender wrote wraps rather than
+                 setting the width of the card. */
+              pre { white-space: pre-wrap; }
               a { color: #4c8dff; }
               blockquote { border-left: 3px solid $rule; margin: 0 0 0 8px;
                            padding: 0 0 0 12px; color: $muted; }
@@ -211,8 +257,14 @@ object HtmlSanitizer {
     }
 }
 
-/** A sanitised body and what it held back. */
+/** A sanitised body, what it held back, and how narrow it can get. */
 data class SanitizedHtml(
     val html: String,
     val blockedRemoteImages: Boolean,
+    /**
+     * How wide the body still needs to be once its declared widths have
+     * yielded, in CSS pixels; 0 when nothing in it resists reflow or the
+     * caller did not ask for a width to fit (issue #430).
+     */
+    val minimumWidthCssPx: Int = 0,
 )
