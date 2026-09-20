@@ -23,6 +23,12 @@ package com.netzhansa.herold.shared.mail
  *  - The fold begins at the citation. An element whose leading content
  *    is the sender's own text is left outside it, and the search
  *    carries on with the quoted material inside or after that element.
+ *  - Leading content is read as the sender's only in the region the
+ *    document opens its quoting with, and only while nothing outside
+ *    that region declares it quoted. An attribution line introducing a
+ *    region hands everything inside it to the message it introduces,
+ *    so what such a region leads with is the quoted correspondence's
+ *    own top-posted reply rather than anything written here.
  *
  * The fold is a `<details>` element, which opens and closes on a tap
  * with no script, so it works in the reading pane's WebView with
@@ -75,15 +81,15 @@ internal object QuotedHtml {
         var atTheFirstRegion = true
         while (true) {
             val candidate = firstQuotedRegion(root, passedOver) ?: return false
-            // Where the sender's own text can be is a question of
-            // position, not of the tag or class a region starts with.
-            // It is either outside the quote or among the leading
-            // children of the region the body opens with, never both
-            // and nowhere else: from the first quoted region on, the
-            // document is the quoted message, and reading any of it as
-            // the sender's would put the correspondent's words on
-            // screen as though they had just been written.
-            val mayHoldTheSendersText = atTheFirstRegion && nothingPrecedes(root, candidate)
+            // Whether a region can hold text of the sender's among its
+            // leading children is answered by the structure around it,
+            // not by how far into the body it sits. Two things settle
+            // it: the region is the first the document has, since
+            // everything from there on is the quoted message; and
+            // nothing outside it declares it quoted, since an
+            // attribution introducing a region says that everything
+            // within belongs to the message it introduces.
+            val mayHoldTheSendersText = atTheFirstRegion && !isIntroducedByAnAttribution(candidate)
             atTheFirstRegion = false
             if (!mayHoldTheSendersText) return fold(candidate)
 
@@ -93,25 +99,32 @@ internal object QuotedHtml {
         }
     }
 
-    /** True when [candidate] is the first thing in the body that reads. */
-    private fun nothingPrecedes(root: HtmlElement, candidate: HtmlElement): Boolean {
-        val ahead = StringBuilder()
-        var reached = false
-
-        fun walk(node: HtmlNode) {
-            if (reached) return
-            if (node === candidate) {
-                reached = true
-                return
-            }
-            when (node) {
-                is HtmlText -> node.text(ahead)
-                is HtmlElement -> node.children.forEach { walk(it) }
-            }
+    /**
+     * True when an attribution line outside [candidate] introduces it,
+     * which makes everything inside the quoted message's own.
+     *
+     * The line that introduces a region is the nearest sibling ahead of
+     * it that carries anything - separators and empty elements are not
+     * one. A region a client wrapped in a container of its own is
+     * introduced by whatever introduces that container, so the search
+     * carries on above it while a level has no sibling ahead of it.
+     */
+    private fun isIntroducedByAnAttribution(candidate: HtmlElement): Boolean {
+        var element: HtmlElement = candidate
+        while (true) {
+            val parent = element.parent ?: return false
+            var at = parent.indexOf(element) - 1
+            while (at >= 0 && isInert(parent.children[at])) at--
+            if (at >= 0) return isAttribution(parent.children[at])
+            element = parent
         }
+    }
 
-        root.children.forEach { walk(it) }
-        return ahead.toString().isBlank()
+    /** True for a node that carries nothing of its own: space or a rule. */
+    private fun isInert(node: HtmlNode): Boolean = when (node) {
+        is HtmlText -> node.raw.isBlank() || node.text().isBlank()
+        is HtmlElement ->
+            node.name == "br" || node.name == "hr" || node.text().isBlank()
     }
 
     private fun fold(candidate: HtmlElement): Boolean {

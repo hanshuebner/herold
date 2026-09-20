@@ -42,6 +42,51 @@ class QuotedFoldCorpusTest {
     @Test
     fun theSeededCorpusFoldsTheQuoteAndOnlyTheQuote() = check(seededCorpus())
 
+    @Test
+    fun theEnumeratedCorpusHoldsWithAParagraphAroundIt() = check(withTextAround(enumeratedCorpus()))
+
+    @Test
+    fun theSeededCorpusHoldsWithAParagraphAroundIt() = check(withTextAround(seededCorpus()))
+
+    /**
+     * Every body again with an unrelated paragraph in front of it and
+     * again with one after it.
+     *
+     * A fixture written to a client's shape starts at that shape, and
+     * a pass that reads the document around the quote rather than the
+     * quote itself is measured by nothing in such a set. A note above
+     * the reply and a line below it are what a real message carries,
+     * and each moves a different rule: what stands ahead of the quote
+     * must not change where the citation begins, and what stands after
+     * it means the quote is not what the message ends with.
+     */
+    private fun withTextAround(corpus: List<FoldCase>): List<FoldCase> = corpus.flatMap { case ->
+        val ahead = FoldCase(
+            name = "${case.name}+ahead",
+            html = "<p>A-${case.name}</p>${case.html}",
+            fresh = case.fresh + "A-${case.name}",
+            quoted = case.quoted,
+            folds = case.folds,
+        )
+        // A signature runs to the end of the message, so a line written
+        // after one is part of it rather than something the fold has to
+        // leave alone; those bodies carry the leading permutation only.
+        if (case.html.contains(SIGNATURE)) {
+            listOf(ahead)
+        } else {
+            listOf(
+                ahead,
+                FoldCase(
+                    name = "${case.name}+after",
+                    html = "${case.html}<p>B-${case.name}</p>",
+                    fresh = case.fresh + "B-${case.name}",
+                    quoted = case.quoted,
+                    folds = false,
+                ),
+            )
+        }
+    }
+
     private fun check(corpus: List<FoldCase>) {
         val failures = mutableListOf<String>()
         corpus.forEach { case ->
@@ -356,5 +401,6 @@ class QuotedFoldCorpusTest {
 
     private companion object {
         const val DETAILS = "<details class=\"herold-quoted\">"
+        const val SIGNATURE = "<p>-- </p>"
     }
 }

@@ -381,6 +381,26 @@ class QuotedHistoryTest {
     }
 
     @Test
+    fun foldsOnlyTheCitationWhenAParagraphStandsAboveTheCitePrefixDiv() {
+        // The same Thunderbird reply with an ordinary paragraph above
+        // it: what stands elsewhere in the body says nothing about
+        // where the citation div's own text ends.
+        val html = folded(
+            "<p>Fresh sender line</p>" +
+                "<div class=\"moz-cite-prefix\">Hallo Jane,<br><br>das passt mir gut.<br><br>" +
+                "Am 20.09.26 um 14:12 schrieb " +
+                "<a href=\"mailto:jane@example.test\">jane@example.test</a>:<br></div>" +
+                "<blockquote type=\"cite\">Original quoted text.</blockquote>",
+        )
+
+        assertBeforeFold(html, "Fresh sender line")
+        assertBeforeFold(html, "Hallo Jane,")
+        assertBeforeFold(html, "das passt mir gut.")
+        assertInsideFold(html, "Am 20.09.26 um 14:12 schrieb")
+        assertInsideFold(html, "Original quoted text.")
+    }
+
+    @Test
     fun keepsTheReplyVisibleWhenTheCitePrefixDivCarriesNoRecognisedAttribution() {
         // The fold starts at the citation even when the attribution is
         // in a shape the line heuristic does not know: what the sender
