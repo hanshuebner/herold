@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -48,6 +47,8 @@ import androidx.compose.ui.unit.dp
 import com.netzhansa.herold.android.AppContainer
 import com.netzhansa.herold.android.SessionScope
 import com.netzhansa.herold.android.ui.common.collectAsStateSafely
+import com.netzhansa.herold.android.ui.common.listState
+import com.netzhansa.herold.android.ui.common.rememberListPositions
 import com.netzhansa.herold.shared.search.SearchHit
 import com.netzhansa.herold.shared.search.SearchResults
 import com.netzhansa.herold.shared.search.SearchScope
@@ -74,10 +75,16 @@ fun SearchScreen(
     val scope = rememberCoroutineScope()
     val focus = remember { FocusRequester() }
 
-    // The query, the results and the scroll position live in a holder
-    // scoped to this destination's back-stack entry, so opening a result
-    // and coming back shows the search as it was left (issue #340).
+    // The query and the results live in a holder scoped to this
+    // destination's back-stack entry, so opening a result and coming
+    // back shows the search as it was left (issue #340).
     val model: SearchViewModel = viewModel()
+
+    // Where the results were left, in the screen's saved state, so the
+    // list comes back at the row the reader opened rather than at its
+    // top (issue #439).
+    val positions = rememberListPositions()
+    val listState = positions.listState("search")
 
     LaunchedEffect(Unit) {
         if (!model.everFocused) {
@@ -92,6 +99,8 @@ fun SearchScreen(
         scope.launch {
             model.results = session.search.search(model.query, accounts, mailboxes, accountScope)
             model.running = false
+            // A fresh set of results is read from its first hit.
+            listState.scrollToItem(0)
         }
     }
 
@@ -153,7 +162,7 @@ fun SearchScreen(
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp).testTag("search-count"),
                 )
                 LazyColumn(
-                    state = model.listState,
+                    state = listState,
                     modifier = Modifier.fillMaxSize().testTag("search-results"),
                 ) {
                     items(current.hits, key = { it.row.accountId + ":" + it.row.threadId }) { hit ->
@@ -239,9 +248,6 @@ class SearchViewModel : ViewModel() {
     var query by mutableStateOf("")
     var running by mutableStateOf(false)
     var results by mutableStateOf<SearchResults?>(null)
-
-    /** The result list's scroll offset, restored with the results. */
-    val listState = LazyListState()
 
     /** True once the field has taken focus, so a return does not re-open the keyboard. */
     var everFocused = false
