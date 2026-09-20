@@ -6,6 +6,10 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -59,12 +63,17 @@ import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.PullToRefreshState
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -74,7 +83,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -104,11 +117,13 @@ import com.netzhansa.herold.shared.outbox.PendingMessage
 import com.netzhansa.herold.shared.outbox.pendingMarkersByThread
 import com.netzhansa.herold.shared.inbox.InboxItem
 import com.netzhansa.herold.shared.inbox.ThreadRow
+import com.netzhansa.herold.shared.sync.AppStatus
 import com.netzhansa.herold.shared.sync.SyncStatus
 import com.netzhansa.herold.shared.sync.appStatus
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.datetime.Clock
 import kotlinx.datetime.TimeZone
@@ -176,6 +191,18 @@ fun InboxScreen(
 
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+
+    // The pull to refresh, which is how the message list is reloaded
+    // (REQ-AND-NAV-13, issue #444). The indicator runs for as long as
+    // the pass the gesture asked for, so what it says is what the
+    // client is doing rather than a fixed animation.
+    val pull = rememberPullToRefreshState()
+    var refreshing by remember { mutableStateOf(false) }
+    LaunchedEffect(refreshing) {
+        if (!refreshing) return@LaunchedEffect
+        session.syncScheduler.syncNow()
+        refreshing = false
+    }
 
     val rows = remember(emails, mailboxes, accounts, accountScope, drafts, pendingThreads) {
         InboxAssembler.threadRows(
@@ -424,8 +451,11 @@ fun InboxScreen(
                 Icon(Icons.Filled.Edit, contentDescription = "Compose")
             }
         },
+        // The top row carries the drawer, the search field and the
+        // avatar, and nothing besides (REQ-AND-NAV-02, issue #444).
         topBar = {
             TopAppBar(
+                modifier = Modifier.testTag("inbox-top-bar"),
                 navigationIcon = {
                     IconButton(
                         onClick = { scope.launch { drawer.open() } },
@@ -434,39 +464,11 @@ fun InboxScreen(
                         Icon(Icons.Filled.Menu, contentDescription = "Destinations")
                     }
                 },
-                title = {
-                    Text(
-                        text = when (destination) {
-                            MailDestination.Snoozed -> "Snoozed"
-                            is MailDestination.Folder -> (destination as MailDestination.Folder).title
-                            MailDestination.Inbox ->
-                                accounts.firstOrNull { it.id == accountScope }?.name ?: "Inbox"
-                        },
-                        modifier = Modifier.testTag("inbox-title"),
-                    )
-                },
+                title = { SearchField(onClick = onSearch) },
                 actions = {
-                    StatusIndicator(status = status, onOpenDiagnostics = onDiagnostics)
-                    AccountScopeSwitcher(
+                    AccountMenu(
                         accounts = accounts.map { it.id to it.name },
-                        selected = accountScope,
                         onSelect = { container.accountScope.value = it },
-                    )
-                    IconButton(onClick = onSearch, modifier = Modifier.testTag("inbox-search")) {
-                        Icon(Icons.Filled.Search, contentDescription = "Search")
-                    }
-                    IconButton(
-                        // The forced pass goes through the loop, so a
-                        // refusal the loop is backing off from does not
-                        // hold the user's own refresh up (issue #436).
-                        onClick = { session.syncScheduler.requestSync() },
-                        modifier = Modifier.testTag("inbox-refresh"),
-                    ) {
-                        Icon(Icons.Filled.Refresh, contentDescription = "Refresh")
-                    }
-                    OverflowMenu(
-                        onOutbox = onOutbox,
-                        onReportProblem = onReportProblem,
                         onSignOut = onSignOut,
                     )
                 },
@@ -474,6 +476,40 @@ fun InboxScreen(
         },
     ) { padding ->
         Column(modifier = Modifier.fillMaxSize().padding(padding)) {
+            // The open destination's name, its lanes and the status dot
+            // stand in a row of their own under the top row
+            // (REQ-AND-NAV-02, issue #444).
+            MailboxRow(
+                title = when (destination) {
+                    MailDestination.Snoozed -> "Snoozed"
+                    is MailDestination.Folder -> (destination as MailDestination.Folder).title
+                    MailDestination.Inbox ->
+                        accounts.firstOrNull { it.id == accountScope }?.name ?: "Inbox"
+                },
+                tabs = if (destination == MailDestination.Inbox) lanes.tabs else emptyList(),
+                selectedLane = selectedLane,
+                unreadByLane = unreadByLane,
+                onSelectLane = { pickedLane = it },
+                status = status,
+                onOpenDiagnostics = onDiagnostics,
+            )
+            PullToRefreshBox(
+                isRefreshing = refreshing,
+                // The forced pass goes through the loop, so a refusal
+                // the loop is backing off from does not hold the user's
+                // own refresh up (issue #436).
+                onRefresh = { refreshing = true },
+                state = pull,
+                indicator = {
+                    RefreshIndicator(
+                        state = pull,
+                        refreshing = refreshing,
+                        modifier = Modifier.align(Alignment.TopCenter),
+                    )
+                },
+                modifier = Modifier.fillMaxSize(),
+            ) {
+        Column(modifier = Modifier.fillMaxSize()) {
             if (destination == MailDestination.Snoozed) {
                 SnoozedList(
                     rows = snoozedRows,
@@ -517,15 +553,6 @@ fun InboxScreen(
             }
 
             if (destination == MailDestination.Inbox) {
-            if (lanes.tabs.isNotEmpty()) {
-                CategoryTabRow(
-                    tabs = lanes.tabs,
-                    selected = selectedLane,
-                    unreadByLane = unreadByLane,
-                    onSelect = { pickedLane = it },
-                )
-            }
-
             if (stream.isEmpty()) {
                 Text(
                     text = if (selectedLane == null) {
@@ -602,6 +629,8 @@ fun InboxScreen(
                     HorizontalDivider()
                 }
             }
+            }
+        }
             }
         }
     }
@@ -724,15 +753,63 @@ private fun SnoozedRowItem(
     }
 }
 
+/**
+ * The way into search from the inbox's top row (issue #444).
+ *
+ * The field is a target that opens the search screen, whose own field
+ * takes focus as it comes up: the query, its results and the place the
+ * results list was left belong to that destination's back-stack entry
+ * (issues #340, #439), so the text is typed into the field that lives
+ * there.
+ */
 @Composable
-private fun AccountScopeSwitcher(
+private fun SearchField(onClick: () -> Unit) {
+    Surface(
+        onClick = onClick,
+        shape = CircleShape,
+        color = MaterialTheme.colorScheme.surfaceContainerHighest,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(SEARCH_FIELD_HEIGHT)
+            .testTag("inbox-search"),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            modifier = Modifier.padding(horizontal = 16.dp),
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Search,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = "Search mail",
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+/** How tall the top row's search field stands. */
+private val SEARCH_FIELD_HEIGHT = 44.dp
+
+/**
+ * The avatar at the end of the top row and what it opens: the account
+ * the inbox is scoped to, and signing out (issue #444).
+ */
+@Composable
+private fun AccountMenu(
     accounts: List<Pair<String, String>>,
-    selected: String?,
     onSelect: (String?) -> Unit,
+    onSignOut: () -> Unit,
 ) {
     var open by remember { mutableStateOf(false) }
-    IconButton(onClick = { open = true }, modifier = Modifier.testTag("inbox-scope-switcher")) {
-        Icon(Icons.Filled.AccountCircle, contentDescription = "Account scope")
+    IconButton(onClick = { open = true }, modifier = Modifier.testTag("inbox-avatar")) {
+        Icon(Icons.Filled.AccountCircle, contentDescription = "Account")
     }
     DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
         DropdownMenuItem(
@@ -747,38 +824,131 @@ private fun AccountScopeSwitcher(
                 modifier = Modifier.testTag("scope-$id"),
             )
         }
-    }
-    if (selected != null) Unit
-}
-
-@Composable
-private fun OverflowMenu(
-    onOutbox: () -> Unit,
-    onReportProblem: () -> Unit,
-    onSignOut: () -> Unit,
-) {
-    var open by remember { mutableStateOf(false) }
-    IconButton(onClick = { open = true }, modifier = Modifier.testTag("inbox-overflow")) {
-        Icon(Icons.Filled.MoreVert, contentDescription = "More")
-    }
-    DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-        DropdownMenuItem(
-            text = { Text("Outbox") },
-            onClick = { open = false; onOutbox() },
-            modifier = Modifier.testTag("menu-outbox"),
-        )
-        DropdownMenuItem(
-            text = { Text("Report a problem") },
-            onClick = { open = false; onReportProblem() },
-            modifier = Modifier.testTag("menu-report-problem"),
-        )
+        HorizontalDivider()
         DropdownMenuItem(
             text = { Text("Sign out") },
             onClick = { open = false; onSignOut() },
-            modifier = Modifier.testTag("menu-sign-out"),
+            modifier = Modifier.testTag("account-sign-out"),
         )
     }
 }
+
+/**
+ * The row under the top row: the open destination's name, the inbox's
+ * lanes and the status dot (issue #444).
+ *
+ * The dot keeps the fixed slot it had in the app bar, at the end of
+ * this row, so it still says what the client is doing with the server
+ * without anything in the list moving when it changes (REQ-AND-SYNC-30,
+ * issue #421).
+ */
+@Composable
+private fun MailboxRow(
+    title: String,
+    tabs: List<String>,
+    selectedLane: String?,
+    unreadByLane: Map<String, Int>,
+    onSelectLane: (String) -> Unit,
+    status: AppStatus,
+    onOpenDiagnostics: () -> Unit,
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.fillMaxWidth().testTag("inbox-mailbox-row"),
+    ) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+                .widthIn(max = MAILBOX_NAME_WIDTH)
+                .padding(start = 16.dp, end = 8.dp)
+                .testTag("inbox-title"),
+        )
+        if (tabs.isNotEmpty()) {
+            CategoryTabRow(
+                tabs = tabs,
+                selected = selectedLane,
+                unreadByLane = unreadByLane,
+                onSelect = onSelectLane,
+                modifier = Modifier.weight(1f),
+            )
+        } else {
+            Spacer(modifier = Modifier.weight(1f))
+        }
+        StatusIndicator(status = status, onOpenDiagnostics = onOpenDiagnostics)
+    }
+}
+
+/** The most the destination's name takes of its row, so the lanes keep theirs. */
+private val MAILBOX_NAME_WIDTH = 140.dp
+
+/**
+ * The pull-to-refresh indicator, in the app's own colours (issue #444).
+ *
+ * It turns from a coroutine rather than the frame clock, for the reason
+ * the status dot's pulse does (issue #421): an animation that holds the
+ * frame clock for as long as a sync runs makes every "wait until the UI
+ * settles" wait for the network. What it says - pulling, or running -
+ * is on the node, so TalkBack reads it and a check can assert it.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun RefreshIndicator(
+    state: PullToRefreshState,
+    refreshing: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val reach = if (refreshing) 1f else state.distanceFraction.coerceIn(0f, 1f)
+    val angle = if (refreshing) spinAngle() else reach * PULL_SWEEP
+    val description = if (refreshing) "Refreshing" else "Pull to refresh"
+    Surface(
+        shape = CircleShape,
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        shadowElevation = 2.dp,
+        modifier = modifier
+            .offset(y = (INDICATOR_SIZE + INDICATOR_MARGIN) * reach - INDICATOR_SIZE)
+            .size(INDICATOR_SIZE)
+            .alpha(reach)
+            .semantics { contentDescription = description }
+            .testTag("inbox-refresh-indicator"),
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Icon(
+                imageVector = Icons.Filled.Refresh,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(INDICATOR_ICON).rotate(angle),
+            )
+        }
+    }
+}
+
+/** The angle the running indicator stands at, stepped off the frame clock. */
+@Composable
+private fun spinAngle(): Float {
+    var angle by remember { mutableFloatStateOf(0f) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            angle = (angle + SPIN_STEP) % 360f
+            delay(SPIN_STEP_MS)
+        }
+    }
+    return angle
+}
+
+/** The indicator's disc, its icon, and how far below the edge it lands. */
+private val INDICATOR_SIZE = 40.dp
+private val INDICATOR_ICON = 24.dp
+private val INDICATOR_MARGIN = 12.dp
+
+/** How far the icon turns as the pull reaches the threshold. */
+private const val PULL_SWEEP = 270f
+
+/** How far, and how often, the running indicator turns. */
+private const val SPIN_STEP = 30f
+private const val SPIN_STEP_MS = 80L
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

@@ -38,8 +38,9 @@ private val PULSE_STEPS = listOf(0.35f, 0.5f, 0.65f, 0.8f, 0.9f, 1f, 0.9f, 0.8f,
 
 /**
  * What the client's dealings with the server look like, in one dot
- * (REQ-AND-SYNC-30). It lives in the top app bar's action row and keeps
- * its slot in every state, so nothing in the content column moves when
+ * (REQ-AND-SYNC-30). It lives in the shell's chrome - the inbox's
+ * mailbox row, a conversation's app bar - and keeps its slot in every
+ * state, so nothing in the content column moves when
  * the connection drops, a sync starts or one fails: the screen the user
  * is reading stays exactly where it was.
  *

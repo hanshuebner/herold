@@ -94,9 +94,7 @@ class BugReportMultiCaptureAcceptanceTest {
             compose.onAllNodesWithTag("bug-pending-chip").fetchSemanticsNodes().isNotEmpty()
         }
         UiDevice.getInstance(InstrumentationRegistry.getInstrumentation()).pressBack()
-        compose.waitUntil(TIMEOUT_MS) {
-            compose.onAllNodesWithTag("inbox-overflow").fetchSemanticsNodes().isNotEmpty()
-        }
+        compose.waitUntil(TIMEOUT_MS) { compose.onTheInbox() }
 
         // The marker is the way to add the screen you walked to: one
         // tap captures it and puts it on the open report.
@@ -158,9 +156,7 @@ class BugReportMultiCaptureAcceptanceTest {
             compose.onAllNodesWithTag("bug-pending-chip").fetchSemanticsNodes().isNotEmpty()
         }
         UiDevice.getInstance(InstrumentationRegistry.getInstrumentation()).pressBack()
-        compose.waitUntil(TIMEOUT_MS) {
-            compose.onAllNodesWithTag("inbox-overflow").fetchSemanticsNodes().isNotEmpty()
-        }
+        compose.waitUntil(TIMEOUT_MS) { compose.onTheInbox() }
 
         raiseTheReporterFromTheInbox()
         compose.waitUntil(TIMEOUT_MS) {
@@ -251,11 +247,7 @@ class BugReportMultiCaptureAcceptanceTest {
 
     /** And from the inbox's, which is the other entry point. */
     private fun raiseTheReporterFromTheInbox() {
-        compose.onNodeWithTag("inbox-overflow").performClick()
-        compose.waitUntil(TIMEOUT_MS) {
-            compose.onAllNodesWithTag("menu-report-problem").fetchSemanticsNodes().isNotEmpty()
-        }
-        compose.onNodeWithTag("menu-report-problem").performClick()
+        compose.reportProblemFromTheDrawer()
     }
 
     /** Seeds a conversation and opens it, so the report has a thread route. */

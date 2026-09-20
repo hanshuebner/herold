@@ -134,11 +134,7 @@ class BottomInsetAcceptanceTest {
     fun t40_theBugReportSheetActionRowStandsAboveIt() {
         signInAndSync()
 
-        compose.onNodeWithTag("inbox-overflow").performClick()
-        compose.waitUntil(TIMEOUT_MS) {
-            compose.onAllNodesWithTag("menu-report-problem").fetchSemanticsNodes().isNotEmpty()
-        }
-        compose.onNodeWithTag("menu-report-problem").performClick()
+        compose.reportProblemFromTheDrawer()
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithTag("bug-sheet").fetchSemanticsNodes().isNotEmpty()
         }

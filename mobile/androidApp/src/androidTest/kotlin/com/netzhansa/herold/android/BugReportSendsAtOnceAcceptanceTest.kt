@@ -165,13 +165,9 @@ class BugReportSendsAtOnceAcceptanceTest {
         }
     }
 
-    /** Opens the reporter from the message list's overflow. */
+    /** Opens the reporter from the message list, through the drawer. */
     private fun raiseTheSheet() {
-        compose.onNodeWithTag("inbox-overflow").performClick()
-        compose.waitUntil(TIMEOUT_MS) {
-            compose.onAllNodesWithTag("menu-report-problem").fetchSemanticsNodes().isNotEmpty()
-        }
-        compose.onNodeWithTag("menu-report-problem").performClick()
+        compose.reportProblemFromTheDrawer()
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithTag("bug-sheet").fetchSemanticsNodes().isNotEmpty()
         }
