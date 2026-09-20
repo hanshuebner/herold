@@ -129,6 +129,17 @@ force-stops the target package at the end of a run and at the start of
 the next, and a force-stop takes the task's saved state with it, so the
 second invocation starts on the inbox whatever the first left behind.
 
+`InboxTopBarAcceptanceTest` checks the inbox's chrome (issue #444): the
+three controls of the top row, the mailbox name and the lanes in the
+row beneath it, the pull-to-refresh gesture, and reporting a problem
+from the drawer and signing out from the avatar. Its last check signs
+out and signs back in, so it runs online, in its own invocation:
+
+    adb shell am instrument -w -r \
+      -e class com.netzhansa.herold.android.InboxTopBarAcceptanceTest \
+      -e heroldBaseUrl http://10.0.2.2:<backend-port> \
+      com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+
 `OAuthAcceptanceTest` needs no device setup. Pass the instance's
 `OAUTH2_CLIENT_ID` when it is not the default `herold-android`:
 
