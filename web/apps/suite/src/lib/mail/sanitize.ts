@@ -1543,8 +1543,87 @@ function sanitizeInlineColorPairs(root: Element): void {
  * below.
  */
 /**
+ * True for `<blockquote>` or a `gmail_quote`/`yahoo_quoted`/`moz-cite-prefix`
+ * div — the tag/class shapes real mail clients use to mark quoted material.
+ */
+function isQuoteElementNode(el: Element): boolean {
+  if (el.tagName === 'BLOCKQUOTE') return true;
+  if (el.tagName === 'DIV') {
+    const cls = el.getAttribute('class') ?? '';
+    return /gmail_quote|yahoo_quoted|moz-cite-prefix/i.test(cls);
+  }
+  return false;
+}
+
+/** `node`'s own text, for both a `Text` node and an `Element`. */
+function nodeText(node: Node): string {
+  if (node.nodeType === Node.TEXT_NODE) return node.nodeValue ?? '';
+  if (node.nodeType === Node.ELEMENT_NODE) return (node as Element).textContent ?? '';
+  return '';
+}
+
+/** How long the text an attribution line is read from may run (re #448). */
+const ATTRIBUTION_SCAN_MAX_CHARS = 512;
+
+/**
+ * Where an attribution line spread over several of `children` begins, or -1
+ * when the run of children ends in none (re #448).
+ *
+ * Thunderbird writes the attribution as a text node ("Am ... schrieb"), a
+ * `mailto:` link carrying the address, and the colon after it, all three
+ * siblings of the reply text above — so no single child reads as an
+ * attribution on its own the way `isAttributionNode` tests them one at a
+ * time. Read together they are one line. The scan walks back from the end
+ * accumulating text while it is still short enough to be one line, and
+ * returns the last child whose remaining (accumulated) text reads as an
+ * attribution — which keeps the attribution itself out of the sender's
+ * visible text even when that text happens to open with the same words.
+ */
+function attributionStart(children: Node[]): number {
+  let tail = '';
+  for (let at = children.length - 1; at >= 0; at--) {
+    tail = nodeText(children[at]!) + tail;
+    if (tail.length > ATTRIBUTION_SCAN_MAX_CHARS) return -1;
+    if (at === 0) return -1;
+    const text = tail.trim();
+    if (text && isAttributionLine(text)) return at;
+  }
+  return -1;
+}
+
+/** Thunderbird's class for the citation-prefix line (re #448). */
+const CITATION_PREFIX_CLASS_RE = /moz-cite-prefix/i;
+
+/**
+ * True when `element` holds no text of the sender's ahead of the quoted
+ * material it carries (re #448).
+ *
+ * A `<blockquote>` and a `gmail_quote`/`yahoo_quoted` div hold the quoted
+ * message by construction — this always returns true for those. Thunderbird's
+ * `moz-cite-prefix` div does not: it names the attribution line, and a reply
+ * typed above the citation is written into it ahead of that line (see the
+ * ticket body of #448). Such a div starts the fold only once its own leading
+ * content — up to the first child that itself marks a quote start — is blank
+ * or reads as an attribution; otherwise it is left out of the fold and the
+ * search continues with the quoted material inside or after it.
+ */
+function startsAtTheCitation(element: Element): boolean {
+  if (element.tagName !== 'DIV' || !CITATION_PREFIX_CLASS_RE.test(element.getAttribute('class') ?? '')) {
+    return true;
+  }
+  let lead = '';
+  for (const child of Array.from(element.childNodes)) {
+    if (isQuoteStartNode(child)) break;
+    lead += nodeText(child);
+  }
+  const text = lead.trim();
+  return text === '' || isAttributionLine(text);
+}
+
+/**
  * True for a node that itself marks the start of quoted material: a nested
- * `<blockquote>`, a `gmail_quote`/`yahoo_quoted`/`moz-cite-prefix` div, an
+ * `<blockquote>`, a `gmail_quote`/`yahoo_quoted`/`moz-cite-prefix` div that
+ * itself starts at the citation (`startsAtTheCitation`), an
  * attribution/citation-introducer line, or a plain wrapper element whose
  * own first meaningful child is itself one of those markers. Used by
  * `splitLeadingFreshContent` to find where genuinely quoted content begins
@@ -1565,11 +1644,7 @@ function sanitizeInlineColorPairs(root: Element): void {
 function isQuoteStartNode(node: Node): boolean {
   if (node.nodeType === Node.ELEMENT_NODE) {
     const el = node as Element;
-    if (el.tagName === 'BLOCKQUOTE') return true;
-    if (el.tagName === 'DIV') {
-      const cls = el.getAttribute('class') ?? '';
-      if (/gmail_quote|yahoo_quoted|moz-cite-prefix/i.test(cls)) return true;
-    }
+    if (isQuoteElementNode(el) && startsAtTheCitation(el)) return true;
   }
   if (isAttributionNode(node)) return true;
   return isQuoteWrapperNode(node);
@@ -1592,11 +1667,7 @@ function isQuoteWrapperNode(node: Node): boolean {
   if (!first) return false;
   if (first.nodeType === Node.ELEMENT_NODE) {
     const fe = first as Element;
-    if (fe.tagName === 'BLOCKQUOTE') return true;
-    if (fe.tagName === 'DIV') {
-      const cls = fe.getAttribute('class') ?? '';
-      if (/gmail_quote|yahoo_quoted|moz-cite-prefix/i.test(cls)) return true;
-    }
+    if (isQuoteElementNode(fe) && startsAtTheCitation(fe)) return true;
   }
   return isAttributionNode(first);
 }
@@ -1647,20 +1718,27 @@ function firstMeaningfulChild(el: Element): Node | null {
  * with no such marker child (the overwhelmingly common shape) has no
  * boundary to find, so it is left untouched and folds atomically exactly as
  * before this function existed.
+ *
+ * When no single child matches `isQuoteStartNode`, the boundary falls back
+ * to `attributionStart` (re #448): Thunderbird spreads its "Am ... schrieb
+ * ...:" attribution over a text node, a `mailto:` anchor and the trailing
+ * colon, none of which reads as an attribution on its own the way
+ * `isQuoteStartNode` tests each child in isolation.
  */
 function splitLeadingFreshContent(candidate: Element): void {
   const parent = candidate.parentNode;
   if (!parent) return;
   const children = Array.from(candidate.childNodes);
-  let boundaryIdx = -1;
+  let marker = -1;
   for (let i = 0; i < children.length; i++) {
     if (isQuoteStartNode(children[i]!)) {
-      boundaryIdx = i;
+      marker = i;
       break;
     }
   }
-  // No marker child found, or it is already the first child: nothing
-  // fresh precedes the quote inside the candidate.
+  const boundaryIdx = marker > 0 ? marker : attributionStart(children);
+  // No boundary found, or it is already the first child: nothing fresh
+  // precedes the quote inside the candidate.
   if (boundaryIdx <= 0) return;
   const leading = children.slice(0, boundaryIdx);
   // Whitespace/<br>/<hr> only ahead of the marker is not fresh content —
@@ -1672,13 +1750,24 @@ function splitLeadingFreshContent(candidate: Element): void {
 }
 
 function collapseQuotedRegions(root: ParentNode): void {
-  const candidate = findFirstQuotedRegion(root);
+  // Find the first quoted region that itself starts at the citation (re
+  // #448): a `moz-cite-prefix` div whose own leading content is the
+  // sender's text names the attribution line rather than bounding a quote,
+  // so it is passed over and the search continues with the next quoted
+  // region in document order — typically the `<blockquote>` the div
+  // precedes — instead of folding the sender's text away with it.
+  const passedOver: Element[] = [];
+  let candidate: Element | null = findFirstQuotedRegion(root, passedOver);
+  while (candidate) {
+    // Split fresh content nested as leading CHILDREN of the matched element
+    // back out before the rest of this function ever inspects candidate's
+    // siblings (re #292) — see splitLeadingFreshContent's doc comment.
+    splitLeadingFreshContent(candidate);
+    if (startsAtTheCitation(candidate)) break;
+    passedOver.push(candidate);
+    candidate = findFirstQuotedRegion(root, passedOver);
+  }
   if (!candidate) return;
-
-  // Split fresh content nested as leading CHILDREN of the matched element
-  // back out before the rest of this function ever inspects candidate's
-  // siblings (re #292) — see splitLeadingFreshContent's doc comment.
-  splitLeadingFreshContent(candidate);
 
   // Guard: only collapse when the quoted region is truly trailing. Walk
   // past the contiguous block of quote-or-empty siblings that would be
@@ -1778,7 +1867,10 @@ function collapseQuotedRegions(root: ParentNode): void {
  * <details> region alongside the first quoted block:
  *  - whitespace-only text nodes
  *  - <br> and <hr> elements (separators with no text content)
- *  - additional quoted blocks (<blockquote>, gmail_quote-class divs)
+ *  - additional quoted blocks (<blockquote>, gmail_quote-class divs) that
+ *    themselves start at the citation (`startsAtTheCitation`, re #448) — a
+ *    `moz-cite-prefix` div carrying the sender's own leading text is NOT
+ *    quote-or-empty, so it is never silently swept in as a sibling
  *  - structurally empty elements (no visible text content)
  *
  * Returns false for elements with substantive non-quoted text so
@@ -1793,11 +1885,7 @@ function isQuoteOrEmptyNode(node: Node): boolean {
   if (node.nodeType !== Node.ELEMENT_NODE) return false;
   const el = node as Element;
   if (el.tagName === 'BR' || el.tagName === 'HR') return true;
-  if (el.tagName === 'BLOCKQUOTE') return true;
-  if (el.tagName === 'DIV') {
-    const cls = el.getAttribute('class') ?? '';
-    if (/gmail_quote|yahoo_quoted|moz-cite-prefix/i.test(cls)) return true;
-  }
+  if (isQuoteElementNode(el)) return startsAtTheCitation(el);
   // An element whose visible text is entirely whitespace is empty.
   return !(el.textContent?.trim());
 }
@@ -1830,18 +1918,20 @@ function isAttributionNode(node: Node): boolean {
   return isAttributionLine(((node as Element).textContent ?? '').trim());
 }
 
-function findFirstQuotedRegion(root: ParentNode): Element | null {
+/**
+ * The first quoted region in document order, `passedOver` elements aside
+ * (re #448) — `collapseQuotedRegions` passes over a candidate whose own
+ * leading content fails `startsAtTheCitation` and asks for the next one.
+ */
+function findFirstQuotedRegion(root: ParentNode, passedOver: Element[] = []): Element | null {
   // Walk in document order; the first match wins.
   const walker = root.querySelectorAll
     ? root.querySelectorAll('blockquote, div, hr')
     : null;
   if (!walker) return null;
   for (const el of walker) {
-    if (el.tagName === 'BLOCKQUOTE') return el;
-    if (el.tagName === 'DIV') {
-      const cls = el.getAttribute('class') ?? '';
-      if (/gmail_quote|yahoo_quoted|moz-cite-prefix/i.test(cls)) return el;
-    }
+    if (passedOver.includes(el)) continue;
+    if (isQuoteElementNode(el)) return el;
   }
   return null;
 }

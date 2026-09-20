@@ -1401,6 +1401,59 @@ describe('sanitizeHtml — quoted-history collapse', () => {
       expect(split.collapsed).toContain('Original original text.');
     });
   });
+
+  // re #448: the attribution line itself, not just the reply text above it,
+  // is spread across several children of the moz-cite-prefix div -- a text
+  // node, the mailto: anchor Thunderbird wraps the address in, and the
+  // trailing colon.
+  describe('Thunderbird attribution split across a text node, a mailto: anchor and the trailing colon (re #448)', () => {
+    it('folds at the blockquote, with both reply lines visible and the attribution inside the fold', () => {
+      const html =
+        '<div class="moz-cite-prefix">Hallo Jane,<br><br>das passt mir gut.<br><br>' +
+        'Am 20.09.26 um 14:12 schrieb ' +
+        '<a class="moz-txt-link-abbreviated" href="mailto:jane@example.test">jane@example.test</a>:<br></div>\n' +
+        '<blockquote type="cite" cite="mid:abc@example.test">Original quoted text.</blockquote>';
+      const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+      const detailsStart = body.indexOf('<details class="herold-quoted">');
+      const detailsEnd = body.indexOf('</details>');
+      expect(detailsStart).toBeGreaterThan(0);
+      // Both reply lines render unfolded, before <details>.
+      expect(body.indexOf('Hallo Jane,')).toBeLessThan(detailsStart);
+      expect(body.indexOf('das passt mir gut.')).toBeLessThan(detailsStart);
+      // The attribution (split across the text node, the anchor, and the
+      // trailing colon) and the quote both fold.
+      const attrPos = body.indexOf('Am 20.09.26 um 14:12 schrieb');
+      const addrPos = body.indexOf('jane@example.test');
+      const quotePos = body.indexOf('Original quoted text.');
+      expect(attrPos).toBeGreaterThan(detailsStart);
+      expect(attrPos).toBeLessThan(detailsEnd);
+      expect(addrPos).toBeGreaterThan(detailsStart);
+      expect(addrPos).toBeLessThan(detailsEnd);
+      expect(quotePos).toBeGreaterThan(detailsStart);
+      expect(quotePos).toBeLessThan(detailsEnd);
+    });
+
+    it('a moz-cite-prefix div whose attribution the heuristic does not recognise leaves the reply visible and folds the quote alone', () => {
+      const html =
+        '<div class="moz-cite-prefix">Hallo Jane,<br><br>das passt mir gut.<br><br>' +
+        'Op 20-09-26 om 14:12 schreef ' +
+        '<a class="moz-txt-link-abbreviated" href="mailto:jane@example.test">jane@example.test</a>:<br></div>\n' +
+        '<blockquote type="cite" cite="mid:abc@example.test">Original quoted text.</blockquote>';
+      const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+      const detailsStart = body.indexOf('<details class="herold-quoted">');
+      const detailsEnd = body.indexOf('</details>');
+      expect(detailsStart).toBeGreaterThan(0);
+      // The whole div -- both reply lines and the unrecognised attribution
+      // line -- stays visible, outside and before the fold.
+      expect(body.indexOf('Hallo Jane,')).toBeLessThan(detailsStart);
+      expect(body.indexOf('das passt mir gut.')).toBeLessThan(detailsStart);
+      expect(body.indexOf('Op 20-09-26 om 14:12 schreef')).toBeLessThan(detailsStart);
+      // Only the quoted material folds.
+      const quotePos = body.indexOf('Original quoted text.');
+      expect(quotePos).toBeGreaterThan(detailsStart);
+      expect(quotePos).toBeLessThan(detailsEnd);
+    });
+  });
 });
 
 describe('sanitizeHtml — script/style filters', () => {
