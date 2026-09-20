@@ -73,14 +73,19 @@ object HtmlWidths {
      * Its width is estimated from its text at the pane's own type size,
      * which is enough to tell a phrase that fits from a forty-column
      * table row that cannot.
+     *
+     * A folded quoted history is not measured. What it holds is the
+     * message being answered, behind a control, and the reply in front
+     * of it is what the reader came for (issue #432).
      */
     fun minimumWidthCssPx(html: String): Int {
+        val visible = html.substringBefore("<details class=\"${QuotedHtml.DETAILS_CLASS}\"")
         var widest = 0
-        startTag.findAll(html).forEach { match ->
+        startTag.findAll(visible).forEach { match ->
             val name = match.groupValues[1].lowercase()
             val attributes = match.groupValues[2]
             if (name != "nobr" && !holdsNowrap(attributes)) return@forEach
-            val text = plainTextOf(html, match.range.last + 1, name)
+            val text = plainTextOf(visible, match.range.last + 1, name)
             widest = maxOf(widest, (text.length * AVERAGE_CHAR_PX).toInt())
         }
         return widest
