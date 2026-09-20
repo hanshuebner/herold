@@ -59,6 +59,7 @@ func Run(t *testing.T, f Factory) {
 		{"RethreadPrincipal_DuplicateMessageID", testRethreadPrincipal_DuplicateMessageID},
 		// issue #442: diag rethread's Force + DryRun seam.
 		{"RethreadPrincipal_ForceAppliesCurrentRule", testRethreadPrincipal_ForceAppliesCurrentRule},
+		{"RethreadPrincipal_ForceConvergesOutOfOrderAncestor", testRethreadPrincipal_ForceConvergesOutOfOrderAncestor},
 		{"ListPrincipalBlobHashes", testListPrincipalBlobHashes},
 		{"UpdateFlagsBumpsModSeq", testUpdateFlagsBumpsModSeq},
 		{"UpdateFlagsUnchangedSince", testUpdateFlagsUnchangedSince},
@@ -2646,13 +2647,21 @@ func testRethreadPrincipal_SubjectChangeSplitsThread(t *testing.T, s store.Store
 }
 
 // testRethreadPrincipal_ForceAppliesCurrentRule verifies the diag
-// rethread seam (issue #442): a mailbox whose four messages already
-// carry a thread_id merging all of them into one thread -- the shape a
-// pre-#437 ingest would have produced, since the base-subject-mismatch
-// rule (REQ-STORE-40) did not exist yet -- gets split into two threads
+// rethread seam (issue #442): a mailbox whose messages already carry
+// thread_id assignments merging them into one thread -- the shape
+// real pre-#437 ingest produced, since the base-subject-mismatch rule
+// (REQ-STORE-40) did not exist yet -- gets split into per-rule threads
 // by a RethreadOptions{Force: true} pass, matching what
 // mailparse.SubjectsThreadTogether computes today. A DryRun pass first
 // reports the same count and leaves every thread_id unchanged.
+//
+// The root (A) is left at thread_id 0, the sentinel real ingest
+// (insertMessageTx) leaves on a message with no resolvable ancestor
+// (commit 48f13189) -- not a self-referential id, which pre-#437
+// ingest never wrote there. B/C/D are wired onto A the way pre-#437
+// ingest actually chained replies: each inherits its immediate
+// ancestor's thread_id, or the ancestor's own id when that thread_id
+// is still the 0 sentinel.
 func testRethreadPrincipal_ForceAppliesCurrentRule(t *testing.T, s store.Store) {
 	ctx := ctxT(t)
 	p := mustInsertPrincipal(t, s, "rethreadforce@example.com")
@@ -2699,21 +2708,37 @@ func testRethreadPrincipal_ForceAppliesCurrentRule(t *testing.T, s store.Store) 
 	before := byMID()
 	rootID := before["rtf-a@test"].ID
 
-	// Simulate the pre-#437 shape: every row shares the root's
-	// thread_id, the way ingest merged them before the base-subject
-	// mismatch rule existed.
-	for _, mid := range []string{"rtf-a@test", "rtf-b@test", "rtf-c@test", "rtf-d@test"} {
+	// Simulate the pre-#437 shape exactly as real ingest produced it:
+	// A keeps the 0 sentinel (no ancestor); B, C and D each inherit
+	// their immediate ancestor's thread_id, which pre-#437 never
+	// checked the subject before doing -- so all three land on A's
+	// root (identified by A's own id, since A's thread_id is 0).
+	for _, mid := range []string{"rtf-b@test", "rtf-c@test", "rtf-d@test"} {
 		if err := s.Meta().UpdateMessageThreadID(ctx, before[mid].ID, uint64(rootID)); err != nil {
 			t.Fatalf("UpdateMessageThreadID(%s): %v", mid, err)
 		}
 	}
 
-	// A plain (non-force) pass must leave the old shape alone: every
-	// row already has a non-zero thread_id.
+	// A plain (non-force) pass leaves B/C/D alone (each already
+	// carries a non-zero thread_id) but still normalises A's 0
+	// sentinel to its own id -- the same cosmetic, semantically-null
+	// rewrite RethreadPrincipal's non-force gap-filling path has
+	// always applied to any rootless message (see testRethreadPrincipal's
+	// orphan case); threadKey() everywhere in the codebase treats 0
+	// and a message's own id as the same "unthreaded root" value.
 	if n, err := s.Meta().RethreadPrincipal(ctx, p.ID, store.RethreadOptions{}); err != nil {
 		t.Fatalf("RethreadPrincipal (no force): %v", err)
-	} else if n != 0 {
-		t.Errorf("RethreadPrincipal (no force) n = %d, want 0 (already-threaded rows must be left alone)", n)
+	} else if n != 1 {
+		t.Errorf("RethreadPrincipal (no force) n = %d, want 1 (only A's 0-to-self-id normalisation; B/C/D already-threaded rows must be left alone)", n)
+	}
+	afterNoForce := byMID()
+	if afterNoForce["rtf-a@test"].ThreadID != uint64(rootID) {
+		t.Errorf("non-force pass: A thread_id = %d, want self id %d", afterNoForce["rtf-a@test"].ThreadID, rootID)
+	}
+	for _, mid := range []string{"rtf-b@test", "rtf-c@test", "rtf-d@test"} {
+		if afterNoForce[mid].ThreadID != uint64(rootID) {
+			t.Errorf("non-force pass changed %s: got %d, want unchanged %d", mid, afterNoForce[mid].ThreadID, rootID)
+		}
 	}
 
 	// Dry run: reports what a Force apply would change, writes nothing.
@@ -2765,6 +2790,96 @@ func testRethreadPrincipal_ForceAppliesCurrentRule(t *testing.T, s store.Store) 
 		t.Fatalf("RethreadPrincipal (force apply, second pass): %v", err)
 	} else if n != 0 {
 		t.Errorf("RethreadPrincipal (force apply, second pass) n = %d, want 0 (idempotent)", n)
+	}
+}
+
+// testRethreadPrincipal_ForceConvergesOutOfOrderAncestor is a
+// regression test for a single-apply-pass correctness bug (re #442):
+// an earlier version of the Force resolution walked rows in
+// internal-date order and had each row inherit whatever thread value
+// its ancestor happened to hold AT THAT POINT in the scan, so a row
+// whose ancestor sorts LATER than itself in internal-date order (clock
+// skew, imported mail, and out-of-order delivery all produce this --
+// exactly the already-stored-mail population #442 exists to repair)
+// inherited the ancestor's stale pre-Force value and needed a second
+// apply pass to converge.
+//
+// Fixture: G (root, subject "Topic A") <- P (subject "New topic",
+// mismatched -- splits from G under the current rule) <- K (subject
+// "Re: New topic", matches P -- inherits P's thread). K's internal
+// date sorts BEFORE both G's and P's. All three start wired into G's
+// thread, the shape pre-#437 ingest actually produced (G's ancestor
+// chain ignored subject, and P's stale thread_id was G's id at the
+// time K would have been chained onto it).
+//
+// A single Force apply pass must land K on P's thread, not G's.
+func testRethreadPrincipal_ForceConvergesOutOfOrderAncestor(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "rethreadoutoforder@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+	ref := putBlob(t, s, "rethread-ooo-body")
+
+	items := []store.InsertMessageItem{
+		{Message: store.Message{PrincipalID: p.ID, Blob: ref, Size: ref.Size,
+			InternalDate: time.Unix(1000, 0).UTC(), ReceivedAt: time.Unix(1000, 0).UTC(),
+			Envelope: store.Envelope{MessageID: "ooo-g@test", Subject: "Topic A"}},
+			Targets: []store.MessageMailbox{{MailboxID: mb.ID}}},
+		{Message: store.Message{PrincipalID: p.ID, Blob: ref, Size: ref.Size,
+			InternalDate: time.Unix(2000, 0).UTC(), ReceivedAt: time.Unix(2000, 0).UTC(),
+			Envelope: store.Envelope{MessageID: "ooo-p@test", InReplyTo: "<ooo-g@test>", Subject: "New topic"}},
+			Targets: []store.MessageMailbox{{MailboxID: mb.ID}}},
+		// K's internal date (500) is earlier than its own parent P's
+		// (2000): an out-of-order/backdated arrival.
+		{Message: store.Message{PrincipalID: p.ID, Blob: ref, Size: ref.Size,
+			InternalDate: time.Unix(500, 0).UTC(), ReceivedAt: time.Unix(500, 0).UTC(),
+			Envelope: store.Envelope{MessageID: "ooo-k@test", InReplyTo: "<ooo-p@test>", Subject: "Re: New topic"}},
+			Targets: []store.MessageMailbox{{MailboxID: mb.ID}}},
+	}
+	if _, err := s.Meta().InsertMessages(ctx, items, store.InsertMessagesOptions{SkipThreading: true}); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	byMID := func() map[string]store.Message {
+		got, err := s.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 10})
+		if err != nil {
+			t.Fatalf("ListMessages: %v", err)
+		}
+		m := make(map[string]store.Message, len(got))
+		for _, msg := range got {
+			m[msg.Envelope.MessageID] = msg
+		}
+		return m
+	}
+
+	before := byMID()
+	gID := before["ooo-g@test"].ID
+
+	// Wire P and K onto G's thread, the shape pre-#437 ingest actually
+	// produced (G stays at the 0 sentinel).
+	for _, mid := range []string{"ooo-p@test", "ooo-k@test"} {
+		if err := s.Meta().UpdateMessageThreadID(ctx, before[mid].ID, uint64(gID)); err != nil {
+			t.Fatalf("UpdateMessageThreadID(%s): %v", mid, err)
+		}
+	}
+
+	if _, err := s.Meta().RethreadPrincipal(ctx, p.ID, store.RethreadOptions{Force: true}); err != nil {
+		t.Fatalf("RethreadPrincipal (force apply): %v", err)
+	}
+
+	after := byMID()
+	threadKey := func(m store.Message) uint64 {
+		if m.ThreadID != 0 {
+			return m.ThreadID
+		}
+		return uint64(m.ID)
+	}
+	g, pMsg, k := after["ooo-g@test"], after["ooo-p@test"], after["ooo-k@test"]
+	if threadKey(pMsg) == threadKey(g) {
+		t.Fatalf("P must split from G's thread after one force pass: both threadKey %d", threadKey(g))
+	}
+	if threadKey(k) != threadKey(pMsg) {
+		t.Errorf("K threadKey = %d, want P's threadKey %d after ONE force apply pass (K must not still be on G's %d)",
+			threadKey(k), threadKey(pMsg), threadKey(g))
 	}
 }
 

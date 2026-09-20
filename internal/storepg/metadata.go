@@ -1318,76 +1318,24 @@ func (m *metadata) RethreadPrincipal(ctx context.Context, pid store.PrincipalID,
 	}
 	rs.Close()
 
-	// Build (env_message_id -> row index): first occurrence only so that
-	// duplicate copies of the same message (e.g., Sent + delivered) all
-	// resolve to the same anchor row. (re #88, REQ-STORE-40)
-	byID := make(map[string]int, len(rows))
+	// Compute new thread ids in memory via the shared REQ-STORE-40
+	// resolution algorithm (mailparse.ComputeRethread): same-Message-ID
+	// convergence (re #88), then In-Reply-To/References resolution
+	// gated on base-subject match (issue #437), else self-thread.
+	// force=true recomputes rows that already carry a thread_id too,
+	// which is what lets `diag rethread` (re #442) apply a
+	// threading-rule change to mail already stored; the algorithm
+	// converges in one pass regardless of whether an ancestor sorts
+	// earlier or later than its descendant in internal-date order (see
+	// ComputeRethread's doc comment).
+	crRows := make([]mailparse.RethreadRow, len(rows))
 	for i, r := range rows {
-		if r.messageID != "" {
-			if _, exists := byID[r.messageID]; !exists {
-				byID[r.messageID] = i
-			}
+		crRows[i] = mailparse.RethreadRow{
+			ID: r.id, MessageID: r.messageID, InReplyTo: r.inReplyTo,
+			References: r.refs, Subject: r.subject, ThreadID: r.threadID,
 		}
 	}
-
-	newThread := make([]int64, len(rows))
-	for i := range rows {
-		newThread[i] = rows[i].threadID
-	}
-	for i, r := range rows {
-		if !opts.Force && newThread[i] != 0 {
-			continue
-		}
-		var resolved int64
-
-		// Same-message-id convergence: a later copy of the same message
-		// inherits the thread already assigned to the first copy.
-		if r.messageID != "" {
-			if first := byID[r.messageID]; first != i {
-				if newThread[first] != 0 {
-					resolved = newThread[first]
-				} else {
-					resolved = rows[first].id
-				}
-			}
-		}
-
-		// InReplyTo / References resolution.
-		if resolved == 0 {
-			all := mailparse.ParseReferences(r.inReplyTo)
-			seen := make(map[string]struct{}, len(all))
-			for _, ref := range all {
-				seen[ref] = struct{}{}
-			}
-			for _, ref := range mailparse.ParseReferences(r.refs) {
-				if _, dup := seen[ref]; !dup {
-					all = append(all, ref)
-					seen[ref] = struct{}{}
-				}
-			}
-			for _, ref := range all {
-				if idx, ok := byID[ref]; ok && idx != i {
-					// A changed base subject starts a new thread instead
-					// of inheriting the ancestor's (issue #437,
-					// REQ-STORE-40); resolved stays 0 and the row falls
-					// through to self-threading below.
-					if !mailparse.SubjectsThreadTogether(r.subject, rows[idx].subject) {
-						break
-					}
-					if newThread[idx] != 0 {
-						resolved = newThread[idx]
-					} else {
-						resolved = rows[idx].id
-					}
-					break
-				}
-			}
-		}
-		if resolved == 0 {
-			resolved = r.id
-		}
-		newThread[i] = resolved
-	}
+	newThread := mailparse.ComputeRethread(crRows, opts.Force)
 
 	// A dry run reports the same count a real run would apply (the
 	// same computed newThread) but performs no write.
