@@ -212,6 +212,112 @@ class SyncSchedulerTest {
         loop.cancelAndJoin()
     }
 
+    /**
+     * The wait cannot outlive its ceiling (issue #450): with no loop
+     * running there is nothing to finish a pass, and the call comes
+     * back on the ceiling saying it was not served.
+     */
+    @Test
+    fun aForcedSyncWithNoLoopRunningEndsOnItsCeiling() = runTest {
+        val scheduler = SyncScheduler(pass = { SyncStatus.Idle }, now = { currentTime })
+
+        var served: Boolean? = null
+        val refresh = launch { served = scheduler.syncNow() }
+        advanceTimeBy(SyncScheduler.FORCED_SYNC_CEILING_MS - 1)
+        assertEquals(null, served, "the wait ended before its ceiling")
+
+        advanceTimeBy(1)
+        refresh.join()
+        assertEquals(false, served, "the wait outlived its ceiling")
+        assertEquals(
+            SyncScheduler.FORCED_SYNC_CEILING_MS,
+            currentTime,
+            "the wait did not end on the ceiling itself",
+        )
+    }
+
+    /** A pass that cannot end does not hold the wait past the ceiling. */
+    @Test
+    fun aForcedSyncOnAPassThatNeverEndsEndsOnItsCeiling() = runTest {
+        val stuck = Channel<Unit>(Channel.UNLIMITED)
+        val scheduler = SyncScheduler(
+            pass = {
+                stuck.receive()
+                SyncStatus.Idle
+            },
+            now = { currentTime },
+        )
+        val loop = launch { scheduler.run() }
+        runCurrent()
+
+        var served: Boolean? = null
+        val refresh = launch { served = scheduler.syncNow() }
+        advanceTimeBy(SyncScheduler.FORCED_SYNC_CEILING_MS + 1)
+        refresh.join()
+        assertEquals(false, served, "a pass with no end held the wait past its ceiling")
+        loop.cancelAndJoin()
+    }
+
+    /** A pass that failed ends the wait as surely as one that worked. */
+    @Test
+    fun aForcedSyncEndsOnAPassThatFailed() = runTest {
+        val scheduler = SyncScheduler(
+            pass = { SyncStatus.Failed("no wire") },
+            now = { currentTime },
+        )
+        val loop = launch { scheduler.run() }
+        runCurrent()
+
+        var served: Boolean? = null
+        val refresh = launch { served = scheduler.syncNow() }
+        runCurrent()
+        refresh.join()
+        assertEquals(true, served, "the wait did not end with the pass that failed")
+        assertTrue(
+            currentTime < SyncScheduler.FORCED_SYNC_CEILING_MS,
+            "the wait ran to its ceiling rather than to the pass, at $currentTime",
+        )
+        loop.cancelAndJoin()
+    }
+
+    /**
+     * A pass already in its closing moments is one the call did not
+     * ask for: the wait covers the pass its own request wakes.
+     */
+    @Test
+    fun aForcedSyncIsNotServedByThePassItLandedBehind() = runTest {
+        val gate = Channel<Unit>(Channel.UNLIMITED)
+        var started = 0
+        val scheduler = SyncScheduler(
+            pass = {
+                started++
+                gate.receive()
+                SyncStatus.Idle
+            },
+            now = { currentTime },
+        )
+        val loop = launch { scheduler.run() }
+        runCurrent()
+        assertEquals(1, started)
+
+        var served: Boolean? = null
+        val refresh = launch { served = scheduler.syncNow() }
+        runCurrent()
+
+        // The pass that was already running finishes. It started before
+        // the request, so it is not the one the request asked for.
+        gate.send(Unit)
+        runCurrent()
+        assertEquals(2, started)
+        assertEquals(null, served, "the wait ended on a pass it did not ask for")
+
+        gate.send(Unit)
+        runCurrent()
+        refresh.join()
+        assertEquals(true, served, "the wait did not end with its own pass")
+        loop.cancelAndJoin()
+    }
+
     /** The scheduler is usable from a plain scope, as the shell uses it. */
     @Test
     fun theLoopEndsWithItsScope() = runTest {

@@ -6,6 +6,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.updateAndGet
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
@@ -81,11 +83,28 @@ class SyncScheduler(
 
     private val _lastSuccessAtMs = MutableStateFlow<Long?>(null)
 
-    /** How many passes have finished, whichever woke them. */
-    private val completedPasses = MutableStateFlow(0L)
+    /**
+     * What has been asked for and what has been done about it, in one
+     * value so a caller reads a consistent pair (issue #450).
+     *
+     * [requested] counts the forced syncs asked for; [servedThrough] is
+     * the highest of those a finished pass covers. A pass covers every
+     * request raised before it started, so a caller waits for
+     * `servedThrough >= its own number` and neither returns on a pass
+     * that started before it asked nor waits for one more than it needs.
+     */
+    private data class Progress(val requested: Long = 0L, val servedThrough: Long = 0L)
 
-    /** True while a pass is running. */
-    private val passRunning = MutableStateFlow(false)
+    private val progress = MutableStateFlow(Progress())
+
+    private val _completedPasses = MutableStateFlow(0L)
+
+    /**
+     * How many passes have finished, whichever woke them, and whether
+     * they succeeded or failed. The diagnostics screen and the
+     * acceptance checks read it.
+     */
+    val completedPasses: StateFlow<Long> = _completedPasses.asStateFlow()
 
     /**
      * When the last pass that reached the server finished. The
@@ -104,13 +123,21 @@ class SyncScheduler(
      * that shows the sync running - the inbox's pull to refresh - shows
      * it for as long as the pass takes (issue #444).
      *
-     * A pass already under way is one this call did not ask for, so the
-     * wait covers it and the pass the request wakes behind it.
+     * The wait carries a ceiling and returns false when it ends on it,
+     * so what the caller shows stops whatever the loop and the wire do:
+     * a loop that is not running, a pass that fails, a pass that cannot
+     * start and a request with no answer coming all end the wait
+     * (issue #450). A caller that shows the sync running stops showing
+     * it on either answer.
      */
-    suspend fun syncNow() {
-        val target = completedPasses.value + if (passRunning.value) 2 else 1
+    suspend fun syncNow(ceilingMs: Long = FORCED_SYNC_CEILING_MS): Boolean {
+        val mine = progress.updateAndGet { it.copy(requested = it.requested + 1) }.requested
         requestSync()
-        completedPasses.first { it >= target }
+        val served = withTimeoutOrNull(ceilingMs) {
+            progress.first { it.servedThrough >= mine }
+        } != null
+        if (!served) log("forced sync gave up after ${ceilingMs / 1000} s; no pass finished")
+        return served
     }
 
     /**
@@ -120,7 +147,10 @@ class SyncScheduler(
      */
     suspend fun run() {
         while (true) {
-            passRunning.value = true
+            // Everything asked for up to here is covered by the pass
+            // about to run, whether it succeeds or fails: a forced sync
+            // waits for an attempt, not for an answer.
+            val serving = progress.value.requested
             val status = try {
                 pass()
             } catch (c: CancellationException) {
@@ -128,8 +158,10 @@ class SyncScheduler(
             } catch (t: Throwable) {
                 SyncStatus.Failed(t.message ?: "sync failed")
             } finally {
-                passRunning.value = false
-                completedPasses.value++
+                progress.update {
+                    if (it.servedThrough >= serving) it else it.copy(servedThrough = serving)
+                }
+                _completedPasses.value++
             }
             val wait = if (status is SyncStatus.Failed) {
                 val next = schedule.recordFailure()
@@ -141,5 +173,22 @@ class SyncScheduler(
             }
             withTimeoutOrNull(wait) { wake.receive() }
         }
+    }
+
+    companion object {
+        /**
+         * The longest a forced sync waits for its pass (issue #450).
+         *
+         * Two passes against a server that answers take well under a
+         * second, and seconds on a wire that is slow but working, so
+         * the ceiling is an order of magnitude past a refresh that is
+         * getting somewhere while still inside the span in which the
+         * user is watching the gesture they made. It is also below what
+         * a wire that accepts and answers nothing costs the pass chain
+         * - the HTTP engine's own timeout, once per pass, plus the wait
+         * between them - so a stalled request ends on the client's
+         * ceiling rather than on whatever the engine happens to allow.
+         */
+        const val FORCED_SYNC_CEILING_MS = 15_000L
     }
 }
