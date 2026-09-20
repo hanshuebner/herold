@@ -16,7 +16,13 @@ package com.netzhansa.herold.shared.mail
  *    "Am ... schrieb ...:") folds with it; ordinary prose ahead of the
  *    quote does not.
  *  - Fresh text some clients nest as the leading children of the
- *    quote element itself is lifted out ahead of the fold.
+ *    quote element itself is lifted out ahead of the fold. The
+ *    attribution it ends at is read as one line across the nodes it is
+ *    written over - Thunderbird spreads it over a text node, a
+ *    `mailto:` link and the colon after it.
+ *  - The fold begins at the citation. An element whose leading content
+ *    is the sender's own text is left outside it, and the search
+ *    carries on with the quoted material inside or after that element.
  *
  * The fold is a `<details>` element, which opens and closes on a tap
  * with no script, so it works in the reading pane's WebView with
@@ -32,6 +38,16 @@ internal object QuotedHtml {
 
     private val quoteClass = Regex("gmail_quote|yahoo_quoted|moz-cite-prefix", RegexOption.IGNORE_CASE)
 
+    // Thunderbird's class for the citation-prefix line. What it names is
+    // the attribution, not a quote container, and a reply composed above
+    // the citation lands in it alongside the attribution - so it only
+    // starts a fold when the sender's own text does not precede the
+    // attribution inside it (issue #432).
+    private val citationPrefixClass = Regex("moz-cite-prefix", RegexOption.IGNORE_CASE)
+
+    /** How long the text an attribution line is read from may run. */
+    private const val ATTRIBUTION_MAX_CHARS = 512
+
     /** [inner] behind the same control, for the plain-text path. */
     fun foldedRegion(inner: String): String {
         val details = details()
@@ -46,9 +62,25 @@ internal object QuotedHtml {
         return HtmlDom.render(root)
     }
 
+    /**
+     * Folds the first quoted region that begins at the citation.
+     *
+     * A region whose own leading content is text the sender wrote is
+     * passed over rather than folded: the reply reads above the chip,
+     * and the search continues with the quoted material inside or after
+     * it, which is what the reader asked to have out of the way.
+     */
     private fun collapseIn(root: HtmlElement): Boolean {
-        val candidate = firstQuotedRegion(root) ?: return false
-        splitLeadingFreshContent(candidate)
+        val passedOver = mutableListOf<HtmlElement>()
+        while (true) {
+            val candidate = firstQuotedRegion(root, passedOver) ?: return false
+            splitLeadingFreshContent(candidate)
+            if (startsAtTheCitation(candidate)) return fold(candidate)
+            passedOver.add(candidate)
+        }
+    }
+
+    private fun fold(candidate: HtmlElement): Boolean {
         val parent = candidate.parent ?: return false
         val at = parent.indexOf(candidate)
         if (at < 0) return false
@@ -107,12 +139,12 @@ internal object QuotedHtml {
         return span
     }
 
-    /** The first quoted region in document order. */
-    private fun firstQuotedRegion(root: HtmlElement): HtmlElement? {
+    /** The first quoted region in document order, [passedOver] aside. */
+    private fun firstQuotedRegion(root: HtmlElement, passedOver: List<HtmlElement>): HtmlElement? {
         root.children.forEach { child ->
             if (child is HtmlElement) {
-                if (isQuoteElement(child)) return child
-                firstQuotedRegion(child)?.let { return it }
+                if (isQuoteElement(child) && passedOver.none { it === child }) return child
+                firstQuotedRegion(child, passedOver)?.let { return it }
             }
         }
         return null
@@ -130,16 +162,67 @@ internal object QuotedHtml {
      */
     private fun splitLeadingFreshContent(candidate: HtmlElement) {
         val parent = candidate.parent ?: return
-        val boundary = candidate.children.indexOfFirst { isQuoteStart(it) }
+        val marker = candidate.children.indexOfFirst { isQuoteStart(it) }
+        val boundary = if (marker > 0) marker else attributionStart(candidate.children)
         if (boundary <= 0) return
         val leading = candidate.children.subList(0, boundary).toList()
         if (leading.none { !isQuoteOrEmpty(it) }) return
         leading.forEach { parent.insertBefore(it, candidate) }
     }
 
+    /**
+     * Where an attribution line spread over several children begins, or
+     * -1 when the run of children ends in none.
+     *
+     * Thunderbird writes the attribution as a text node, a `mailto:`
+     * link carrying the address and the colon after it, all of them
+     * children of the same element as the reply text above. Read child
+     * by child none of them is an attribution line; read together they
+     * are one. The last child the remaining text reads as an
+     * attribution from is the one it starts at, which keeps the line
+     * itself out of the sender's visible text even when that text
+     * happens to open with the same words the attribution does.
+     *
+     * The scan walks back from the end while the text it has gathered
+     * is still short enough to be one line, so a long body costs a
+     * glance at its tail rather than a pass over every suffix.
+     */
+    private fun attributionStart(children: List<HtmlNode>): Int {
+        val tail = StringBuilder()
+        for (at in children.indices.reversed()) {
+            tail.insert(0, children[at].text())
+            if (tail.length > ATTRIBUTION_MAX_CHARS) return -1
+            if (at == 0) return -1
+            val text = tail.toString().trim()
+            if (text.isNotBlank() && QuotedText.isAttributionLine(text)) return at
+        }
+        return -1
+    }
+
+    /**
+     * True when [element] holds no text of the sender's ahead of the
+     * quoted material it carries.
+     *
+     * A `blockquote` and a client's quote container hold the quoted
+     * message by construction. Thunderbird's citation-prefix div does
+     * not: it names the attribution line, and a reply typed above the
+     * citation is written into it ahead of that line. Such a div starts
+     * the fold only once the attribution is what it leads with.
+     */
+    private fun startsAtTheCitation(element: HtmlElement): Boolean {
+        if (!citationPrefixClass.containsMatchIn(element.classes)) return true
+        val lead = StringBuilder()
+        for (child in element.children) {
+            if (isQuoteStart(child)) break
+            child.text(lead)
+        }
+        val text = lead.toString().trim()
+        return text.isBlank() || QuotedText.isAttributionLine(text)
+    }
+
     /** True for a node that itself marks where quoted material begins. */
     private fun isQuoteStart(node: HtmlNode): Boolean {
-        if (node is HtmlElement && isQuoteElement(node)) return true
+        if (node is HtmlElement && isQuoteElement(node) && startsAtTheCitation(node)) return true
         if (isAttribution(node)) return true
         return isQuoteWrapper(node)
     }
@@ -152,7 +235,7 @@ internal object QuotedHtml {
     private fun isQuoteWrapper(node: HtmlNode): Boolean {
         if (node !is HtmlElement) return false
         val first = firstMeaningfulChild(node) ?: return false
-        if (first is HtmlElement && isQuoteElement(first)) return true
+        if (first is HtmlElement && isQuoteElement(first) && startsAtTheCitation(first)) return true
         return isAttribution(first)
     }
 
@@ -173,7 +256,7 @@ internal object QuotedHtml {
         is HtmlText -> node.raw.isBlank() || node.text().isBlank()
         is HtmlElement -> when {
             node.name == "br" || node.name == "hr" -> true
-            isQuoteElement(node) -> true
+            isQuoteElement(node) -> startsAtTheCitation(node)
             else -> node.text().isBlank()
         }
     }
