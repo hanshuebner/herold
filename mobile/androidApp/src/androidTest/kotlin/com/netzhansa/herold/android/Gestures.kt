@@ -56,6 +56,26 @@ object Gestures {
         UiDevice.getInstance(InstrumentationRegistry.getInstrumentation()).pressBack()
     }
 
+    /**
+     * Drags the content of [bounds] upwards, the gesture that scrolls a
+     * list down.
+     *
+     * A list keeps the place a finger put it and pins one nobody has
+     * touched to its newest message (issue #439), so a check whose
+     * subject is that place has to move the list the way a finger does:
+     * a programmatic scroll is what the pin itself uses.
+     */
+    fun dragUp(bounds: Rect, steps: Int = SWIPE_STEPS) {
+        val x = bounds.center.x.toInt()
+        // The gesture stays in the upper part of the list: the search
+        // field takes focus with the keyboard, which covers the lower
+        // part of a list that reaches the bottom of the window, and a
+        // drag that starts under the keyboard never reaches the list.
+        val from = (bounds.top + bounds.height * 0.55f).toInt()
+        val to = (bounds.top + bounds.height * 0.1f).toInt()
+        inject(x, from, x, to, steps)
+    }
+
     /** Injects a down, [steps] - 1 moves along the line, and an up. */
     private fun inject(fromX: Int, fromY: Int, toX: Int, toY: Int, steps: Int) {
         val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
