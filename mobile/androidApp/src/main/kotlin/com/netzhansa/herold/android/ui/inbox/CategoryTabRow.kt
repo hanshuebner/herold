@@ -7,6 +7,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Badge
 import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRowDefaults
+import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -44,9 +46,22 @@ fun CategoryTabRow(
     onSelect: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val selectedTabIndex = tabs.indexOf(selected).coerceAtLeast(0)
     ScrollableTabRow(
-        selectedTabIndex = tabs.indexOf(selected).coerceAtLeast(0),
+        selectedTabIndex = selectedTabIndex,
         edgePadding = 8.dp,
+        // The indicator draws over the tab the row hands it and skips the
+        // frame in which there is none (issue #447). The selected index and
+        // the measured tab positions are read from two states, so a lane
+        // that goes - the last message of a category archived - can leave
+        // an index from the row of two against the positions of the row of
+        // one for a frame, which is what the stock indicator indexes past
+        // the end of.
+        indicator = { positions ->
+            indicatorTab(positions.size, selectedTabIndex)?.let { index ->
+                TabRowDefaults.SecondaryIndicator(Modifier.tabIndicatorOffset(positions[index]))
+            }
+        },
         modifier = modifier.testTag("inbox-tabs"),
     ) {
         tabs.forEach { category ->
@@ -87,6 +102,19 @@ private fun TabLabel(category: String, unread: Int) {
         }
     }
 }
+
+/**
+ * The tab the indicator draws over, given how many tabs were measured
+ * ([tabCount]) and which one the row is on ([selectedTabIndex]); null
+ * when the selection names a tab the measurement does not hold.
+ *
+ * The two values reach the indicator from different states and can
+ * disagree for a frame while the lane set shrinks, so the selection is
+ * bounded against the positions in hand rather than against the list
+ * the caller composed.
+ */
+internal fun indicatorTab(tabCount: Int, selectedTabIndex: Int): Int? =
+    selectedTabIndex.takeIf { it in 0 until tabCount }
 
 /** What the badge reads: the count, or the cap once it is past it. */
 fun badgeText(unread: Int): String = if (unread > COUNT_CAP) "$COUNT_CAP+" else unread.toString()
