@@ -12,6 +12,9 @@ enum class OutboxKind {
     /** A composed message saved as a draft in the account's Drafts mailbox. */
     DRAFT,
 
+    /** Messages to take off the server: the draft a discard threw away. */
+    DESTROY,
+
     /** A composed message to upload, write and submit, in that order. */
     SEND,
 
@@ -173,6 +176,15 @@ data class BugReportSpooledPart(
     val spool: String,
 )
 
+/**
+ * The messages a [OutboxKind.DESTROY] entry takes off the server
+ * (issue #371). The rows are already gone from the local store, so the
+ * entry carries nothing but the ids; a refusal brings the server's copy
+ * back.
+ */
+@Serializable
+data class DestroyPayload(val accountId: String, val ids: List<String>)
+
 /** The `Email/set` patches an action entry submits, by message id. */
 @Serializable
 data class ActionPayload(val patches: Map<String, JsonObject>)
@@ -220,6 +232,12 @@ data class ComposePayload(
     val sentMailboxId: String? = null,
     /** The server-side draft, once an earlier attempt created it. */
     val draftId: String? = null,
+    /**
+     * True when the compose this entry stands for was discarded while
+     * the entry was being submitted: the draft it writes is taken off
+     * the server again as soon as it has an id (issue #371).
+     */
+    val discardAfterWrite: Boolean = false,
     /** The conversation a reply belongs to, so the thread can show it queued (issue #369). */
     val threadId: String? = null,
     val parentId: String? = null,

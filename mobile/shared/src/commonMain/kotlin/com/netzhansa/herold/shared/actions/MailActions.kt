@@ -335,6 +335,7 @@ class MailActions(
         const val CATEGORY_DISPOSITION = "Category setting"
         const val CATEGORY_ORDER = "Category order"
         const val UNDO = "Undo"
+        const val DISCARD_DRAFT = "Discard draft"
         const val FILTER_CREATE = "New filter"
         const val FILTER_UPDATE = "Filter"
         const val FILTER_ENABLE = "Enable filter"
