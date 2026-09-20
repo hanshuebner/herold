@@ -1409,11 +1409,13 @@ private fun MessageBodyWebView(
                 settings.allowContentAccess = false
                 settings.loadsImagesAutomatically = true
                 // The document's own viewport - `width=device-width,
-                // initial-scale=1` from HtmlSanitizer.document - only
-                // reaches layout with the wide viewport on, and it is what
-                // lays a desktop-width mail out to the card at readable
-                // text size. What still exceeds the card scrolls sideways
-                // within the body surface (issue #430).
+                // initial-scale=1` from HtmlSanitizer.document - reaches
+                // layout only with the wide viewport on. With it, the
+                // layout viewport is the card's width and the body's text
+                // is the size the pane asks for; the document is written
+                // to fit that width before it is loaded, and what still
+                // exceeds it scrolls sideways within the body surface
+                // (issue #430).
                 settings.useWideViewPort = true
                 settings.loadWithOverviewMode = true
                 // A `target="_blank"` anchor asks for a window rather than
