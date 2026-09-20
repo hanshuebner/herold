@@ -179,6 +179,10 @@ fun rememberListPositions(): ListPositions =
  * a programmatic scroll - the pin that keeps an untouched list at its
  * newest message - raises no drag interaction, so it does not read as
  * the reader having scrolled.
+ *
+ * A drag that leaves the list standing at its newest conversation is
+ * the pull to refresh (issue #444), which asks for a sync rather than
+ * for a place, so the list stays pinned through it.
  */
 @Composable
 fun ListPositions.listState(key: String, hasRows: Boolean = true): LazyListState {
@@ -186,7 +190,11 @@ fun ListPositions.listState(key: String, hasRows: Boolean = true): LazyListState
     if (!hasRows) holdPlace(key)
     LaunchedEffect(state, key) {
         state.interactionSource.interactions.collect { interaction ->
-            if (interaction is DragInteraction.Start) markScrolled(key)
+            val dragged = interaction is DragInteraction.Start ||
+                interaction is DragInteraction.Stop ||
+                interaction is DragInteraction.Cancel
+            val offTheTop = state.firstVisibleItemIndex > 0 || state.firstVisibleItemScrollOffset > 0
+            if (dragged && offTheTop) markScrolled(key)
         }
     }
     LaunchedEffect(state, key, hasRows) {

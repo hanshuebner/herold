@@ -147,7 +147,7 @@ class BugReportAcceptanceTest {
     }
 
     /**
-     * From the inbox overflow, and then the other end of it: the report
+     * From the inbox drawer, and then the other end of it: the report
      * is on the server and the account's mail is untouched - no "Bug
      * reports" label, and nothing addressed to the user themselves.
      */
@@ -155,11 +155,7 @@ class BugReportAcceptanceTest {
     fun t99_theReportGoesToTheServerAndNotToTheMailbox() = runBlocking {
         assumeNotNull("no bug-reports key; skipping", DevInstance.bugReportsKey)
         val known = reportIds()
-        compose.onNodeWithTag("inbox-overflow").performClick()
-        compose.waitUntil(TIMEOUT_MS) {
-            compose.onAllNodesWithTag("menu-report-problem").fetchSemanticsNodes().isNotEmpty()
-        }
-        compose.onNodeWithTag("menu-report-problem").performClick()
+        compose.reportProblemFromTheDrawer()
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithTag("bug-sheet").fetchSemanticsNodes().isNotEmpty()
         }
