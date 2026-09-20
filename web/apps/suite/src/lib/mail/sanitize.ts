@@ -1150,6 +1150,39 @@ function resolveEffectiveForeground(el: Element): string | null {
   return null;
 }
 
+/**
+ * Every `color` a descendant of `el` declares on its OWN `style`/`bgcolor`
+ * halves, that will actually paint directly against `el`'s background --
+ * i.e. reachable without crossing a nested element that itself declares a
+ * background (issue #422 third round, maintainer hand-back on comment
+ * 5358's own reconstruction: a `<td style="background-color:#001B71">`
+ * with no color of its own, wrapping an `<a style="color:#FFFFFF">`). A
+ * descendant that itself declares a background starts its own paint
+ * context -- its subtree is skipped entirely, declared color and all,
+ * since that inner background (whatever `sanitizeInlineColorPairs`
+ * eventually decides for IT) is what its own text actually paints
+ * against, not `el`'s.
+ *
+ * Read via `declaredColorHalves` on the RAW, not-yet-processed subtree:
+ * `sanitizeInlineColorPairs` visits ancestors before descendants (see its
+ * own doc comment), so `el`'s collision check runs before any of these
+ * descendants have been decided one way or the other. Only presence is
+ * asked here, not the resolved production decision.
+ */
+function collectDescendantOwnColors(el: Element): string[] {
+  const colors: string[] = [];
+  const visit = (node: Element) => {
+    for (const child of Array.from(node.children)) {
+      const halves = declaredColorHalves(child);
+      if (isDeclaredColor(halves.backgroundColor)) continue; // nested background wins -- its own paint context.
+      if (isDeclaredColor(halves.color)) colors.push(halves.color);
+      visit(child);
+    }
+  };
+  visit(el);
+  return colors;
+}
+
 // Matches a raw <body ...> opening tag to pull its style/bgcolor attributes
 // before DOMPurify ever runs -- RETURN_DOM_FRAGMENT mode discards the body
 // tag itself, so this is the only point at which they are observable.
@@ -1305,6 +1338,30 @@ function resolvedBodyColorStyle(raw: string): string | null {
  * stripped unconditionally before classification, so it always falls
  * through to the lone-half (or no-half) branch below.
  *
+ * A lone BACKGROUND's collision check is judged against the text that
+ * will actually paint on it, not merely against an inherited/ancestor
+ * foreground (issue #422 third round, maintainer hand-back on comment
+ * 5358's own reconstruction: a `<td style="background-color:#001B71">`
+ * with no color of its own wrapping an `<a style="color:#FFFFFF">` --
+ * the ancestor-only check resolved the collision against the `<body>`'s
+ * unrelated dark-grey text color instead of the anchor's own white,
+ * stripped the background as an apparent collision, and then stripped
+ * the anchor's now-orphaned white color too). `collectDescendantOwnColors`
+ * looks ahead at every descendant color declared in the raw, not-yet-
+ * processed subtree (skipping past any nested background, which starts
+ * its own paint context): if ANY of them is legible against this
+ * background, the background survives -- the descendant that declared it
+ * is processed next, in document order, and its own lone-color branch
+ * resolves against this now-settled background correctly. A descendant
+ * whose own declared color is NOT legible against this background is not
+ * grounds to strip the background on its behalf; it is stripped
+ * individually when the walk reaches it (same ancestor-background lookup
+ * every other lone color goes through). Only when NO descendant declares
+ * a color at all does the check fall back to the inherited ancestor (or
+ * `<body>`, or theme) foreground, exactly as before -- e.g. a background
+ * whose only text is inherited from a colliding ancestor color is still
+ * stripped.
+ *
  * Requires `document` (see the file header: `sanitizeHtml` already
  * depends on it via DOMPurify's `RETURN_DOM_FRAGMENT` mode and
  * `document.createTreeWalker`), so this carries no new environment
@@ -1379,13 +1436,27 @@ function sanitizeInlineColorPairs(root: Element): void {
         probe.style.removeProperty('color');
       }
     } else if (hasBackground && !hasColor) {
-      const ancestorForeground = resolveEffectiveForeground(el);
-      const effectiveForeground = ancestorForeground ?? readingPaneTheme().color;
-      const threshold = ancestorForeground !== null
-        ? DEGENERATE_CONTRAST_THRESHOLD
-        : WCAG_AA_CONTRAST_THRESHOLD;
-      if (contrastBelowThreshold(effectiveForeground, ownBackground, threshold)) {
-        stripBackground();
+      // A background is judged against the text that will actually paint
+      // on it (issue #422 third round): if ANY descendant declares its own
+      // color that is legible against this background, the background
+      // stays -- that descendant's own pass (which runs next, in document
+      // order) resolves ITS color against this now-kept background and
+      // keeps it too. Only when NO descendant declares a legible color of
+      // its own does the check fall back to the inherited/ancestor
+      // foreground (or the theme), exactly as before.
+      const descendantColors = collectDescendantOwnColors(el);
+      const hasLegibleDescendantColor = descendantColors.some(
+        (color) => !colorsAreIndistinguishable(color, ownBackground),
+      );
+      if (!hasLegibleDescendantColor) {
+        const ancestorForeground = resolveEffectiveForeground(el);
+        const effectiveForeground = ancestorForeground ?? readingPaneTheme().color;
+        const threshold = ancestorForeground !== null
+          ? DEGENERATE_CONTRAST_THRESHOLD
+          : WCAG_AA_CONTRAST_THRESHOLD;
+        if (contrastBelowThreshold(effectiveForeground, ownBackground, threshold)) {
+          stripBackground();
+        }
       }
     }
     // both true and distinguishable (a genuine, legible, complete pair) or

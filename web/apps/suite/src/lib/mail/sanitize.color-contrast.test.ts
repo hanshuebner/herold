@@ -719,3 +719,184 @@ describe('issue #422 second round -- bgcolor presentational attribute counts as 
     expect(parseColor(window.getComputedStyle(el).color)).toEqual(THEME.light.color);
   });
 });
+
+/**
+ * Acceptance fixtures for issue #422's third round: the maintainer's
+ * hand-back on comment 5358 disclosed a second, deeper defect in the same
+ * round-2 build (063dce2) beyond the `bgcolor` gap that round 2 fixed --
+ * independent verification reconstructed the reported message's own link
+ * band (the two "Icelandair Website" / "Terms & Conditions" links,
+ * directly above the copyright cell that round 2 already fixed) using
+ * this ticket's own established colors (`<body style="color:#3a3a3d">`,
+ * a `<td style="background-color:#001B71">` declared purely in CSS --
+ * no `bgcolor` at all -- and a descendant `<a style="color:#FFFFFF">`)
+ * and found BOTH the cell's background and the anchor's white color
+ * stripped.
+ *
+ * Cause: `sanitizeInlineColorPairs`'s "background declared, no local
+ * color" branch resolved its collision check against
+ * `resolveEffectiveForeground`, which walks ANCESTORS ONLY -- it never
+ * looked at the DESCENDANT that actually declares the color which will
+ * paint on this background. Navy (#001B71) against the body's dark-grey
+ * `color:#3a3a3d` measures ~1.33:1, under `DEGENERATE_CONTRAST_THRESHOLD`
+ * (1.5), so the background was stripped as an apparent collision --
+ * even though the anchor's own white text, once the background actually
+ * paints, is perfectly legible against it (white on navy is ~15:1). With
+ * the background gone, the anchor's lone white color then resolved
+ * against the theme's own white page background (no ancestor background
+ * left to find) and was stripped too as a second, apparent white-on-white
+ * collision -- silently downgrading a legible authored pairing into
+ * default theme colors on both halves.
+ *
+ * Fix: `collectDescendantOwnColors` (`sanitize.ts`) looks ahead at every
+ * color a descendant declares on its own halves before deciding whether a
+ * lone background collides -- skipping past any nested element that
+ * itself declares a background, since that starts its own independent
+ * paint context. If any such descendant color is legible against this
+ * background, the background is judged safe and kept; a descendant whose
+ * own color is NOT legible against it is not decisive either way -- it is
+ * still stripped individually when the walk reaches that descendant (its
+ * own ancestor-background lookup, unchanged). Only when NO descendant
+ * declares any color at all does the check fall back to the inherited
+ * ancestor/`<body>`/theme foreground, exactly as issue #422's second
+ * round left it.
+ */
+describe('issue #422 third round -- a lone background is judged against the text that will actually paint on it', () => {
+  it('reconstructed link band: a background survives when a descendant declares a legible color (fails before the fix)', () => {
+    withTheme('light');
+    const html = `<html><body style="color:#3a3a3d"><table><tr><td style="background-color:#001B71"><a style="color:#FFFFFF">Icelandair Website</a></td></tr></table></body></html>`;
+    const srcdoc = sanitizeHtml(html, { loadImages: false });
+    const { window, document } = renderSrcdoc(srcdoc, 'light');
+    const td = document.querySelector('td')!;
+    const a = document.querySelector('a')!;
+    // The background must survive -- it is what the anchor's own white
+    // text needs to stay legible.
+    expect(parseColor(window.getComputedStyle(td).backgroundColor)).toEqual([0x00, 0x1b, 0x71, 1]);
+    // The anchor's own authored white must survive too, not be stripped
+    // as a second, apparent collision once the background is gone.
+    expect(parseColor(window.getComputedStyle(a).color)).toEqual([255, 255, 255, 1]);
+  });
+
+  it('a background whose only text is inherited and illegible is still stripped', () => {
+    withTheme('light');
+    // No descendant declares its own color anywhere -- the text painting
+    // on this background is entirely the inherited body color, which
+    // genuinely collides with navy (~1.33:1).
+    const html = `<html><body style="color:#3a3a3d"><table><tr><td style="background-color:#001B71">plain text, no descendant color</td></tr></table></body></html>`;
+    const srcdoc = sanitizeHtml(html, { loadImages: false });
+    const { window, document } = renderSrcdoc(srcdoc, 'light');
+    const td = document.querySelector('td')!;
+    // Stripped -- td no longer declares its own background-color at all,
+    // so the visible background is whatever the reading pane's own theme
+    // paints underneath (light theme: white) -- the navy never had a
+    // legible pairing to defer to.
+    expect(effectiveBackground(window, td)).toEqual(THEME.light.background);
+  });
+
+  it('a background with one legible and one illegible descendant color: the background stays, the illegible descendant is stripped individually', () => {
+    withTheme('light');
+    // span1's white is legible against navy and keeps the background
+    // alive; span2's own color EQUALS the background (a same-color,
+    // maximally degenerate collision) and must still be stripped on ITS
+    // OWN -- but only for span2, not for the shared background.
+    const html = `<html><body style="color:#3a3a3d"><table><tr><td style="background-color:#001B71">
+      <span style="color:#FFFFFF">legible</span>
+      <span style="color:#001B71">illegible</span>
+    </td></tr></table></body></html>`;
+    const srcdoc = sanitizeHtml(html, { loadImages: false });
+    const { window, document } = renderSrcdoc(srcdoc, 'light');
+    const td = document.querySelector('td')!;
+    const spans = [...document.querySelectorAll('span')];
+    const legibleSpan = spans.find((s) => s.textContent === 'legible')!;
+    const illegibleSpan = spans.find((s) => s.textContent === 'illegible')!;
+    // The background survives because of the legible descendant.
+    expect(parseColor(window.getComputedStyle(td).backgroundColor)).toEqual([0x00, 0x1b, 0x71, 1]);
+    // The legible descendant keeps its authored white.
+    expect(parseColor(window.getComputedStyle(legibleSpan).color)).toEqual([255, 255, 255, 1]);
+    // The illegible descendant's own color, which duplicates the
+    // background exactly, is stripped on its own terms (resolved against
+    // the now-settled navy background, DEGENERATE_CONTRAST_THRESHOLD) --
+    // it falls through to whatever it inherits, the body's dark grey, not
+    // the theme default (there IS an ancestor color: the carried-over
+    // <body> color).
+    expect(parseColor(window.getComputedStyle(illegibleSpan).color)).toEqual([0x3a, 0x3a, 0x3d, 1]);
+  });
+
+  it('nested backgrounds: the inner background/color pair is judged on its own, independent of the outer', () => {
+    withTheme('light');
+    // The outer <td> declares only a background and has no legible
+    // descendant color of its own to defer to -- the only text inside it
+    // sits behind the inner <div>'s OWN background, which is a separate
+    // paint context and must not count towards (or against) the outer's
+    // decision.
+    const html = `<table><tr><td style="background-color:#001B71"><div style="background-color:#ffffff;color:#001B71">inner text</div></td></tr></table>`;
+    const srcdoc = sanitizeHtml(html, { loadImages: false });
+    const { window, document } = renderSrcdoc(srcdoc, 'light');
+    const div = document.querySelector('div')!;
+    // The inner, complete pair (navy text on white) is highly legible on
+    // its own and survives untouched, regardless of the outer's fate.
+    expect(parseColor(window.getComputedStyle(div).backgroundColor)).toEqual([255, 255, 255, 1]);
+    expect(parseColor(window.getComputedStyle(div).color)).toEqual([0x00, 0x1b, 0x71, 1]);
+  });
+
+  // Real markup, not a reconstruction: the maintainer's Icelandair
+  // check-in mail (thread t3777, message id 3777), read READ-ONLY from
+  // production (ssh outpost.netzhansa.com, sqlite3 -readonly against
+  // /var/lib/herold/herold.sqlite, the HTML part's byte range decoded
+  // from its blob file locally -- production untouched). This is the
+  // link band (two <td>s, each declaring its OWN color:#435064 AND
+  // background-color:#001B71 -- a same-element pair, ~1.84:1, legible
+  // enough to survive the existing same-element check unchanged) plus
+  // the copyright cell (<td bgcolor="#001B71" style="...;color:#FFFFFF">,
+  // round 2's own fixture) exactly as they appear on the wire, including
+  // the enclosing tables/rows the sender's markup nests them in. This
+  // fixture predates round 3's fix and was already passing on 843d876d
+  // (round 2) -- it is not a reproduction of the third-round defect
+  // (that needs the reconstructed lone-background/descendant-color shape
+  // above, which this real message does not happen to contain), but a
+  // ground-truth regression lock so a future change cannot silently
+  // regress the actual reported message.
+  it('the real Icelandair footer (link band + copyright cell) renders all authored colors', () => {
+    withTheme('light');
+    const html = `<html><body style="margin: 0px;padding: 0px;background-color: #ffffff;">
+<table cellpadding="0" cellspacing="0" width="100%" role="presentation" style="background-color: #001B71; min-width: 100%; " class="stylingblock-content-wrapper"><tbody><tr><td style="padding: 0px; " class="stylingblock-content-wrapper camarker-inner"><table align="center" border="0" cellpadding="0" cellspacing="0" style="width:600px;">
+
+  <tbody><tr>
+   <td>
+    </td><td align="center" bgcolor="#001B71" style="padding: 0px 0px 15px 0px; font-family: Gotham, 'Helvetica Neue', Helvetica, Arial, sans-serif; font-style: normal; font-weight: normal; font-size: 13px; color: #FFFFFF " width="100%">
+        <br/>
+        <span style="color:#FFFFFF;">logo</span></td></tr><tr>
+   <td>
+    </td><td align="center" bgcolor="#001B71" style="padding: 20px 0px 20px 0px; font-family: Gotham, 'Helvetica Neue', Helvetica, Arial, sans-serif; font-style: normal; font-weight: normal; font-size: 14px; color: #001B71" width="100%">
+        <table bgcolor="#001B71" border="0" cellpadding="0" cellspacing="0" width="100%">
+
+          <tbody><tr>
+           <td align="right" bgcolor="#001B71" style="padding: 0 20px 0 0; font-family: Gotham, 'Helvetica Neue', Helvetica, Arial, sans-serif; font-style: normal; font-weight: normal; font-size: 14px; color: #435064; border-right: 1px solid #435064; background-color:#001B71;" width="50%">
+            <b><a href="http://click.email.icelandair.is/manage" style="color:#FFFFFF;text-decoration:none;" title="Icelandair"><b>Icelandair Website</b></a></b></td><td align="left" bgcolor="#eaeaea" style="padding: 0 0 0 20px; font-family: Gotham, 'Helvetica Neue', Helvetica, Arial, sans-serif; font-style: normal; font-weight: normal; font-size: 14px; color: #435064; background-color:#001B71" width="50%">
+            <b><a href="http://click.email.icelandair.is/terms" style="color:#FFFFFF;text-decoration:none;" title="Terms &amp; Conditions"><b>Terms &amp; Conditions</b></a></b></td></tr></tbody></table></td></tr><tr>
+   <td>
+    </td><td align="center" bgcolor="#001B71" style="padding: 0px 0px 43px 0px; font-family: Gotham, 'Helvetica Neue', Helvetica, Arial, sans-serif; font-style: normal; font-weight: normal; font-size: 13px; color: #FFFFFF " width="100%">
+        <br/>
+        <span style="color:#FFFFFF;">&#169;1999-2026 Icelandair. All rights reserved.<br/>
+        Icelandair - Flugvellir 1, 221 Hafnarfj&#246;r&#240;ur</span></td></tr></tbody></table></td></tr></tbody></table></body></html>`;
+    const srcdoc = sanitizeHtml(html, { loadImages: false });
+    const { window, document } = renderSrcdoc(srcdoc, 'light');
+    const anchors = [...document.querySelectorAll('a')];
+    const websiteLink = anchors.find((a) => a.textContent === 'Icelandair Website')!;
+    const termsLink = anchors.find((a) => a.textContent === 'Terms & Conditions')!;
+    const spans = [...document.querySelectorAll('span')];
+    const copyrightSpan = spans.find((s) => (s.textContent ?? '').includes('Icelandair'))!;
+
+    // The link band: both anchors keep their authored white.
+    expect(parseColor(window.getComputedStyle(websiteLink).color)).toEqual([255, 255, 255, 1]);
+    expect(parseColor(window.getComputedStyle(termsLink).color)).toEqual([255, 255, 255, 1]);
+    // Both anchors' enclosing <td> keeps its navy (own color:#435064 +
+    // own background-color:#001B71 -- a same-element pair at ~1.84:1,
+    // above the degenerate bar).
+    expect(parseColor(window.getComputedStyle(websiteLink.parentElement!.parentElement!).backgroundColor)).toEqual([
+      0x00, 0x1b, 0x71, 1,
+    ]);
+    // The copyright cell's own text keeps its authored white on navy.
+    expect(parseColor(window.getComputedStyle(copyrightSpan).color)).toEqual([255, 255, 255, 1]);
+  });
+});
