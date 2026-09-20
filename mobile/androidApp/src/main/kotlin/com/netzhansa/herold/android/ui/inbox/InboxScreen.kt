@@ -195,13 +195,19 @@ fun InboxScreen(
     // The pull to refresh, which is how the message list is reloaded
     // (REQ-AND-NAV-13, issue #444). The indicator runs for as long as
     // the pass the gesture asked for, so what it says is what the
-    // client is doing rather than a fixed animation.
+    // client is doing rather than a fixed animation. It stops on every
+    // path that wait can end on - the pass finishing, failing, never
+    // starting, the wait reaching its ceiling, and the screen leaving
+    // composition under it (issue #450).
     val pull = rememberPullToRefreshState()
     var refreshing by remember { mutableStateOf(false) }
     LaunchedEffect(refreshing) {
         if (!refreshing) return@LaunchedEffect
-        session.syncScheduler.syncNow()
-        refreshing = false
+        try {
+            session.syncScheduler.syncNow()
+        } finally {
+            refreshing = false
+        }
     }
 
     val rows = remember(emails, mailboxes, accounts, accountScope, drafts, pendingThreads) {

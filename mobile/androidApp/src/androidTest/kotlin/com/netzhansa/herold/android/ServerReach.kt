@@ -82,6 +82,12 @@ class ServerReach(target: String) : AutoCloseable {
     }
 
     private fun relay(from: Socket) {
+        if (silent) {
+            // Held open and unanswered; closing it would let the client
+            // fail the request, which is the opposite of the case.
+            synchronized(live) { live.add(from) }
+            return
+        }
         val to = try {
             Socket(targetHost, targetPort)
         } catch (t: Throwable) {
@@ -106,6 +112,33 @@ class ServerReach(target: String) : AutoCloseable {
         synchronized(live) { condemned.addAll(live) }
     }
 
+    /**
+     * The relay accepts from here on and answers nothing: a connection
+     * is established, the request is written into it and no byte ever
+     * comes back. It is the wire a phone holds after its network went
+     * out from under it, where the client is left waiting on a request
+     * that has no answer coming (issue #450).
+     */
+    fun goSilent() {
+        silent = true
+        swallow()
+    }
+
+    @Volatile
+    private var silent = false
+
+    /**
+     * Every chunk the relay carries from here on waits [ms] first, so
+     * a request takes a measurable time to be answered and a check has
+     * a window in which a sync pass is demonstrably in flight.
+     */
+    fun slowBy(ms: Long) {
+        chunkDelayMs = ms
+    }
+
+    @Volatile
+    private var chunkDelayMs: Long = 0
+
     private val condemned: MutableSet<Socket> =
         java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<Socket, Boolean>())
 
@@ -117,6 +150,8 @@ class ServerReach(target: String) : AutoCloseable {
                     val read = from.getInputStream().read(buffer)
                     if (read < 0) break
                     if (from in condemned || to in condemned) continue
+                    val hold = chunkDelayMs
+                    if (hold > 0) Thread.sleep(hold)
                     to.getOutputStream().write(buffer, 0, read)
                     to.getOutputStream().flush()
                 }

@@ -140,6 +140,19 @@ out and signs back in, so it runs online, in its own invocation:
       -e heroldBaseUrl http://10.0.2.2:<backend-port> \
       com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
 
+`InboxRefreshAcceptanceTest` checks that the pull-to-refresh indicator
+stops (issue #450): with the server reachable, with the wire down, with
+a pass already running, and on a wire that accepts and answers nothing,
+where it stops on the scheduler's ceiling. Each method signs in through
+a relay in the test process, so it takes the wire away, slows it and
+silences it with the radios untouched; it runs online, in its own
+invocation:
+
+    adb shell am instrument -w -r \
+      -e class com.netzhansa.herold.android.InboxRefreshAcceptanceTest \
+      -e heroldBaseUrl http://10.0.2.2:<backend-port> \
+      com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+
 `OAuthAcceptanceTest` needs no device setup. Pass the instance's
 `OAUTH2_CLIENT_ID` when it is not the default `herold-android`:
 
