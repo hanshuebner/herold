@@ -1,11 +1,9 @@
 package com.netzhansa.herold.android
 
-import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.ComposeTestRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.performScrollToNode
 
 /**
  * The inbox's chrome, as the checks reach it (issue #444).
@@ -16,11 +14,14 @@ import androidx.compose.ui.test.performScrollToNode
  * a reader does.
  */
 
-/** Raises the bug reporter from the inbox, through the drawer. */
+/**
+ * Raises the bug reporter from the inbox, through the drawer. The
+ * entry is one of the sheet's pinned ones, so it stands at the foot of
+ * the sheet however many labels the account has.
+ */
 internal fun ComposeTestRule.reportProblemFromTheDrawer() {
     onNodeWithTag("inbox-drawer-open").performClick()
     awaitTag("drawer-report-problem")
-    onNodeWithTag("inbox-drawer").performScrollToNode(hasTestTag("drawer-report-problem"))
     onNodeWithTag("drawer-report-problem").performClick()
 }
 
