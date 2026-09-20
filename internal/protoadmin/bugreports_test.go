@@ -3,9 +3,11 @@
 //
 //   - POST /api/v1/bug-reports accepts a device-token-authenticated
 //     end-user's multipart bundle (separate parts, or one zip part),
-//     rejects an unexpected part name, an oversized screenshot, and a
-//     body missing report.json, and refuses a bug-reports-scoped key
-//     (it lacks ScopeEndUser).
+//     including the crash trace part (crash.txt, issue #420); quarantines
+//     an unexpected part name under unknown/ instead of rejecting the
+//     whole report; rejects an oversized screenshot and a body missing
+//     report.json; and refuses a bug-reports-scoped key (it lacks
+//     ScopeEndUser).
 //   - GET /api/v1/bug-reports (list) and GET .../{id} (zip download)
 //     and DELETE .../{id} require ScopeBugReports or ScopeAdmin; an
 //     end-user token is refused.
@@ -15,6 +17,9 @@
 //   - The full create/list/get/delete lifecycle, and its audit-log
 //     entries, on both SQLite and (when HEROLD_PG_DSN is set) Postgres
 //     via openSubmissionBackends.
+//   - Every part name mobile/shared's Android bundle builder can emit is
+//     accepted by the server's allow-list, so the two sides cannot drift
+//     silently again (issue #420).
 package protoadmin_test
 
 import (
@@ -28,6 +33,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -220,10 +228,12 @@ func TestBugReports_Create_SeparateParts(t *testing.T) {
 	br := newBugReportsHarness(t)
 	h := br.h
 
+	const crashTxt = "java.lang.IndexOutOfBoundsException: index 3, size 3\n\tat ...\n"
 	res, buf := h.doMultipart("POST", "/api/v1/bug-reports", br.aliceToken, map[string][]byte{
 		"report.json":      []byte(bugReportTestMeta),
 		"report.md":        []byte("# Bug: Thread list jumps\n"),
 		"logs.txt":         []byte("2026-09-17T09:00:00Z WARN: outbox retry\n"),
+		"crash.txt":        []byte(crashTxt),
 		"screenshot-1.png": bugReportTestPNG,
 		"private.json":     []byte(`{"session": "do-not-leak"}`),
 	})
@@ -238,7 +248,7 @@ func TestBugReports_Create_SeparateParts(t *testing.T) {
 	}
 
 	dropDir := filepath.Join(br.dir, out.ID)
-	for _, name := range []string{"report.json", "report.md", "logs.txt", "screenshot-1.png", "meta.json"} {
+	for _, name := range []string{"report.json", "report.md", "logs.txt", "crash.txt", "screenshot-1.png", "meta.json"} {
 		if _, err := os.Stat(filepath.Join(dropDir, name)); err != nil {
 			t.Errorf("missing %s: %v", name, err)
 		}
@@ -246,6 +256,39 @@ func TestBugReports_Create_SeparateParts(t *testing.T) {
 	got, err := os.ReadFile(filepath.Join(dropDir, "report.json"))
 	if err != nil || string(got) != bugReportTestMeta {
 		t.Errorf("report.json not verbatim: err=%v got=%s", err, got)
+	}
+	if got, err := os.ReadFile(filepath.Join(dropDir, "crash.txt")); err != nil || string(got) != crashTxt {
+		t.Errorf("crash.txt = %q err=%v, want the submitted trace verbatim", got, err)
+	}
+
+	// The drop's crash.txt also comes back out of the download zip
+	// (issue #420: a bundle carrying it was previously refused before it
+	// ever reached a drop or a zip).
+	res, zipBuf := h.doRequest("GET", "/api/v1/bug-reports/"+out.ID, br.bugReportKey, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("GET bug-reports/%s: %d: %s", out.ID, res.StatusCode, zipBuf)
+	}
+	zr, err := zip.NewReader(bytes.NewReader(zipBuf), int64(len(zipBuf)))
+	if err != nil {
+		t.Fatalf("open response as zip: %v", err)
+	}
+	var crashEntry *zip.File
+	for _, f := range zr.File {
+		if f.Name == "crash.txt" {
+			crashEntry = f
+		}
+	}
+	if crashEntry == nil {
+		t.Fatal("zip missing crash.txt")
+	}
+	rc, err := crashEntry.Open()
+	if err != nil {
+		t.Fatalf("open crash.txt entry: %v", err)
+	}
+	defer rc.Close()
+	crashZipContent, err := io.ReadAll(rc)
+	if err != nil || string(crashZipContent) != crashTxt {
+		t.Errorf("zip crash.txt = %q err=%v, want %q", crashZipContent, err, crashTxt)
 	}
 
 	// private.json is submitted flat but stored under private/ (0700), the
@@ -343,15 +386,148 @@ func TestBugReports_Create_RequiresReportJSON(t *testing.T) {
 	}
 }
 
-func TestBugReports_Create_RejectsUnexpectedPart(t *testing.T) {
+// TestBugReports_Create_QuarantinesUnexpectedPart proves a part name the
+// server does not recognise no longer discards the whole report (issue
+// #420: the Android client shipped crash.txt before the server's
+// allow-list knew it, and every report carrying it was refused). The
+// report is still created and the unrecognised part is stored under
+// unknown/ in the drop, so it is not silently lost either.
+func TestBugReports_Create_QuarantinesUnexpectedPart(t *testing.T) {
 	br := newBugReportsHarness(t)
 	h := br.h
 	res, buf := h.doMultipart("POST", "/api/v1/bug-reports", br.aliceToken, map[string][]byte{
 		"report.json": []byte(bugReportTestMeta),
-		"trace.har":   []byte("not part of the drop layout"),
+		"trace.har":   []byte("not (yet) part of the drop layout"),
 	})
-	if res.StatusCode != http.StatusBadRequest {
-		t.Fatalf("unexpected part: %d: %s", res.StatusCode, buf)
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("POST bug-reports with an unrecognised part: %d: %s", res.StatusCode, buf)
+	}
+	var out struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(buf, &out); err != nil || out.ID == "" {
+		t.Fatalf("decode id: %v: %s", err, buf)
+	}
+	dropDir := filepath.Join(br.dir, out.ID)
+	got, err := os.ReadFile(filepath.Join(dropDir, "unknown", "trace.har"))
+	if err != nil || string(got) != "not (yet) part of the drop layout" {
+		t.Errorf("unknown/trace.har = %q err=%v, want the submitted content verbatim", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(dropDir, "trace.har")); !os.IsNotExist(err) {
+		t.Errorf("trace.har stored flat (err=%v), want only under unknown/", err)
+	}
+}
+
+// TestBugReports_Create_QuarantinedPartNameIsSanitized proves an
+// unrecognised part whose name isn't a safe drop-relative basename (a
+// path separator, here) cannot write outside the drop or under a
+// server-written name; it still lands under unknown/, reduced to a safe
+// placeholder.
+func TestBugReports_Create_QuarantinedPartNameIsSanitized(t *testing.T) {
+	br := newBugReportsHarness(t)
+	h := br.h
+	archive := zipBundle(t, map[string][]byte{
+		"report.json":  []byte(bugReportTestMeta),
+		"../evil.json": []byte("path traversal attempt"),
+	})
+	res, buf := h.doMultipart("POST", "/api/v1/bug-reports", br.aliceToken, map[string][]byte{
+		"zip": archive,
+	})
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("POST bug-reports (zip, traversal attempt): %d: %s", res.StatusCode, buf)
+	}
+	var out struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(buf, &out); err != nil || out.ID == "" {
+		t.Fatalf("decode id: %v: %s", err, buf)
+	}
+	dropDir := filepath.Join(br.dir, out.ID)
+	// zip's own basename reduction already turns "../evil.json" into
+	// "evil.json"; unknown/ still names it "evil.json", a safe basename,
+	// and nothing lands outside the drop directory.
+	if _, err := os.Stat(filepath.Join(dropDir, "unknown", "evil.json")); err != nil {
+		t.Errorf("unknown/evil.json missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(br.dir, "evil.json")); !os.IsNotExist(err) {
+		t.Errorf("evil.json escaped the drop directory (err=%v)", err)
+	}
+}
+
+// TestBugReportPartNames_MatchClientBundle proves every part name the
+// Android reporter's bundle builder
+// (mobile/shared/.../diag/BugReport.kt's BugBundleWriter.build) can emit
+// is accepted by the server's isBugReportPartName, so a part added on
+// one side without the matching server change (issue #420: crash.txt)
+// fails this test rather than silently rejecting every report carrying
+// it. It reads the client source directly rather than hardcoding the
+// name list, so it catches the next drift too.
+func TestBugReportPartNames_MatchClientBundle(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	root := filepath.Join(filepath.Dir(thisFile), "..", "..")
+	diagDir := filepath.Join(root, "mobile", "shared", "src", "commonMain", "kotlin",
+		"com", "netzhansa", "herold", "shared", "diag")
+
+	bugReportSrc, err := os.ReadFile(filepath.Join(diagDir, "BugReport.kt"))
+	if err != nil {
+		t.Fatalf("read BugReport.kt: %v", err)
+	}
+	crashRecordSrc, err := os.ReadFile(filepath.Join(diagDir, "CrashRecord.kt"))
+	if err != nil {
+		t.Fatalf("read CrashRecord.kt: %v", err)
+	}
+
+	crashFileMatch := regexp.MustCompile(`const val FILE\s*=\s*"([^"]+)"`).FindSubmatch(crashRecordSrc)
+	if crashFileMatch == nil {
+		t.Fatal("CrashRecord.kt: could not find the CrashRecords.FILE literal -- parser drifted from the source")
+	}
+	crashFileName := string(crashFileMatch[1])
+
+	callPattern := regexp.MustCompile(`(?s)BugBundleFile\(\s*("(?:[^"\\]|\\.)*"|CrashRecords\.FILE)`)
+	matches := callPattern.FindAllSubmatch(bugReportSrc, -1)
+	if len(matches) == 0 {
+		t.Fatal("BugReport.kt: no BugBundleFile( calls found -- parser drifted from the source")
+	}
+
+	checked := map[string]bool{}
+	for _, m := range matches {
+		arg := string(m[1])
+		var name string
+		if arg == "CrashRecords.FILE" {
+			name = crashFileName
+		} else {
+			name = strings.Trim(arg, `"`)
+		}
+		if strings.Contains(name, "$") {
+			// A Kotlin string template ("screenshot-$index.png"):
+			// substitute a concrete index and check the resulting name.
+			name = strings.NewReplacer("$index", "1").Replace(name)
+		}
+		checked[name] = true
+		if !protoadmin.IsBugReportPartName(name) {
+			t.Errorf("isBugReportPartName(%q) = false; the Android client can send this part but the server allow-list refuses it", name)
+		}
+	}
+	// The set the client can currently emit; failing here means either
+	// the client added a part this test's parser didn't expect (extend
+	// the parser) or dropped one (tighten this list, and possibly the
+	// server allow-list).
+	want := map[string]bool{
+		"report.json": true, "report.md": true, "logs.txt": true,
+		"screenshot-1.png": true, "crash.txt": true, "private.json": true,
+	}
+	for name := range want {
+		if !checked[name] {
+			t.Errorf("expected BugReport.kt to emit %q; it didn't -- test parser or client source drifted", name)
+		}
+	}
+	for name := range checked {
+		if !want[name] {
+			t.Errorf("BugReport.kt emits %q, which this test's expected set doesn't know about -- update `want`", name)
+		}
 	}
 }
 
@@ -389,6 +565,7 @@ func (br *bugReportsHarness) createBugReport(t *testing.T) string {
 	res, buf := br.h.doMultipart("POST", "/api/v1/bug-reports", br.aliceToken, map[string][]byte{
 		"report.json":      []byte(bugReportTestMeta),
 		"screenshot-1.png": bugReportTestPNG,
+		"crash.txt":        []byte("java.lang.IndexOutOfBoundsException\n\tat ...\n"),
 		"private.json":     []byte(`{"session": "do-not-leak"}`),
 	})
 	if res.StatusCode != http.StatusCreated {
@@ -541,8 +718,9 @@ func TestBugReports_Get_ReturnsZip(t *testing.T) {
 	}
 	// private/private.json (not a flat private.json) carries the drop
 	// layout's repro-secrets subdirectory into the downloaded zip, so
-	// bug-fetch extracts it back to the same path.
-	for _, want := range []string{"report.json", "screenshot-1.png", "meta.json", "private/private.json"} {
+	// bug-fetch extracts it back to the same path. crash.txt (issue
+	// #420) rides along flat, like report.json and logs.txt.
+	for _, want := range []string{"report.json", "screenshot-1.png", "crash.txt", "meta.json", "private/private.json"} {
 		if !names[want] {
 			t.Errorf("zip missing %s; entries=%v", want, names)
 		}

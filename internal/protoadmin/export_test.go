@@ -23,6 +23,14 @@ func (s *Server) Options() Options {
 	return s.opts
 }
 
+// IsBugReportPartName exposes the internal isBugReportPartName function
+// to the _test package so a test can assert the server's bug-report
+// part allow-list against the names the Android client's bundle builder
+// can actually emit (issue #420).
+func IsBugReportPartName(name string) bool {
+	return isBugReportPartName(name)
+}
+
 // ProviderNameByTokenURL exposes the internal providerNameByTokenURL method
 // to the _test package for unit testing the priority ordering and edge cases
 // (re #131).

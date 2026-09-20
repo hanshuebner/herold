@@ -131,16 +131,24 @@ endpoints on the public listener, all audit-logged (REQ-ADM-300):
   carrying `end-user` scope, REQ-AUTH-SCOPE-01) — the same credential kind
   the Suite's self-service surfaces accept. The body is either
   `multipart/form-data` with one part per drop file (`report.json`,
-  `report.md`, `logs.txt`, `screenshot-N.png`, optional `private.json`) or a
-  single `zip` part holding the same entries. `report.json` is required;
-  every other part is optional. The server writes
+  `report.md`, `logs.txt`, `crash.txt`, `screenshot-N.png`, optional
+  `private.json`) or a single `zip` part holding the same entries.
+  `report.json` is required; every other part is optional. The server writes
   `<data_dir>/bug-reports/<id>/` holding the submitted files verbatim plus a
   server-written `meta.json` (`principal_id`, `email`, `received_at`, and
   each part's size), and answers `201 {"id": "<id>"}`. Size caps: 8 MiB per
   screenshot, 4 MiB per other part, 20 screenshots, 40 MiB total request
-  body; a request over any cap is rejected (400 for an unexpected part or a
-  missing `report.json`, 413 for an oversized part or body) before anything
-  is written to disk.
+  body; a request over any cap is rejected (413), and a request missing
+  `report.json` is rejected (400), before anything is written to disk. A
+  part whose name is none of the above is not rejected and does not cause
+  the report to be dropped: it is stored under `unknown/<name>` in the drop
+  alongside the recognised parts, and a warning is logged, so a client and
+  server that have drifted on the part set (issue #420: the Android
+  reporter shipped `crash.txt` before the server's allow-list knew it,
+  and every report carrying a crash was refused whole) still deliver
+  the rest of the report. The recognised-name/screenshot-pattern check and
+  the size caps stay: an unrecognised part carries the same 4 MiB cap as
+  any other non-screenshot part.
 - **REQ-ADM-321** `GET /api/v1/bug-reports` lists every stored report,
   newest first: `id`, `received_at`, `principal_id`, `email` (from
   `meta.json`), and `title` (the first non-blank line of `report.json`'s
