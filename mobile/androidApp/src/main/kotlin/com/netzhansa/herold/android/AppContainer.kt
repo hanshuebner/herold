@@ -7,9 +7,12 @@ import com.netzhansa.herold.android.diag.PendingReportStore
 import com.netzhansa.herold.shared.actions.CategoryActions
 import com.netzhansa.herold.shared.actions.FilterActions
 import com.netzhansa.herold.shared.actions.MailActions
+import com.netzhansa.herold.shared.actions.UndoActions
 import com.netzhansa.herold.shared.actions.UndoCenter
+import com.netzhansa.herold.shared.actions.UndoMessages
 import com.netzhansa.herold.shared.compose.AddressBook
 import com.netzhansa.herold.shared.compose.Composer
+import com.netzhansa.herold.shared.compose.Drafts
 import com.netzhansa.herold.android.auth.UnlockController
 import com.netzhansa.herold.shared.auth.AppPasswordClient
 import com.netzhansa.herold.shared.auth.AuthClient
@@ -37,6 +40,7 @@ import com.netzhansa.herold.shared.llm.Transparency
 import com.netzhansa.herold.shared.outbox.ComposePayload
 import com.netzhansa.herold.shared.outbox.FileBlobSpool
 import com.netzhansa.herold.shared.outbox.Outbox
+import com.netzhansa.herold.shared.outbox.OutboxKind
 import com.netzhansa.herold.shared.outbox.OutboxDrainer
 import com.netzhansa.herold.shared.push.PushRegistrar
 import com.netzhansa.herold.shared.mail.UnsubscribeClient
@@ -44,6 +48,7 @@ import com.netzhansa.herold.shared.search.MailSearch
 import com.netzhansa.herold.shared.store.LocalStore
 import com.netzhansa.herold.shared.store.FileBlobFileStore
 import com.netzhansa.herold.shared.store.SqlDelightLocalStore
+import com.netzhansa.herold.shared.store.Tombstones
 import com.netzhansa.herold.shared.store.createDatabase
 import com.netzhansa.herold.shared.store.DatabaseDriverFactory
 import com.netzhansa.herold.shared.sync.AndroidConnectivityMonitor
@@ -111,6 +116,8 @@ class SessionScope(
      */
     val requestDrain: (delayMs: Long) -> Unit,
     val actions: MailActions,
+    /** What a saved draft is discarded through (issue #371). */
+    val drafts: Drafts,
     /** Filter-rule writes: the filters screen, mute and block (suite REQ-FLT-20). */
     val filters: FilterActions,
     /** Category settings: a label's disposition and the pinned order (suite REQ-CAT-04/05/11). */
@@ -188,6 +195,12 @@ class AppContainer(context: Context) {
 
     val tokenStore = KeystoreTokenStore(context)
 
+    /**
+     * The rows a discard or a server-side destroy took away, held
+     * against the fetches that were already in flight (issue #371).
+     */
+    private val tombstones = Tombstones({ System.currentTimeMillis() })
+
     val store: LocalStore = SqlDelightLocalStore(
         database = createDatabase(DatabaseDriverFactory(context)),
         // Cached blob bytes are files under the cache directory; the row
@@ -195,6 +208,7 @@ class AppContainer(context: Context) {
         blobFiles = FileBlobFileStore(context),
         dispatcher = Dispatchers.IO,
         now = { System.currentTimeMillis() },
+        tombstones = tombstones,
     )
 
     /** Attachment bytes a queued send still has to upload (REQ-AND-SYNC-21). */
@@ -357,6 +371,17 @@ class AppContainer(context: Context) {
             session.collectLatest { current ->
                 current?.drainer?.failures?.collect { failure ->
                     DiagLog.w(OUTBOX_TAG, "${failure.label} failed: ${failure.message}")
+                    // A discard the server would not take is the one
+                    // failure the user is told about as it happens: the
+                    // draft they threw away is back, and nothing else
+                    // on screen says so (issue #371).
+                    if (failure.kind == OutboxKind.DESTROY) {
+                        undo.offer(
+                            message = UndoMessages.DISCARD_FAILED + ": " + failure.message,
+                            windowMs = null,
+                            actionLabel = UndoActions.DISMISS,
+                        ) {}
+                    }
                 }
             }
         }
@@ -567,6 +592,7 @@ class AppContainer(context: Context) {
             spool = spool,
             composer = composer,
             bugReports = client,
+            tombstones = tombstones,
             reachability = reachability,
             log = { message -> DiagLog.i(OUTBOX_TAG, message) },
             now = { System.currentTimeMillis() },
@@ -596,6 +622,7 @@ class AppContainer(context: Context) {
             drainer = drainer,
             requestDrain = requestDrain,
             actions = MailActions(store, outbox) { requestDrain(0) },
+            drafts = Drafts(store, outbox) { requestDrain(0) },
             filters = FilterActions(store, outbox) { requestDrain(0) },
             categories = CategoryActions(store, outbox) { requestDrain(0) },
             // The unsubscribe POST goes out on the plain client: no auth

@@ -79,6 +79,7 @@ import com.netzhansa.herold.shared.compose.ComposeAttachment
 import com.netzhansa.herold.shared.compose.ComposeMode
 import com.netzhansa.herold.shared.compose.ComposeResult
 import com.netzhansa.herold.shared.compose.ComposeState
+import com.netzhansa.herold.shared.compose.DraftHandle
 import com.netzhansa.herold.shared.compose.HtmlText
 import com.netzhansa.herold.shared.compose.InlineImage
 import com.netzhansa.herold.shared.compose.IdentityChoice
@@ -133,6 +134,12 @@ fun ComposeScreen(
     val snackbar = remember { SnackbarHostState() }
     val darkTheme = isSystemInDarkTheme()
     val editor = remember { EditorHandle() }
+    /**
+     * What this compose's draft is known by, which is not an id until
+     * a save has answered: the discard offer holds this rather than an
+     * id read when the offer was parked (issue #371).
+     */
+    val draft = remember { DraftHandle() }
 
     var state by remember { mutableStateOf<ComposeState?>(null) }
     var toText by remember { mutableStateOf("") }
@@ -228,10 +235,15 @@ fun ComposeScreen(
             is ComposeResult.Saved -> {
                 state = (state ?: target).copy(draftId = result.draftId)
                 takeDraftIntoStore(target.accountId, result.draftId)
+                session.drafts.saved(draft, target.accountId, result.draftId)
             }
             // With no connection the draft is in the outbox; it reaches
             // the server's Drafts mailbox on the next drain.
-            is ComposeResult.Queued -> state = (state ?: target).copy(draftEntryId = result.entryId)
+            is ComposeResult.Queued -> {
+                state = (state ?: target).copy(draftEntryId = result.entryId)
+                session.drafts.queued(draft, target.accountId, result.entryId)
+            }
+
             is ComposeResult.Failed -> snackbar.showSnackbar(result.message)
         }
     }
@@ -324,13 +336,15 @@ fun ComposeScreen(
                                     is ComposeResult.Saved -> {
                                         handedOff = true
                                         takeDraftIntoStore(toSave.accountId, result.draftId)
-                                        offerDiscardDraft(container, session, toSave.accountId, result.draftId, null)
+                                        session.drafts.saved(draft, toSave.accountId, result.draftId)
+                                        offerDiscardDraft(container, session, draft)
                                         close()
                                     }
 
                                     is ComposeResult.Queued -> {
                                         handedOff = true
-                                        offerDiscardDraft(container, session, toSave.accountId, null, result.entryId)
+                                        session.drafts.queued(draft, toSave.accountId, result.entryId)
+                                        offerDiscardDraft(container, session, draft)
                                         close()
                                     }
 
@@ -677,26 +691,24 @@ private fun FormattingToolbar(
 
 /**
  * Parks the "Draft saved / Discard" offer for the screen the composer
- * returned to (issue #371). Taking it destroys the draft the close wrote,
- * or drops the entry that was going to write it.
+ * returned to (issue #371).
+ *
+ * The offer carries the compose's draft handle rather than the ids read
+ * when it was parked, so taking it acts on whatever the save has reached
+ * by then - the queue entry, the message on the server, or a save still
+ * in flight, whose draft is destroyed as soon as it has one.
  */
 private fun offerDiscardDraft(
     container: AppContainer,
     session: SessionScope,
-    accountId: String,
-    draftId: String?,
-    entryId: Long?,
+    draft: DraftHandle,
 ) {
     container.undo.offer(
         message = UndoMessages.DRAFT_SAVED,
         windowMs = null,
         actionLabel = UndoActions.DISCARD,
     ) {
-        entryId?.let { container.outbox.remove(it) }
-        draftId?.let {
-            session.composer.discardDraft(accountId, it)
-            container.store.deleteEmails(accountId, listOf(it))
-        }
+        session.drafts.discard(draft)
     }
 }
 
