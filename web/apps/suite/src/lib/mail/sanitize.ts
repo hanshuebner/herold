@@ -1061,24 +1061,66 @@ function readingPaneTheme(): typeof READING_PANE_THEME.light | typeof READING_PA
 }
 
 /**
+ * Resolved `background-color` from the legacy `bgcolor` presentational
+ * attribute (valid on `<body>`, `<table>`, `<tr>`, `<td>`, `<th>`, and
+ * historically a handful of other elements -- checked here on any element,
+ * since the attribute's mere presence is what DOMPurify preserves and what
+ * the browser paints, regardless of tag), or `''` when absent or
+ * unparseable as a CSS color. Kept by DOMPurify -- it is not in
+ * `FORBID_ATTR` -- so the background it describes actually paints even
+ * though `resolveEffectiveBackground`'s ancestor walk, before this fix,
+ * never saw it (issue #422 second round, maintainer hand-back on comment
+ * 5358: an Icelandair check-in mail's footer cell carried
+ * `bgcolor="#001B71"` with no CSS `background-color` at all). Goes through
+ * the same CSSOM round-trip as every other color value this file compares,
+ * via the `background-color` property specifically (not `background`,
+ * since `bgcolor`'s legacy HTML syntax never carries an image/position
+ * layer) so a legal CSS color resolves identically to how the style-based
+ * paths resolve one; a value the CSS `<color>` parser rejects (e.g. a bare
+ * "FF0000" without the leading "#", which legacy quirks-mode HTML color
+ * parsing would accept but the CSS property parser will not) safely
+ * resolves to "not declared" rather than a guessed value.
+ */
+function presentationalBackgroundColor(el: Element): string {
+  const raw = el.getAttribute('bgcolor');
+  if (!raw) return '';
+  const probe = document.createElement('div');
+  probe.style.backgroundColor = raw.trim();
+  return probe.style.backgroundColor;
+}
+
+/**
  * Resolved `color` / `background-color` this element declares on its own
  * `style` attribute, with `currentColor` treated as not declared (see
  * `isCurrentColorKeyword`'s doc comment) -- `''` for a half not declared.
  * Goes through the same detached-probe / CSSOM round-trip as
  * `sanitizeInlineColorPairs` itself so shorthand, keyword, and `!important`
  * declarations resolve identically.
+ *
+ * `background-color` additionally falls back to the legacy `bgcolor`
+ * presentational attribute (`presentationalBackgroundColor`) whenever CSS
+ * declares none -- a CSS `background-color`, when present, always wins
+ * (issue #422 second round). There is no equivalent foreground fallback:
+ * `<font color>` never reaches this function at all (`font` is not in
+ * `ALLOWED_TAGS`, so DOMPurify drops the element, keeping only its text),
+ * and the legacy `<body text=/link=>` attributes are handled separately by
+ * `resolvedBodyColorStyle`, not here, and are deliberately NOT treated as a
+ * declared foreground in this round (see that function's doc comment).
  */
 function declaredColorHalves(el: Element): { color: string; backgroundColor: string } {
   const style = el.getAttribute('style');
-  if (!style) return { color: '', backgroundColor: '' };
   const probe = document.createElement('div');
-  probe.setAttribute('style', style);
+  if (style) probe.setAttribute('style', style);
   if (isCurrentColorKeyword(probe.style.color)) probe.style.removeProperty('color');
   if (isCurrentColorKeyword(probe.style.backgroundColor)) {
     probe.style.removeProperty('background-color');
     probe.style.removeProperty('background');
   }
-  return { color: probe.style.color, backgroundColor: probe.style.backgroundColor };
+  const color = probe.style.color;
+  const backgroundColor = isDeclaredColor(probe.style.backgroundColor)
+    ? probe.style.backgroundColor
+    : presentationalBackgroundColor(el);
+  return { color, backgroundColor };
 }
 
 /**
@@ -1108,21 +1150,34 @@ function resolveEffectiveForeground(el: Element): string | null {
   return null;
 }
 
-// Matches a raw <body ...> opening tag to pull its style attribute before
-// DOMPurify ever runs -- RETURN_DOM_FRAGMENT mode discards the body tag
-// itself, so this is the only point at which its style is observable.
+// Matches a raw <body ...> opening tag to pull its style/bgcolor attributes
+// before DOMPurify ever runs -- RETURN_DOM_FRAGMENT mode discards the body
+// tag itself, so this is the only point at which they are observable.
 const BODY_TAG_RE = /<body\b([^>]*)>/i;
 const STYLE_ATTR_RE = /\bstyle\s*=\s*(?:"([^"]*)"|'([^']*)')/i;
+const BGCOLOR_ATTR_RE = /\bbgcolor\s*=\s*(?:"([^"]*)"|'([^']*)'|(\S+))/i;
 
 /**
  * The message's `<body style="...">` color/background-color, resolved and
  * reserialized as a minimal `style` string (e.g. `"color: rgb(58, 58,
  * 61); background-color: rgb(250, 250, 250)"`), or `null` when the raw
- * markup has no `<body>` tag, no `style` attribute, or neither color
- * property resolves to a declared value. Only these two properties are
- * carried over -- not the body's full style text -- so nothing else
- * authored on `<body>` (fonts, margins, `background-image`, ...) reaches
- * the wrapper div this becomes `sanitizeHtml`'s style on (issue #422).
+ * markup has no `<body>` tag and neither color property resolves to a
+ * declared value from either `style` or the legacy `bgcolor` attribute.
+ * Only `color` and `background-color` are carried over -- not the body's
+ * full style text -- so nothing else authored on `<body>` (fonts, margins,
+ * `background-image`, ...) reaches the wrapper div this becomes
+ * `sanitizeHtml`'s style on (issue #422).
+ *
+ * `background-color` falls back to a `bgcolor="..."` presentational
+ * attribute on `<body>` when CSS declares none (issue #422 second round,
+ * maintainer hand-back on comment 5358) -- a CSS `background-color`, when
+ * present, always wins. There is no equivalent fallback for `color`: the
+ * legacy `<body text="...">` / `link="..."` presentational attributes are
+ * deliberately not treated as a declared foreground here, since neither
+ * this ticket's reduced case nor the first round's forum-notification
+ * corpus exercises them; adding that without a reproduced defect would be
+ * a speculative addition, not a fix.
+ *
  * Goes through the same probe/CSSOM round-trip as `declaredColorHalves`,
  * which is what keeps this safe to assign directly to a live element's
  * `style` attribute: only values the browser's own CSS parser resolves as
@@ -1131,23 +1186,34 @@ const STYLE_ATTR_RE = /\bstyle\s*=\s*(?:"([^"]*)"|'([^']*)')/i;
 function resolvedBodyColorStyle(raw: string): string | null {
   const bodyTag = BODY_TAG_RE.exec(raw);
   if (!bodyTag) return null;
-  const styleAttr = STYLE_ATTR_RE.exec(bodyTag[1]!);
-  if (!styleAttr) return null;
-  const styleText = styleAttr[1] ?? styleAttr[2] ?? '';
-  if (styleText.trim() === '') return null;
+  const attrs = bodyTag[1]!;
+  const styleAttr = STYLE_ATTR_RE.exec(attrs);
+  const styleText = styleAttr ? styleAttr[1] ?? styleAttr[2] ?? '' : '';
 
   const probe = document.createElement('div');
-  probe.setAttribute('style', styleText);
+  if (styleText.trim() !== '') probe.setAttribute('style', styleText);
   if (isCurrentColorKeyword(probe.style.color)) probe.style.removeProperty('color');
   if (isCurrentColorKeyword(probe.style.backgroundColor)) {
     probe.style.removeProperty('background-color');
     probe.style.removeProperty('background');
   }
+
+  let backgroundColor = probe.style.backgroundColor;
+  if (!isDeclaredColor(backgroundColor)) {
+    const bgcolorAttr = BGCOLOR_ATTR_RE.exec(attrs);
+    const bgcolorValue = bgcolorAttr ? bgcolorAttr[1] ?? bgcolorAttr[2] ?? bgcolorAttr[3] ?? '' : '';
+    if (bgcolorValue.trim() !== '') {
+      const bgProbe = document.createElement('div');
+      bgProbe.style.backgroundColor = bgcolorValue.trim();
+      if (isDeclaredColor(bgProbe.style.backgroundColor)) {
+        backgroundColor = bgProbe.style.backgroundColor;
+      }
+    }
+  }
+
   const parts: string[] = [];
   if (isDeclaredColor(probe.style.color)) parts.push(`color: ${probe.style.color}`);
-  if (isDeclaredColor(probe.style.backgroundColor)) {
-    parts.push(`background-color: ${probe.style.backgroundColor}`);
-  }
+  if (isDeclaredColor(backgroundColor)) parts.push(`background-color: ${backgroundColor}`);
   return parts.length > 0 ? parts.join('; ') : null;
 }
 
@@ -1248,14 +1314,13 @@ function resolvedBodyColorStyle(raw: string): string | null {
  */
 function sanitizeInlineColorPairs(root: Element): void {
   const candidates: Element[] = [];
-  if (root.hasAttribute('style')) candidates.push(root);
-  candidates.push(...root.querySelectorAll<HTMLElement>('[style]'));
+  if (root.hasAttribute('style') || root.hasAttribute('bgcolor')) candidates.push(root);
+  candidates.push(...root.querySelectorAll<HTMLElement>('[style], [bgcolor]'));
 
   for (const el of candidates) {
     const style = el.getAttribute('style');
-    if (!style) continue;
     const probe = document.createElement('div');
-    probe.setAttribute('style', style);
+    if (style) probe.setAttribute('style', style);
 
     if (isCurrentColorKeyword(probe.style.color)) probe.style.removeProperty('color');
     if (isCurrentColorKeyword(probe.style.backgroundColor)) {
@@ -1263,17 +1328,38 @@ function sanitizeInlineColorPairs(root: Element): void {
       probe.style.removeProperty('background');
     }
 
-    const hasColor = isDeclaredColor(probe.style.color);
-    const hasBackground = isDeclaredColor(probe.style.backgroundColor);
+    const ownColor = probe.style.color;
+    // A CSS background-color on this SAME element always wins over its own
+    // `bgcolor` attribute (issue #422 second round); `bgcolor` is consulted
+    // only when the element declares no CSS background-color of its own --
+    // e.g. the ticket's reduced case, `<td bgcolor="#001B71" style="color:
+    // #FFFFFF">`, where the background and the lone color sit on the same
+    // element rather than an ancestor/descendant pair.
+    const backgroundFromStyle = isDeclaredColor(probe.style.backgroundColor);
+    const ownBackground = backgroundFromStyle
+      ? probe.style.backgroundColor
+      : presentationalBackgroundColor(el);
 
-    if (
-      hasColor &&
-      hasBackground &&
-      colorsAreIndistinguishable(probe.style.color, probe.style.backgroundColor)
-    ) {
+    const hasColor = isDeclaredColor(ownColor);
+    const hasBackground = isDeclaredColor(ownBackground);
+
+    // Removes whichever half actually carries the background: the CSS
+    // property when the element declared one, or the presentational
+    // `bgcolor` attribute otherwise (DOMPurify keeps `bgcolor` -- it is not
+    // in FORBID_ATTR -- so leaving it in place would still paint the
+    // stripped-color pair's background).
+    const stripBackground = () => {
+      if (backgroundFromStyle) {
+        probe.style.removeProperty('background-color');
+        probe.style.removeProperty('background');
+      } else {
+        el.removeAttribute('bgcolor');
+      }
+    };
+
+    if (hasColor && hasBackground && colorsAreIndistinguishable(ownColor, ownBackground)) {
       probe.style.removeProperty('color');
-      probe.style.removeProperty('background-color');
-      probe.style.removeProperty('background');
+      stripBackground();
     } else if (hasColor && !hasBackground) {
       const ancestorBackground = resolveEffectiveBackground(el);
       const effectiveBackground = ancestorBackground ?? readingPaneTheme().backgroundColor;
@@ -1282,11 +1368,14 @@ function sanitizeInlineColorPairs(root: Element): void {
       // this element -- only a near-invisible collision overrides it
       // (issue #422). No ancestor/body pair at all means the sender
       // expressed no legibility intent here, so the bar is full WCAG AA,
-      // matching issue #231's original behaviour for that scenario.
+      // matching issue #231's original behaviour for that scenario. The
+      // counterpart may be a CSS `background-color` or a `bgcolor`
+      // attribute on the ancestor (or on `<body>`, carried onto the
+      // wrapper) -- both count as declared (issue #422 second round).
       const threshold = ancestorBackground !== null
         ? DEGENERATE_CONTRAST_THRESHOLD
         : WCAG_AA_CONTRAST_THRESHOLD;
-      if (contrastBelowThreshold(probe.style.color, effectiveBackground, threshold)) {
+      if (contrastBelowThreshold(ownColor, effectiveBackground, threshold)) {
         probe.style.removeProperty('color');
       }
     } else if (hasBackground && !hasColor) {
@@ -1295,9 +1384,8 @@ function sanitizeInlineColorPairs(root: Element): void {
       const threshold = ancestorForeground !== null
         ? DEGENERATE_CONTRAST_THRESHOLD
         : WCAG_AA_CONTRAST_THRESHOLD;
-      if (contrastBelowThreshold(effectiveForeground, probe.style.backgroundColor, threshold)) {
-        probe.style.removeProperty('background-color');
-        probe.style.removeProperty('background');
+      if (contrastBelowThreshold(effectiveForeground, ownBackground, threshold)) {
+        stripBackground();
       }
     }
     // both true and distinguishable (a genuine, legible, complete pair) or
@@ -1307,7 +1395,7 @@ function sanitizeInlineColorPairs(root: Element): void {
     if (kept === style) continue; // nothing changed -- keep original text byte-for-byte.
     if (kept) {
       el.setAttribute('style', kept);
-    } else {
+    } else if (style !== null) {
       el.removeAttribute('style');
     }
   }
