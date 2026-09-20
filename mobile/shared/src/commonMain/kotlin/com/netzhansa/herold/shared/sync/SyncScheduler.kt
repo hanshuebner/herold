@@ -5,6 +5,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
@@ -80,6 +81,12 @@ class SyncScheduler(
 
     private val _lastSuccessAtMs = MutableStateFlow<Long?>(null)
 
+    /** How many passes have finished, whichever woke them. */
+    private val completedPasses = MutableStateFlow(0L)
+
+    /** True while a pass is running. */
+    private val passRunning = MutableStateFlow(false)
+
     /**
      * When the last pass that reached the server finished. The
      * diagnostics screen shows it, so a lag is read off the screen
@@ -93,18 +100,36 @@ class SyncScheduler(
     }
 
     /**
+     * Runs a pass now and returns once it has finished, so a caller
+     * that shows the sync running - the inbox's pull to refresh - shows
+     * it for as long as the pass takes (issue #444).
+     *
+     * A pass already under way is one this call did not ask for, so the
+     * wait covers it and the pass the request wakes behind it.
+     */
+    suspend fun syncNow() {
+        val target = completedPasses.value + if (passRunning.value) 2 else 1
+        requestSync()
+        completedPasses.first { it >= target }
+    }
+
+    /**
      * Passes and waits until the caller's scope is cancelled. The first
      * pass runs immediately, so starting the loop is itself the forced
      * sync a return to the foreground asks for.
      */
     suspend fun run() {
         while (true) {
+            passRunning.value = true
             val status = try {
                 pass()
             } catch (c: CancellationException) {
                 throw c
             } catch (t: Throwable) {
                 SyncStatus.Failed(t.message ?: "sync failed")
+            } finally {
+                passRunning.value = false
+                completedPasses.value++
             }
             val wait = if (status is SyncStatus.Failed) {
                 val next = schedule.recordFailure()
