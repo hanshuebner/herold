@@ -4,10 +4,7 @@ import android.app.Activity
 import android.app.Instrumentation
 import android.content.Intent
 import android.net.Uri
-import android.os.SystemClock
-import android.view.KeyEvent
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextEquals
@@ -35,7 +32,6 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.After
-import com.netzhansa.herold.shared.actions.UndoActions
 import com.netzhansa.herold.shared.actions.UndoMessages
 import com.netzhansa.herold.shared.outbox.PendingMessage
 import org.junit.Assert.assertEquals
@@ -106,7 +102,7 @@ class ComposeAcceptanceTest {
         // parent's Message-ID, all derived by the shared core.
         compose.onNodeWithTag("compose-to-chip-${parent.fromEmail}").assertIsDisplayed()
 
-        typeInBody("Here is the file you asked for.")
+        compose.typeInBody("Here is the file you asked for.")
         attachFile("acceptance.txt", "text/plain", "attachment payload\n".toByteArray())
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithTag("attachment-ready-acceptance.txt").fetchSemanticsNodes().isNotEmpty()
@@ -140,7 +136,7 @@ class ComposeAcceptanceTest {
 
         // Type the word, select it by double-tapping it, then apply bold -
         // the order a user works in.
-        typeInBody("Bolded")
+        compose.typeInBody("Bolded")
         compose.onNodeWithTag("compose-body").performTouchInput { doubleClick(Offset(40f, 20f)) }
         compose.waitForIdle()
         compose.onNodeWithTag("compose-bold").performClick()
@@ -205,7 +201,7 @@ class ComposeAcceptanceTest {
         }
         compose.onNodeWithTag("compose-to").performTextInput(DevInstance.recipientEmail + ",")
         compose.onNodeWithTag("compose-subject").performTextInput(subject)
-        typeInBody("Unsent thoughts.")
+        compose.typeInBody("Unsent thoughts.")
         compose.captureScreen("23-draft-before-backgrounding")
 
         // Backgrounding is what triggers the save (suite REQ-DFT-01/02).
@@ -226,7 +222,9 @@ class ComposeAcceptanceTest {
     @Test
     fun t24_closingAReplyWithTextKeepsItAsADraftInItsThread() = runBlocking {
         val parent = deliverAndReply("draft in thread")
-        compose.onNodeWithTag("compose-subject").performTextInput(" (draft)")
+        // The answer goes in the body: an edit of the subject makes the
+        // draft a conversation of its own, which is not what this reads.
+        compose.typeInBody("A line of the answer.")
         compose.onNodeWithTag("compose-close").performClick()
 
         compose.waitUntil(TIMEOUT_MS) {
@@ -275,11 +273,14 @@ class ComposeAcceptanceTest {
                 .map { it.id },
         )
 
-        // Discard from the snackbar takes it away again.
+        // Reopening and closing it as it stands raises no new offer -
+        // nothing was changed - so the conversation's own Discard is
+        // what takes it away again.
         compose.waitUntil(TIMEOUT_MS) {
-            compose.onAllNodesWithText(UndoActions.DISCARD).fetchSemanticsNodes().isNotEmpty()
+            compose.onAllNodesWithTag("thread-draft-discard-${draft.id}", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
         }
-        compose.onNodeWithText(UndoActions.DISCARD).performClick()
+        compose.onNodeWithTag("thread-draft-discard-${draft.id}", useUnmergedTree = true).performClick()
         compose.waitUntil(TIMEOUT_MS) {
             runBlocking {
                 app.container.store.threadEmailList(parent.accountId, parent.threadId)
@@ -365,67 +366,6 @@ class ComposeAcceptanceTest {
     }
 
     /**
-     * Types into the body editor, which is a WebView holding a
-     * contenteditable. The tap lands in its first line - the empty
-     * paragraph above the quoted original - so the text goes where a
-     * reply is written.
-     *
-     * A key event reaches the document only once the editable holds the
-     * caret, which the tap grants asynchronously; keys sent before that
-     * are dropped and the text loses its leading characters (issue #344).
-     * The page reports its focus and the editor is made to echo a
-     * keystroke, so the text goes in over a path that has been seen to
-     * carry one.
-     */
-    private fun typeInBody(text: String) {
-        // The editor's document loads asynchronously and publishes its
-        // body's length once it is up.
-        compose.waitUntil(TIMEOUT_MS) { editorChars() >= 0 }
-        val before = editorChars()
-        compose.onNodeWithTag("compose-body").performTouchInput { click(Offset(30f, 20f)) }
-        compose.waitUntil(TIMEOUT_MS) {
-            compose.onAllNodesWithTag("compose-body-focused").fetchSemanticsNodes().isNotEmpty()
-        }
-        awaitTypingLands(before)
-        InstrumentationRegistry.getInstrumentation().sendStringSync(text)
-        compose.waitUntil(TIMEOUT_MS) { editorChars() >= before + text.length }
-    }
-
-    /**
-     * Types a probe character until the editor echoes it, then takes it
-     * back, leaving the body as it was over an input path that has been
-     * seen to carry a keystroke. The editable's focus flaps once as the
-     * keyboard comes up, so the page's report of holding the caret does
-     * not yet mean a key arrives; what the document echoes does
-     * (issue #344).
-     */
-    private fun awaitTypingLands(before: Int) {
-        val instrumentation = InstrumentationRegistry.getInstrumentation()
-        val deadline = SystemClock.uptimeMillis() + TIMEOUT_MS
-        while (editorChars() <= before) {
-            if (SystemClock.uptimeMillis() > deadline) error("the editor took no keystroke")
-            instrumentation.sendStringSync(PROBE)
-            runCatching { compose.waitUntil(ECHO_MS) { editorChars() > before } }
-        }
-        var chars = editorChars()
-        while (chars > before) {
-            if (SystemClock.uptimeMillis() > deadline) error("the probe character stayed in the editor")
-            instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_DEL)
-            runCatching { compose.waitUntil(ECHO_MS) { editorChars() < chars } }
-            chars = editorChars()
-        }
-    }
-
-    /** How many characters the editor's body holds, or -1 before it loads. */
-    private fun editorChars(): Int =
-        compose.onAllNodes(hasTestTagStartingWith("compose-editor-"), useUnmergedTree = true)
-            .fetchSemanticsNodes()
-            .firstNotNullOfOrNull {
-                it.config.getOrNull(SemanticsProperties.TestTag)
-                    ?.removePrefix("compose-editor-")?.toIntOrNull()
-            } ?: -1
-
-    /**
      * Stubs the system file picker with a file of our own, so the
      * attachment path runs end to end without driving the SAF UI.
      */
@@ -467,11 +407,6 @@ class ComposeAcceptanceTest {
     private companion object {
         const val TIMEOUT_MS = 30_000L
 
-        /** A character typed to see whether the editor takes keystrokes. */
-        const val PROBE = "x"
-
-        /** How long one probe keystroke is given to come back. */
-        const val ECHO_MS = 2_000L
         const val DELIVERY_POLLS = 30
         const val DELIVERY_POLL_MS = 1_000L
 

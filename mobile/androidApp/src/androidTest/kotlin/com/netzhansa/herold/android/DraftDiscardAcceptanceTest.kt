@@ -8,7 +8,6 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
-import androidx.compose.ui.test.performTextInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.netzhansa.herold.shared.actions.UndoActions
@@ -155,9 +154,14 @@ class DraftDiscardAcceptanceTest {
 
     // ---- helpers -------------------------------------------------------
 
-    /** Types a subject into the open composer and closes it. */
+    /**
+     * Writes a line into the open composer and closes it. The line goes
+     * in the body: an edit of the subject makes the draft a conversation
+     * of its own, and this class reads the conversation the reply
+     * answers.
+     */
     private fun closeWithContent() {
-        compose.onNodeWithTag("compose-subject").performTextInput(" (draft)")
+        compose.typeInBody("A line of the answer.")
         compose.onNodeWithTag("compose-close").performClick()
     }
 

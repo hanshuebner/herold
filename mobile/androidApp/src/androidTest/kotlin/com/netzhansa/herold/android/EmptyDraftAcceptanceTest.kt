@@ -5,13 +5,10 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
-import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
-import androidx.compose.ui.test.performTextInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
-import com.netzhansa.herold.shared.actions.UndoActions
 import com.netzhansa.herold.shared.actions.UndoMessages
 import com.netzhansa.herold.shared.auth.SignInResult
 import com.netzhansa.herold.shared.domain.Email
@@ -127,24 +124,27 @@ class EmptyDraftAcceptanceTest {
     }
 
     /**
-     * A reply the reader did write in still keeps what was typed, and
-     * the offer on the conversation still takes it away.
+     * A reply the reader did write in is still kept, and the
+     * conversation it is rendered in still throws it away - by the
+     * card's own Discard, which is what is left once the snackbar the
+     * save offered has come down.
      */
     @Test
     fun t101_anEditedReplyIsStillKeptAndStillDiscards() = runBlocking {
         val parent = deliverAndOpen("edited reply")
 
         openReply()
-        compose.onNodeWithTag("compose-subject").performTextInput(" (draft)")
+        compose.typeInBody("Yes, that works for me.")
         compose.onNodeWithTag("compose-close").performClick()
         awaitConversation()
 
+        compose.waitUntil(TIMEOUT_MS) { runBlocking { threadDrafts(parent).isNotEmpty() } }
+        val draft = threadDrafts(parent).first()
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithText(UndoMessages.DRAFT_SAVED).fetchSemanticsNodes().isNotEmpty()
         }
-        compose.waitUntil(TIMEOUT_MS) { runBlocking { threadDrafts(parent).isNotEmpty() } }
 
-        compose.onNodeWithText(UndoActions.DISCARD).performClick()
+        compose.onNodeWithTag("thread-draft-discard-${draft.id}", useUnmergedTree = true).performClick()
         compose.waitUntil(TIMEOUT_MS) { runBlocking { threadDrafts(parent).isEmpty() } }
         assertNoDraft(parent)
     }
