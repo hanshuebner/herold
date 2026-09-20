@@ -383,6 +383,32 @@ the pass that follows the connection returning:
       -e heroldBugReportsKey "$KEY" \
       com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
 
+### Drafts a reader never wrote (issue #371)
+
+`EmptyDraftAcceptanceTest` is the maintainer's sequence: open a reply,
+cancel it, do it again. A reply opens carrying the address it answers,
+a `Re:` subject and the quoted original, so the check is that the
+conversation ends where it started - no draft row, no draft card, and
+nothing in the server's Drafts mailbox - and that a reply the reader
+did type in is still kept and still discarded. `t100` leaves the
+composer by back rather than by its close control.
+
+    adb shell am instrument -w -r \
+      -e class com.netzhansa.herold.android.EmptyDraftAcceptanceTest \
+      -e heroldBaseUrl http://10.0.2.2:<backend-port> \
+      -e heroldSmtpAddr 10.0.2.2:<smtp-port> \
+      com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+
+`DraftDiscardAcceptanceTest` is the discard itself, in the three orders
+a save and a discard can resolve in; it signs in through a relay in the
+test process, so it needs no device setup either:
+
+    adb shell am instrument -w -r \
+      -e class com.netzhansa.herold.android.DraftDiscardAcceptanceTest \
+      -e heroldBaseUrl http://10.0.2.2:<backend-port> \
+      -e heroldSmtpAddr 10.0.2.2:<smtp-port> \
+      com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+
 ### The bottom edge, under both navigation modes (issue #428)
 
 `BottomInsetAcceptanceTest` measures what the shell pins to the bottom
