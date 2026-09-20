@@ -3,10 +3,14 @@ package admin
 // cmd_bugfetch.go — `herold bug-fetch`: pulls bug-report bundles off the
 // server's POST /api/v1/bug-reports queue (issue #416) and expands each
 // one into a drop directory in the layout `herold bug-sink` writes
-// (report.json, report.md, logs.txt, screenshot-N.png, meta.json,
+// (report.json, report.md, logs.txt, an optional crash.txt carrying the
+// previous run's crash trace (issue #420), screenshot-N.png, meta.json,
 // STATUS, and an optional private/private.json holding repro-only
 // secrets), so /bug-inbox processes a phone report exactly like a
-// browser drop.
+// browser drop. Extraction (writeBugReportDrop) is name-agnostic: it
+// writes back every entry the server's zip carries at its stored path,
+// so a part the server's allow-list doesn't yet recognise (stored under
+// unknown/ per protoadmin's bugreports.go) reaches the drop too.
 //
 // Authentication is a bug-reports-scoped API key
 // (`herold api-key create --scope bug-reports`), read from
@@ -58,7 +62,8 @@ func newBugFetchCmd() *cobra.Command {
 		Long: "Lists the reports queued via POST /api/v1/bug-reports (the Android in-app " +
 			"reporter, issue #407), downloads each one, and writes it as a drop directory " +
 			"under --out in the layout `herold bug-sink` produces (report.json, report.md, " +
-			"logs.txt, screenshot-N.png, optional private.json, meta.json, STATUS=new), then " +
+			"logs.txt, optional crash.txt, screenshot-N.png, optional private.json, meta.json, " +
+			"STATUS=new), then " +
 			"deletes it on the server so it is not fetched twice -- unless --keep is given.\n\n" +
 			"Credentials come from ~/.herold/bug-reports.toml (server_url, api_key), or from " +
 			"$HEROLD_BUG_REPORTS_KEY plus --server-url. This is a bug-reports-scoped API key " +

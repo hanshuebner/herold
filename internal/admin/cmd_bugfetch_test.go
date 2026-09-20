@@ -81,6 +81,7 @@ func minimalReportZip(t *testing.T, sketch string) []byte {
 		"report.json":          []byte(meta),
 		"report.md":            []byte("# " + sketch + "\n"),
 		"logs.txt":             []byte("log line\n"),
+		"crash.txt":            []byte("java.lang.IndexOutOfBoundsException\n\tat ...\n"),
 		"screenshot-1.png":     []byte("\x89PNG\r\n\x1a\nfake"),
 		"meta.json":            []byte(`{"principal_id":1,"email":"alice@example.local"}`),
 		"private/private.json": []byte(`{"session":"do-not-leak"}`),
@@ -136,7 +137,7 @@ func TestRunBugFetch_RealRun_WritesAndDeletes(t *testing.T) {
 	if !strings.Contains(buf.String(), "bug-fetch: wrote "+dir) {
 		t.Fatalf("output missing wrote line: %s", buf.String())
 	}
-	for _, name := range []string{"report.json", "report.md", "logs.txt", "screenshot-1.png", "meta.json", "STATUS"} {
+	for _, name := range []string{"report.json", "report.md", "logs.txt", "crash.txt", "screenshot-1.png", "meta.json", "STATUS"} {
 		st, err := os.Stat(filepath.Join(dir, name))
 		if err != nil {
 			t.Errorf("missing %s: %v", name, err)
@@ -357,7 +358,7 @@ func TestBugFetch_EndToEnd(t *testing.T) {
 		if !strings.Contains(got, "bug-fetch: wrote "+dir) {
 			t.Errorf("output does not report %s:\n%s", dir, got)
 		}
-		for _, p := range []string{"report.json", "screenshot-1.png", "meta.json", "STATUS", filepath.Join("private", "private.json")} {
+		for _, p := range []string{"report.json", "screenshot-1.png", "crash.txt", "meta.json", "STATUS", filepath.Join("private", "private.json")} {
 			if _, err := os.Stat(filepath.Join(dir, p)); err != nil {
 				t.Errorf("%s: missing %s: %v", id, p, err)
 			}
@@ -476,6 +477,7 @@ func postBugReportHTTP(t *testing.T, publicAddr, bearer, sketch string) string {
 	for name, content := range map[string][]byte{
 		"report.json":      []byte(meta),
 		"screenshot-1.png": []byte("\x89PNG\r\n\x1a\nfake"),
+		"crash.txt":        []byte("java.lang.IndexOutOfBoundsException\n\tat ...\n"),
 		"private.json":     []byte(`{"session":"do-not-leak"}`),
 	} {
 		fw, err := mw.CreateFormFile(name, name)
