@@ -243,7 +243,13 @@ key, which the instance mints from its bootstrap admin key:
 
     KEY=$(HEROLD_API_KEY=$(cat <state-dir>/api-key.txt) \
       bin/herold api-key create admin@example.local \
-        --server-url <admin-url> --scope bug-reports --json | jq -r .key)
+        --server-url <admin-url> --scope bug-reports \
+        --label "acceptance bug reports" --json | jq -r .key)
+
+Minting a key is an elevated admin call, so the bootstrap key needs a
+current TOTP step-up first: POST a code derived from the instance's
+`ADMIN_TOTP_SECRET` to `<admin-url>/api/v1/auth/step-up` as
+`{"totp_code":"<code>"}` on the same bearer key.
 
 Run the class in its own invocation:
 
@@ -290,6 +296,19 @@ device reaches at `10.0.2.2:5554`, and the listener wants the token in
 `~/.emulator_console_auth_token`. `heroldEmulatorConsole` overrides the
 address. Without `heroldEmulatorToken` the shake check skips, so the
 class still runs on a physical device.
+
+`BugReportSendsAtOnceAcceptanceTest` is the report that leaves on the
+tap (issue #438): it measures the stretch from the tap to the report
+being listed by `GET /api/v1/bug-reports`, checks the confirmation
+carries no Undo, and then raises one with the wire taken away - the
+relay `ServerReach` holds - to see it wait in the outbox and go out on
+the pass that follows the connection returning:
+
+    adb shell am instrument -w -r \
+      -e class com.netzhansa.herold.android.BugReportSendsAtOnceAcceptanceTest \
+      -e heroldBaseUrl http://10.0.2.2:<backend-port> \
+      -e heroldBugReportsKey "$KEY" \
+      com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
 
 ### The bottom edge, under both navigation modes (issue #428)
 
