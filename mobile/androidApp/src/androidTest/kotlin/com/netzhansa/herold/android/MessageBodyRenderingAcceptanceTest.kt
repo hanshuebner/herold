@@ -189,6 +189,43 @@ class MessageBodyRenderingAcceptanceTest {
         backToInbox()
     }
 
+    /**
+     * A Thunderbird reply keeps the text its sender wrote on screen:
+     * the client puts that text and the attribution line in one
+     * `moz-cite-prefix` div, and only the citation and the quoted
+     * message belong behind the chip (issue #432).
+     */
+    @Test
+    fun t35_aThunderbirdReplyKeepsItsOwnTextOutsideTheFold() {
+        val message = seedHtmlMessage("Thunderbird", THUNDERBIRD_BODY)
+        openThread(message.threadId)
+        awaitBody(message, TB_FRESH_MARKER)
+
+        compose.captureScreen("m4-body-thunderbird-folded")
+        assertTrue(
+            "the reply's own text folded away with the quote",
+            device.hasObject(By.textContains(TB_FRESH_MARKER)),
+        )
+        assertTrue(
+            "the quoted message rendered unfolded",
+            !device.hasObject(By.textContains(TB_QUOTED_MARKER)),
+        )
+        assertTrue(
+            "the attribution line rendered outside the fold",
+            !device.hasObject(By.textContains(TB_ATTRIBUTION_MARKER)),
+        )
+
+        val chip = device.wait(Until.findObject(By.textContains(SHOW_LABEL)), TIMEOUT_MS)
+            ?: error("the body showed no control to open the quoted history")
+        chip.click()
+        assertTrue(
+            "the quoted message did not open on a tap",
+            device.wait(Until.hasObject(By.textContains(TB_QUOTED_MARKER)), TIMEOUT_MS),
+        )
+        compose.captureScreen("m4-body-thunderbird-expanded")
+        backToInbox()
+    }
+
     // ---- helpers ---------------------------------------------------------
 
     /** Delivers one HTML message and waits for the store to hold it. */
@@ -331,6 +368,26 @@ class MessageBodyRenderingAcceptanceTest {
             "<p>On Mon, 15 Sep 2026, $ATTRIBUTION_MARKER</p>" +
             "<blockquote><p>$QUOTED_MARKER, which the reader should not have " +
             "to scroll through.</p></blockquote>" +
+            "</body></html>\r\n"
+
+        const val TB_FRESH_MARKER = "Das passt mir gut."
+        const val TB_ATTRIBUTION_MARKER = "um 14:12 schrieb"
+        const val TB_QUOTED_MARKER = "The original Thunderbird message"
+
+        /**
+         * A Thunderbird reply composed above the citation: the reply
+         * text and the attribution line share the `moz-cite-prefix`
+         * div, and the attribution is written over a text node, a
+         * `mailto:` link and the colon after it (issue #432).
+         */
+        val THUNDERBIRD_BODY = "<html><body>" +
+            "<div class=\"moz-cite-prefix\">Hallo Bob,<br><br>$TB_FRESH_MARKER<br><br>" +
+            "Am 20.09.26 $TB_ATTRIBUTION_MARKER " +
+            "<a class=\"moz-txt-link-abbreviated\" href=\"mailto:bob@example.local\">" +
+            "bob@example.local</a>:<br></div>" +
+            "<blockquote type=\"cite\" cite=\"mid:abc@example.local\">" +
+            "<p>$TB_QUOTED_MARKER, which the reader should not have to scroll " +
+            "through.</p></blockquote>" +
             "</body></html>\r\n"
 
         const val TIMEOUT_MS = 30_000L
