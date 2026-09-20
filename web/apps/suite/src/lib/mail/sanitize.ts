@@ -1768,19 +1768,26 @@ function collapseQuotedRegions(root: ParentNode): void {
   //
   // Being the first-found region is necessary but not sufficient (re #448
   // second follow-up): a region can BE the first quoted element found and
-  // still not open the document, when it sits nested inside an ancestor
-  // that itself has genuine prose ahead of it (`<p>reply</p><div><p>intro
-  // line</p><blockquote>...`) — the candidate here is the blockquote, the
-  // first (and only) match, but real sender text already precedes it. Only
-  // when NOTHING readable precedes the candidate anywhere in the document
-  // can any of its own leading children possibly be the sender's fresh
-  // text; see `nothingPrecedes`'s doc comment. Failing that check folds the
+  // still already be inside quoted material, when it sits nested inside an
+  // ancestor that is itself introduced by a citation (`<p>reply</p><div><p>
+  // Le 15 septembre... a ecrit:</p><blockquote>...` — the candidate here is
+  // the blockquote, the first and only match, but the paragraph ahead of it
+  // WITHIN THE SAME div is the outer level's attribution, so the
+  // blockquote's own children are the correspondent's words, not the
+  // sender's).
+  //
+  // The discriminator is STRUCTURAL, not how much text precedes the
+  // candidate somewhere in the document (re #448 third follow-up — an
+  // unrelated paragraph placed ahead of the ORIGINAL ticket's own
+  // `moz-cite-prefix` div wrongly vetoed that div's own, genuinely fresh,
+  // leading text under a whole-document position rule; see
+  // `isBeneathACitation`'s doc comment). Failing this check folds the
   // candidate exactly as found, unsplit, with no further pass-over search.
   const passedOver: Element[] = [];
   let atTheFirstRegion = true;
   let candidate: Element | null = findFirstQuotedRegion(root, passedOver);
   while (candidate) {
-    const mayHoldTheSendersText = atTheFirstRegion && nothingPrecedes(root, candidate);
+    const mayHoldTheSendersText = atTheFirstRegion && !isBeneathACitation(candidate);
     atTheFirstRegion = false;
     if (!mayHoldTheSendersText) break;
     splitLeadingFreshContent(candidate);
@@ -1968,48 +1975,47 @@ function isAttributionNode(node: Node): boolean {
 }
 
 /**
- * True when nothing readable precedes `candidate` anywhere in `root`'s
- * document order (re #448 second follow-up).
+ * True when `candidate` is already beneath a citation somewhere up its own
+ * ancestor chain (re #448 third follow-up).
  *
- * Where the sender's own text can be is a question of POSITION, not of the
- * tag or class a region starts with. It is either outside the quote
- * entirely, or among the leading children of the region the body opens
- * with, never both and nowhere else: once something readable exists ahead
- * of `candidate` in the document, `candidate` is already past the point
- * where any of it can be the sender's, however deeply nested `candidate`
- * itself is inside an ancestor wrapper — a `<p>reply</p><div><p>citation
- * introducer</p><blockquote>` shape has the blockquote as the sole
- * candidate `findFirstQuotedRegion` matches, but the introducer paragraph
- * and the outer `<p>reply</p>` both precede it in the document, and
+ * Where the sender's own text can be is a question of STRUCTURE, not of how
+ * much text happens to precede `candidate` somewhere in the document. Walk
+ * from `candidate` up through its ancestors; at each level, if the nearest
+ * non-empty preceding sibling is itself a quote-start marker (an
+ * attribution line, a further quote-classed element, or a bundling
+ * wrapper — the same `isQuoteStartNode` test `splitLeadingFreshContent`
+ * uses on a candidate's own children), that marker is the citation
+ * introducing the level `candidate` sits inside, and everything `candidate`
+ * carries — however deeply nested — is the correspondent's own words, not
+ * the sender's: `<p>reply</p><div><p>Le 15 septembre... a ecrit:</p>
+ * <blockquote><p>Q5i</p>...` has the inner `<blockquote>` as the sole
+ * candidate `findFirstQuotedRegion` matches, but the paragraph immediately
+ * ahead of it INSIDE THE SAME `<div>` is the outer level's attribution, so
  * `splitLeadingFreshContent` must not treat the blockquote's own children
- * as fresh just because it happens to be the first REGION found.
+ * as fresh.
+ *
+ * This is deliberately narrower than asking whether ANY readable text
+ * precedes `candidate` in the whole document: an unrelated paragraph that
+ * merely happens to sit earlier in the document, outside anything that
+ * introduces `candidate`, does not disqualify `candidate`'s own leading
+ * children from being genuinely fresh — `<p>Fresh sender line</p><div
+ * class="moz-cite-prefix">Hallo Jane,...Am 20.09.26 um 14:12 schrieb
+ * ...:</div><blockquote>...` has the div as the sole (and top-level)
+ * candidate, with no citation introducing it at any ancestor level, so its
+ * own "Hallo Jane," text is still the sender's to lift out.
  */
-function nothingPrecedes(root: ParentNode, candidate: Node): boolean {
-  let ahead = '';
-  let reached = false;
-  function walk(node: Node): void {
-    if (reached) return;
-    if (node === candidate) {
-      reached = true;
-      return;
+function isBeneathACitation(candidate: Element): boolean {
+  let cur: Node = candidate;
+  for (;;) {
+    const parent: Node | null = cur.parentNode;
+    if (parent === null) return false;
+    let back: Node | null = cur.previousSibling;
+    while (back !== null && isQuoteOrEmptyNode(back)) {
+      back = back.previousSibling;
     }
-    if (node.nodeType === Node.TEXT_NODE) {
-      ahead += node.nodeValue ?? '';
-    } else if (node.nodeType === Node.ELEMENT_NODE) {
-      for (const child of Array.from(node.childNodes)) {
-        walk(child);
-        if (reached) return;
-      }
-    }
+    if (back !== null && isQuoteStartNode(back)) return true;
+    cur = parent;
   }
-  // `root` is always the sanitizer's own detached wrapper div (a Node as
-  // well as a ParentNode); walk its childNodes exactly as `walk` does for
-  // any other element.
-  for (const child of Array.from((root as unknown as Node).childNodes)) {
-    walk(child);
-    if (reached) break;
-  }
-  return ahead.trim() === '';
 }
 
 /**

@@ -1576,10 +1576,11 @@ describe('sanitizeHtml — quoted-history collapse', () => {
       expect(q5Pos).toBeLessThan(detailsEnd);
     });
 
-    it('control: the same nested reply-before-quote shape as the document\'s ONLY content still splits (nothing precedes it)', () => {
-      // Regression guard for `nothingPrecedes`: when the candidate really
-      // is the first thing in the document, the #292 lift-out contract
-      // must keep working exactly as before this follow-up.
+    it('control: the same nested reply-before-quote shape as the document\'s ONLY content still splits (not beneath a citation)', () => {
+      // Regression guard for `isBeneathACitation`: when the candidate
+      // really is the first thing in the document (no ancestor introduced
+      // by a citation), the #292 lift-out contract must keep working
+      // exactly as before this follow-up.
       const html =
         '<blockquote type="cite"><p>Q5i</p>\n' +
         '<div class="moz-cite-prefix">Am 14.09.26 um 08:00 schrieb bob@example.test:<br></div>\n' +
@@ -1590,6 +1591,39 @@ describe('sanitizeHtml — quoted-history collapse', () => {
       const q5iPos = body.indexOf('Q5i');
       expect(q5iPos).toBeGreaterThan(-1);
       expect(q5iPos).toBeLessThan(detailsStart);
+    });
+
+    it('control (re #448 third follow-up): an unrelated paragraph merely preceding the ticket\'s own div in the document does not veto its genuinely fresh leading text', () => {
+      // The regression an independent verification pass found in the
+      // second follow-up's fix: a whole-document "does anything precede
+      // the candidate" test wrongly treated a structurally unrelated
+      // paragraph as disqualifying the div's own leading content, even
+      // though nothing about that paragraph introduces or wraps the div.
+      // The div is still the document's own first quoted region, nested
+      // inside no ancestor a citation introduces, so its "Hallo Jane,"
+      // text is still the sender's to lift out -- exactly the original
+      // ticket body, one paragraph away.
+      const html =
+        '<p>Fresh sender line</p>\n' +
+        '<div class="moz-cite-prefix">Hallo Jane,<br><br>das passt mir gut.<br><br>Am 20.09.26 um 14:12 schrieb ' +
+        '<a class="moz-txt-link-abbreviated" href="mailto:jane@example.test">jane@example.test</a>:<br></div>\n' +
+        '<blockquote type="cite">Original quoted text.</blockquote>';
+      const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+      const detailsStart = body.indexOf('<details class="herold-quoted">');
+      const detailsEnd = body.indexOf('</details>');
+      expect(detailsStart).toBeGreaterThan(0);
+      // Both the unrelated paragraph AND the div's own "Hallo Jane," reply
+      // stay visible, outside and before the fold.
+      expect(body.indexOf('Fresh sender line')).toBeLessThan(detailsStart);
+      expect(body.indexOf('Hallo Jane,')).toBeLessThan(detailsStart);
+      expect(body.indexOf('das passt mir gut.')).toBeLessThan(detailsStart);
+      // The attribution and the quote both fold.
+      const attrPos = body.indexOf('Am 20.09.26 um 14:12 schrieb');
+      const quotePos = body.indexOf('Original quoted text.');
+      expect(attrPos).toBeGreaterThan(detailsStart);
+      expect(attrPos).toBeLessThan(detailsEnd);
+      expect(quotePos).toBeGreaterThan(detailsStart);
+      expect(quotePos).toBeLessThan(detailsEnd);
     });
   });
 
