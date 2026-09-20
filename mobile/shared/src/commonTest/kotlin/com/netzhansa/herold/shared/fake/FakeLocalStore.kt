@@ -14,6 +14,7 @@ import com.netzhansa.herold.shared.outbox.OutboxState
 import com.netzhansa.herold.shared.store.CachedBlob
 import com.netzhansa.herold.shared.store.LocalStore
 import com.netzhansa.herold.shared.store.PushRegistration
+import com.netzhansa.herold.shared.store.Tombstones
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.map
@@ -24,7 +25,10 @@ import kotlinx.coroutines.flow.map
  * a metadata refresh keeps a cached body) so a test that passes here
  * exercises the logic the device runs.
  */
-class FakeLocalStore : LocalStore {
+class FakeLocalStore(
+    /** What a local delete holds away from a fetch in flight (issue #371). */
+    private val tombstones: Tombstones = Tombstones(),
+) : LocalStore {
     private val accountRows = MutableStateFlow<List<Account>>(emptyList())
     private val mailboxRows = MutableStateFlow<List<Mailbox>>(emptyList())
     private val emailRows = MutableStateFlow<List<Email>>(emptyList())
@@ -117,7 +121,10 @@ class FakeLocalStore : LocalStore {
 
     override suspend fun upsertEmails(rows: List<Email>) {
         val byKey = emailRows.value.associateBy { it.accountId to it.id }.toMutableMap()
-        rows.forEach { incoming ->
+        val writable = rows.filterNot { row ->
+            tombstones.heldOf(row.accountId, listOf(row.id)).isNotEmpty()
+        }
+        writable.forEach { incoming ->
             val existing = byKey[incoming.accountId to incoming.id]
             byKey[incoming.accountId to incoming.id] = incoming.copy(
                 bodyHtml = incoming.bodyHtml ?: existing?.bodyHtml,
@@ -129,6 +136,7 @@ class FakeLocalStore : LocalStore {
     }
 
     override suspend fun deleteEmails(accountId: String, ids: List<String>) {
+        tombstones.mark(accountId, ids)
         emailRows.value = emailRows.value.filterNot { it.accountId == accountId && it.id in ids }
     }
 
@@ -316,5 +324,6 @@ class FakeLocalStore : LocalStore {
         blobs.clear()
         outboxRows.value = emptyList()
         pushRow = null
+        tombstones.clear()
     }
 }
