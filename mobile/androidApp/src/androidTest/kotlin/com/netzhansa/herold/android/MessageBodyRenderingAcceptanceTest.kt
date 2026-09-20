@@ -204,6 +204,10 @@ class MessageBodyRenderingAcceptanceTest {
 
         compose.captureScreen("m4-body-thunderbird-folded")
         assertTrue(
+            "the paragraph above the reply folded away with the quote",
+            device.hasObject(By.textContains(TB_LEAD_MARKER)),
+        )
+        assertTrue(
             "the reply's own text folded away with the quote",
             device.hasObject(By.textContains(TB_FRESH_MARKER)),
         )
@@ -391,6 +395,7 @@ class MessageBodyRenderingAcceptanceTest {
             "to scroll through.</p></blockquote>" +
             "</body></html>\r\n"
 
+        const val TB_LEAD_MARKER = "A line above the reply."
         const val TB_FRESH_MARKER = "Das passt mir gut."
         const val TB_ATTRIBUTION_MARKER = "um 14:12 schrieb"
         const val TB_QUOTED_MARKER = "The original Thunderbird message"
@@ -402,6 +407,7 @@ class MessageBodyRenderingAcceptanceTest {
          * `mailto:` link and the colon after it (issue #432).
          */
         val THUNDERBIRD_BODY = "<html><body>" +
+            "<p>$TB_LEAD_MARKER</p>" +
             "<div class=\"moz-cite-prefix\">Hallo Bob,<br><br>$TB_FRESH_MARKER<br><br>" +
             "Am 20.09.26 $TB_ATTRIBUTION_MARKER " +
             "<a class=\"moz-txt-link-abbreviated\" href=\"mailto:bob@example.local\">" +
