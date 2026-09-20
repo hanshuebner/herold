@@ -128,11 +128,14 @@ class BodyReflowAcceptanceTest {
         assertTrue("the text alternative runs past the body surface: $text in $body", text.right <= body.right)
 
         compose.onNodeWithTag("show-html-${message.id}").performClick()
-        assertTrue(
-            "the sender's own layout did not come back on a tap",
-            device.wait(Until.hasObject(By.textContains(NOWRAP_MARKER)), TIMEOUT_MS),
-        )
+        val cameBack = awaitText(NOWRAP_MARKER)
         compose.captureScreen("m4-reflow-original-html")
+        Log.i(TAG, "after the tap body=${bodySurface()} marker=$cameBack")
+        assertTrue("the sender's own layout did not come back on a tap", cameBack != null)
+        assertTrue(
+            "the text alternative was still on screen with the original",
+            findText(PLAIN_MARKER) == null,
+        )
         compose.onNodeWithTag("show-text-${message.id}").assertExists()
         backToInbox()
     }
@@ -234,6 +237,30 @@ class BodyReflowAcceptanceTest {
         boundsOf("the message body showed no \"$text\"") {
             it.text?.contains(text) == true || it.contentDescription?.contains(text) == true
         }
+
+    /**
+     * Where a run of text is, or null when the body does not hold it.
+     * The reading pane's own accessibility tree is read afresh each
+     * time: UiAutomator's own text search does not see a document the
+     * WebView has reloaded in place.
+     */
+    private fun findText(text: String): Rect? {
+        val root = instrumentation.uiAutomation.rootInActiveWindow ?: return null
+        val node = firstNode(root) {
+            it.text?.contains(text) == true || it.contentDescription?.contains(text) == true
+        } ?: return null
+        return Rect().also { node.getBoundsInScreen(it) }
+    }
+
+    /** Waits for a run of text to reach the body, and reports where it is. */
+    private fun awaitText(text: String): Rect? {
+        repeat(POLL_ATTEMPTS) {
+            findText(text)?.let { return it }
+            compose.waitForIdle()
+            Thread.sleep(POLL_MS)
+        }
+        return null
+    }
 
     private fun cardLeft(message: Email): Float =
         compose.onNodeWithTag("message-recipients-${message.id}").fetchSemanticsNode().boundsInRoot.left
