@@ -4,6 +4,7 @@ import android.graphics.Rect
 import android.util.Log
 import android.view.accessibility.AccessibilityNodeInfo
 import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
@@ -198,7 +199,7 @@ class MessageBodyRenderingAcceptanceTest {
     @Test
     fun t35_aThunderbirdReplyKeepsItsOwnTextOutsideTheFold() {
         val message = seedHtmlMessage("Thunderbird", THUNDERBIRD_BODY)
-        openThread(message.threadId)
+        openSeededThread(message)
         awaitBody(message, TB_FRESH_MARKER)
 
         compose.captureScreen("m4-body-thunderbird-folded")
@@ -304,6 +305,26 @@ class MessageBodyRenderingAcceptanceTest {
             Thread.sleep(POLL_MS)
         }
         error("the seeded message \"$subject\" never reached the store")
+    }
+
+    /**
+     * Opens the conversation a seeded message landed in, picked by its
+     * own subject.
+     *
+     * A row's tag carries the thread's id alone, and the instance
+     * seeds a second account whose threads are numbered from the same
+     * start, so the inbox can hold two rows under one tag. The subject
+     * the seed just wrote is what tells them apart.
+     */
+    private fun openSeededThread(message: Email) {
+        backToInbox()
+        val row = hasTestTag("thread-row-${message.threadId}") and
+            hasText(message.subject.orEmpty(), substring = true)
+        compose.onNodeWithTag("inbox-list").performScrollToNode(row)
+        compose.onAllNodes(row)[0].performClick()
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("thread-messages").fetchSemanticsNodes().isNotEmpty()
+        }
     }
 
     private fun openThread(threadId: String) {
