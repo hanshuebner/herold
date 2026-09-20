@@ -1,11 +1,11 @@
 package com.netzhansa.herold.android
 
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsNode
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
-import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
-import androidx.compose.ui.test.onAllNodes
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
@@ -64,12 +64,17 @@ class InboxTopBarAcceptanceTest {
      */
     @Test
     fun t110_theTopRowHoldsTheDrawerTheFieldAndTheAvatar(): Unit = runBlocking {
+        // Mail in the leading lane and mail in one of its own, so the
+        // row under the top row carries a name, two tabs and the dot
+        // over a list with conversations in it.
+        val rows = seedPrimary()
         seedLane()
         compose.awaitTag("inbox-tabs")
+        compose.awaitTag("thread-row-${rows.first().threadId}")
 
-        val bar = compose.onNodeWithTag("inbox-top-bar").fetchSemanticsNode().boundsInWindow
-        val inTheBar = compose.onAllNodes(hasClickAction()).fetchSemanticsNodes()
-            .filter { bar.contains(it.boundsInWindow.center) }
+        val topBar = compose.onNodeWithTag("inbox-top-bar").fetchSemanticsNode()
+        val bar = topBar.boundsInWindow
+        val inTheBar = controlsOf(topBar)
             .sortedBy { it.boundsInWindow.left }
             .map { it.config.getOrNull(SemanticsProperties.TestTag) ?: UNTAGGED }
         assertEquals(
@@ -157,6 +162,17 @@ class InboxTopBarAcceptanceTest {
     }
 
     // ---- helpers ---------------------------------------------------------
+
+    /**
+     * The controls of the subtree [node] roots: every node in it that
+     * takes a tap. Read off the tree rather than off the window's
+     * geometry, so what the drawer holds behind the screen is no part
+     * of the answer.
+     */
+    private fun controlsOf(node: SemanticsNode): List<SemanticsNode> {
+        val here = if (node.config.contains(SemanticsActions.OnClick)) listOf(node) else emptyList()
+        return here + node.children.flatMap { controlsOf(it) }
+    }
 
     /** What the pull indicator says, read off its node. */
     private fun indicatorSays(description: String): Boolean =
