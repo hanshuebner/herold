@@ -411,6 +411,26 @@ class QuotedHistoryTest {
     }
 
     @Test
+    fun foldsAQuoteWholeWhenItsOwnHeadIsTheAttribution() {
+        // The element leads with its attribution, so nothing of the
+        // sender's precedes it and the whole element folds - including
+        // when a deeper quote ends on an attribution line of its own,
+        // which a second reading of the text would cut the element
+        // open at.
+        val html = folded(
+            "<div class=\"gmail_quote\">" +
+                "<div class=\"gmail_attr\">On Mon, 15 Sep 2026, Alice wrote:<br></div>" +
+                "<blockquote class=\"gmail_quote\">Quoted line.</blockquote>" +
+                "<div class=\"moz-cite-prefix\">Am 14.09.26 um 09:00 schrieb bob@example.test:</div>" +
+                "</div>",
+        )
+
+        assertInsideFold(html, "On Mon, 15 Sep 2026, Alice wrote:")
+        assertInsideFold(html, "Quoted line.")
+        assertInsideFold(html, "Am 14.09.26 um 09:00 schrieb bob@example.test:")
+    }
+
+    @Test
     fun keepsTheSecondRegionsLeadingTextInsideTheFold() {
         // The fold is passed over the citation-prefix div, whose
         // attribution the heuristic does not know, and begins at the

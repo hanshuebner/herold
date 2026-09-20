@@ -75,16 +75,19 @@ internal object QuotedHtml {
         var atTheFirstRegion = true
         while (true) {
             val candidate = firstQuotedRegion(root, passedOver) ?: return false
-            // The sender's text is either outside the quote or among
-            // its leading children, never both: a quote element can
-            // hold it only when the body opens with that element.
-            // Anywhere else, what leads a quoted region is the quoted
-            // message's own top-posted reply, and lifting it out would
-            // put the correspondent's words on screen as the sender's.
-            if (atTheFirstRegion && nothingPrecedes(root, candidate)) {
-                splitLeadingFreshContent(candidate)
-            }
+            // Where the sender's own text can be is a question of
+            // position, not of the tag or class a region starts with.
+            // It is either outside the quote or among the leading
+            // children of the region the body opens with, never both
+            // and nowhere else: from the first quoted region on, the
+            // document is the quoted message, and reading any of it as
+            // the sender's would put the correspondent's words on
+            // screen as though they had just been written.
+            val mayHoldTheSendersText = atTheFirstRegion && nothingPrecedes(root, candidate)
             atTheFirstRegion = false
+            if (!mayHoldTheSendersText) return fold(candidate)
+
+            splitLeadingFreshContent(candidate)
             if (startsAtTheCitation(candidate)) return fold(candidate)
             passedOver.add(candidate)
         }
@@ -219,6 +222,12 @@ internal object QuotedHtml {
     private fun splitLeadingFreshContent(candidate: HtmlElement) {
         val parent = candidate.parent ?: return
         val marker = candidate.children.indexOfFirst { isQuoteStart(it) }
+        // A marker at the head of the element means the quoted
+        // material starts there and nothing of the sender's precedes
+        // it. Reading the text again for an attribution would find the
+        // one that belongs to a deeper quote and cut the element open
+        // at it.
+        if (marker == 0) return
         val boundary = if (marker > 0) marker else attributionStart(candidate.children)
         if (boundary <= 0) return
         val leading = candidate.children.subList(0, boundary).toList()
