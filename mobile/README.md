@@ -210,6 +210,16 @@ flow that closed the app on the reporting device:
       -e heroldSmtpAddr 10.0.2.2:<smtp-port> \
       com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
 
+`BodyImageSourceAcceptanceTest` needs no instance either: it drives the
+reading pane's body surface on its own, with resolvers it owns, and
+asserts that asking for the remote images loads them into the message
+being read and that an inline part arriving after the first render still
+shows (issue #440).
+
+    adb shell am instrument -w -r \
+      -e class com.netzhansa.herold.android.BodyImageSourceAcceptanceTest \
+      com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+
 `ForwardHtmlAcceptanceTest` forwards a formatted message - a heading, a
 table, an inline image, a script and a style block - to the signed-in
 principal, then reads the copy that arrived over JMAP: the markup and
