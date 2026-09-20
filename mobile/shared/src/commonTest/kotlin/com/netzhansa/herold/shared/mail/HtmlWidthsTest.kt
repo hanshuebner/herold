@@ -114,6 +114,21 @@ class HtmlWidthsTest {
     }
 
     @Test
+    fun aFoldedQuotedHistoryIsNotMeasured() {
+        val reply = HtmlSanitizer.sanitize(
+            "<p>Fresh text of the reply.</p>" +
+                "<p>On Mon, 15 Sep 2026, Alice Example wrote:</p>" +
+                "<blockquote><table><tr style=\"white-space:nowrap\">" +
+                (1..40).joinToString("") { "<td>column $it</td>" } +
+                "</tr></table></blockquote>",
+            collapseQuotes = true,
+            fitToWidthCssPx = card,
+        )
+
+        assertEquals(0, reply.minimumWidthCssPx)
+    }
+
+    @Test
     fun thePreWrappedPlainTextWrapperDoesNotCountAsUnwrappable() {
         val wrapped = HtmlSanitizer.fromPlainText("a very long line of plain text ".repeat(20))
 
