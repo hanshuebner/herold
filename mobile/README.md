@@ -110,6 +110,25 @@ The emulator's device credential stands in for a fingerprint: enrolling
 one needs a pass through the Settings UI, and the credential is the
 fallback the same prompt offers.
 
+`ScrollPositionAcceptanceTest` and `ScrollPositionSurvivesRestoreTest`
+check where a message list stands after a trip into a conversation
+(REQ-AND-NAV-25, issue #439). They seed their lists straight into the
+local store, so they need no delivered mail, and the search phase turns
+the radios off itself and back on afterwards. Both run online against
+the instance:
+
+    adb shell am instrument -w -r \
+      -e class com.netzhansa.herold.android.ScrollPositionAcceptanceTest \
+      -e heroldBaseUrl http://10.0.2.2:<backend-port> \
+      com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+
+The restore is checked by rebuilding the activity from its saved state,
+which is the path a killed process comes back on. A kill between two
+`am instrument` invocations cannot stand in for it: the runner
+force-stops the target package at the end of a run and at the start of
+the next, and a force-stop takes the task's saved state with it, so the
+second invocation starts on the inbox whatever the first left behind.
+
 `OAuthAcceptanceTest` needs no device setup. Pass the instance's
 `OAUTH2_CLIENT_ID` when it is not the default `herold-android`:
 
