@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.webkit.MimeTypeMap
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
@@ -76,6 +77,7 @@ import com.netzhansa.herold.android.ui.common.collectAsStateSafely
 import com.netzhansa.herold.shared.compose.AttachResult
 import com.netzhansa.herold.shared.compose.AttachmentStatus
 import com.netzhansa.herold.shared.compose.ComposeAttachment
+import com.netzhansa.herold.shared.compose.ComposeBaseline
 import com.netzhansa.herold.shared.compose.ComposeMode
 import com.netzhansa.herold.shared.compose.ComposeResult
 import com.netzhansa.herold.shared.compose.ComposeState
@@ -84,6 +86,7 @@ import com.netzhansa.herold.shared.compose.HtmlText
 import com.netzhansa.herold.shared.compose.InlineImage
 import com.netzhansa.herold.shared.compose.IdentityChoice
 import com.netzhansa.herold.shared.compose.RecipientParser
+import com.netzhansa.herold.shared.compose.changedSince
 import com.netzhansa.herold.shared.compose.withPrefill
 import com.netzhansa.herold.android.ui.settings.UndoSendPreference
 import com.netzhansa.herold.shared.actions.UndoActions
@@ -142,11 +145,24 @@ fun ComposeScreen(
     val draft = remember { DraftHandle() }
 
     var state by remember { mutableStateOf<ComposeState?>(null) }
+    /**
+     * The composer as it was seeded. A reply, a forward and a reopened
+     * draft all open with something in them, so what a close reads is
+     * the difference from this, not whether the fields are blank
+     * (issue #371).
+     */
+    var baseline by remember { mutableStateOf(ComposeBaseline.EMPTY) }
     var toText by remember { mutableStateOf("") }
     var ccText by remember { mutableStateOf("") }
     var sending by remember { mutableStateOf(false) }
     /** True once the message is the outbox's; leaving must not save it again. */
     var handedOff by remember { mutableStateOf(false) }
+    /**
+     * True from the moment a way out is taken, so a second tap on the
+     * close control - or back over a save still on the wire - does not
+     * start a second draft (issue #371).
+     */
+    var leaving by remember { mutableStateOf(false) }
     var linkDialog by remember { mutableStateOf(false) }
     /** A picked image waiting for its size choice (issue #341). */
     var sizeChoice by remember { mutableStateOf<PendingImage?>(null) }
@@ -162,6 +178,9 @@ fun ComposeScreen(
         if (state != null) return@LaunchedEffect
         if (resume != null) {
             state = resume.toComposeState()
+            // A send handed back inside its undo window is the reader's
+            // own message: all of it counts as theirs to keep.
+            baseline = ComposeBaseline.EMPTY
             // Taken: a later recomposition must not reopen it again.
             container.composeResume.value = null
             return@LaunchedEffect
@@ -185,6 +204,10 @@ fun ComposeScreen(
 
             else -> session.composer.openNew(identities, accounts, accountScope ?: accountId)
         }
+        // What a share, a mailto: or an unsubscribe handed over is the
+        // user's, so it counts as a change against what the composer
+        // would have opened with on its own.
+        baseline = ComposeBaseline.of(opened)
         state = (handoff?.let { opened.withPrefill(it.prefill) } ?: opened).withInlineBytes(session)
         if (handoff != null) {
             // Taken: a recomposition must not fold the same handoff in twice.
@@ -249,11 +272,12 @@ fun ComposeScreen(
     }
 
     // Backgrounding the app saves what has been typed (suite REQ-DFT-01/02).
-    // A message already queued for sending is not a draft: saving it here
-    // would put a second copy of it in the outbox.
+    // A composer the reader has not changed has nothing to keep, and a
+    // message already queued for sending is not a draft: saving either
+    // here would leave a message nobody wrote.
     LifecycleEventEffect(Lifecycle.Event.ON_STOP) {
         val target = state
-        if (!handedOff && target != null && (target.hasRecipient || target.subject.isNotBlank())) {
+        if (!handedOff && target != null && target.changedSince(baseline)) {
             scope.launch { saveDraft(target) }
         }
     }
@@ -304,6 +328,58 @@ fun ComposeScreen(
         }
     }
 
+    /**
+     * Leaves the composer, which is what the close control and back
+     * both do (REQ-AND-NAV-12, issue #371).
+     *
+     * A composer the reader has not changed since it opened closes
+     * silently and leaves nothing behind - a reply opens holding the
+     * address it answers, a `Re:` subject and the quoted original, none
+     * of which the reader wrote. One they did change is kept in the
+     * server's Drafts mailbox, through the outbox with no connection,
+     * and the snackbar on the screen behind offers to throw it away. A
+     * draft that could not be kept leaves the composer open rather than
+     * losing what was typed.
+     */
+    fun leave() {
+        if (leaving) return
+        leaving = true
+        val target = commitRecipients()
+        scope.launch {
+            editor.publish()
+            val toSave = withBody(state ?: target)
+            if (!toSave.changedSince(baseline)) {
+                close()
+                return@launch
+            }
+            when (val result = session.composer.saveDraft(toSave, mailboxes)) {
+                is ComposeResult.Saved -> {
+                    handedOff = true
+                    takeDraftIntoStore(toSave.accountId, result.draftId)
+                    session.drafts.saved(draft, toSave.accountId, result.draftId)
+                    offerDiscardDraft(container, session, draft)
+                    close()
+                }
+
+                is ComposeResult.Queued -> {
+                    handedOff = true
+                    session.drafts.queued(draft, toSave.accountId, result.entryId)
+                    offerDiscardDraft(container, session, draft)
+                    close()
+                }
+
+                is ComposeResult.Failed -> {
+                    leaving = false
+                    snackbar.showSnackbar(result.message)
+                }
+            }
+        }
+    }
+
+    // Back leaves the composer the same way its close control does, so
+    // the draft rule does not depend on which way out the reader takes.
+    BackHandler { leave() }
+
     val attachLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch { offerOrUpload(uri, inline = false) }
@@ -319,42 +395,7 @@ fun ComposeScreen(
             TopAppBar(
                 navigationIcon = {
                     IconButton(
-                        onClick = {
-                            val target = commitRecipients()
-                            scope.launch {
-                                editor.publish()
-                                val toSave = withBody(state ?: target)
-                                // An empty composer closes silently; one
-                                // with something in it is kept, and the
-                                // snackbar on the screen behind offers to
-                                // throw it away (issue #371).
-                                if (!toSave.hasContent) {
-                                    close()
-                                    return@launch
-                                }
-                                when (val result = session.composer.saveDraft(toSave, mailboxes)) {
-                                    is ComposeResult.Saved -> {
-                                        handedOff = true
-                                        takeDraftIntoStore(toSave.accountId, result.draftId)
-                                        session.drafts.saved(draft, toSave.accountId, result.draftId)
-                                        offerDiscardDraft(container, session, draft)
-                                        close()
-                                    }
-
-                                    is ComposeResult.Queued -> {
-                                        handedOff = true
-                                        session.drafts.queued(draft, toSave.accountId, result.entryId)
-                                        offerDiscardDraft(container, session, draft)
-                                        close()
-                                    }
-
-                                    // The draft could not be kept: the
-                                    // composer stays open rather than
-                                    // losing what was typed.
-                                    is ComposeResult.Failed -> snackbar.showSnackbar(result.message)
-                                }
-                            }
-                        },
+                        onClick = { leave() },
                         modifier = Modifier.testTag("compose-close"),
                     ) {
                         Icon(Icons.Filled.Close, contentDescription = "Close")
@@ -498,6 +539,11 @@ fun ComposeScreen(
                 attachments = current.attachments,
                 handle = editor,
                 onHtmlChanged = { html ->
+                    // The document the editor publishes as it loads is
+                    // the body the composer was seeded with, in the
+                    // editor's own markup: it is what a later edit is
+                    // measured against, not an edit itself.
+                    if (!editorReady) baseline = baseline.withBody(html)
                     state = state?.copy(bodyHtml = html)
                     editorReady = true
                 },
