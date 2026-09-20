@@ -55,6 +55,12 @@ type fxOpts struct {
 	// internalizeImportsPolicy overrides protoimap.Options.InternalizeImportsPolicy
 	// (REQ-EXTIMG-91/92); empty behaves as "on_demand".
 	internalizeImportsPolicy string
+	// store/clk override the harness store and clock (nil means the
+	// package default, sqlite via testharness.fillDefaults). Tests
+	// that need to run against Postgres pass a pre-opened store.Store
+	// (see internalizePendingBackends in internalize_pending_test.go).
+	store store.Store
+	clk   clock.Clock
 }
 
 func newFixture(t *testing.T, fo fxOpts) *fixture {
@@ -66,6 +72,8 @@ func newFixture(t *testing.T, fo fxOpts) *fixture {
 		name = "imaps"
 	}
 	ha, _ := testharness.Start(t, testharness.Options{
+		Store:     fo.store,
+		Clock:     fo.clk,
 		Listeners: []testharness.ListenerSpec{{Name: name, Protocol: proto}},
 	})
 	ctx := context.Background()
