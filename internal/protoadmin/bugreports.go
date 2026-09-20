@@ -39,7 +39,9 @@ const (
 	// leaves headroom without accepting an arbitrary upload.
 	bugReportMaxScreenshotBytes = 8 << 20
 	// bugReportMaxTextPartBytes caps report.json, report.md, logs.txt,
-	// and private.json individually -- all are small text documents.
+	// crash.txt, and private.json individually -- all are small text
+	// documents. A part the server does not recognise (bugReportUnknown*)
+	// carries the same cap.
 	bugReportMaxTextPartBytes = 4 << 20
 	// bugReportMaxScreenshots caps the number of screenshot-N.png parts
 	// accepted in one report.
@@ -53,11 +55,16 @@ const (
 var bugReportScreenshotPattern = regexp.MustCompile(`^screenshot-([1-9][0-9]{0,2})\.png$`)
 
 // bugReportFixedNames are the non-screenshot drop filenames a report may
-// carry.
+// carry. crash.txt is the trace an uncaught-exception handler persists
+// and the next report attaches (issue #420, REQ-AND-SYS-52/53); it must
+// be kept in sync with mobile/shared's BugBundleWriter.build (asserted
+// by TestBugReportPartNames_MatchClientBundle), which is the source of
+// truth for what the Android reporter can send.
 var bugReportFixedNames = map[string]bool{
 	"report.json":  true,
 	"report.md":    true,
 	"logs.txt":     true,
+	"crash.txt":    true,
 	"private.json": true,
 }
 
@@ -84,19 +91,52 @@ func bugReportPartLimit(name string) int64 {
 	return bugReportMaxTextPartBytes
 }
 
+// bugReportUnknownDir is the drop subdirectory a part the server does
+// not recognise is stored under (see bugReportStoredRelPath). Kept apart
+// from private/ (which /bug-inbox knows never to read into a ticket) and
+// from the recognised top-level names, so an operator can see at a
+// glance that a report carried something the server didn't expect.
+const bugReportUnknownDir = "unknown"
+
+// bugReportSafeUnknownName is the charset an unrecognised part's name
+// may keep verbatim under bugReportUnknownDir; anything else (a path
+// separator, a leading dot, control bytes) is replaced so a client
+// sending a part the server has never heard of can never write outside
+// the drop or collide with a server-written file (meta.json, STATUS,
+// private/).
+var bugReportSafeUnknownName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+
+// sanitizeUnknownPartName reduces name to a safe drop-relative basename
+// for storage under bugReportUnknownDir.
+func sanitizeUnknownPartName(name string) string {
+	base := path.Base(strings.ReplaceAll(name, `\`, "/"))
+	if bugReportSafeUnknownName.MatchString(base) {
+		return base
+	}
+	return "part"
+}
+
 // bugReportStoredRelPath maps a received part name to the drop-relative
-// path it is stored and served at. Every part is stored flat except
-// private.json: the drop layout (.claude/commands/bug-inbox.md, "every
-// drop has a private/ subdirectory holding repro-only secrets") requires
-// repro secrets to live under a private/ subdirectory so /bug-inbox's
-// hard rule -- never read private/ into a ticket -- can be enforced by
-// path alone. The wire form stays flat (a "private.json" multipart part,
-// or a "private.json" / "private/private.json" zip entry both collapse
-// to the same key via unzipBugReportBundle's path.Base) so the sender
-// doesn't need to know the server-side layout.
+// path it is stored and served at. private.json is the one recognised
+// name that moves: the drop layout (.claude/commands/bug-inbox.md,
+// "every drop has a private/ subdirectory holding repro-only secrets")
+// requires repro secrets to live under a private/ subdirectory so
+// /bug-inbox's hard rule -- never read private/ into a ticket -- can be
+// enforced by path alone. The wire form stays flat (a "private.json"
+// multipart part, or a "private.json" / "private/private.json" zip entry
+// both collapse to the same key via unzipBugReportBundle's path.Base) so
+// the sender doesn't need to know the server-side layout.
+//
+// A part isBugReportPartName does not recognise is not rejected (issue
+// #420: a client shipping a new part name once broke every report it
+// appeared in). It is stored under bugReportUnknownDir instead, so the
+// rest of the bundle is not lost while the two sides are out of sync.
 func bugReportStoredRelPath(name string) string {
 	if name == "private.json" {
 		return "private/private.json"
+	}
+	if !isBugReportPartName(name) {
+		return path.Join(bugReportUnknownDir, sanitizeUnknownPartName(name))
 	}
 	return name
 }
@@ -158,10 +198,13 @@ func requireBugReportsScope(w http.ResponseWriter, r *http.Request) bool {
 // Authenticated like the Suite's self-service endpoints: session cookie
 // or bearer device token carrying ScopeEndUser. The body is either
 // multipart/form-data with one part per drop file (report.json,
-// report.md, logs.txt, screenshot-N.png, optional private.json), or a
-// single "zip" part holding the same entries. private.json is stored at
-// private/private.json (bugReportStoredRelPath), matching the drop
-// layout every other producer uses for repro-only secrets.
+// report.md, logs.txt, crash.txt, screenshot-N.png, optional
+// private.json), or a single "zip" part holding the same entries.
+// private.json is stored at private/private.json (bugReportStoredRelPath),
+// matching the drop layout every other producer uses for repro-only
+// secrets. A part whose name isn't one of these is not rejected: it is
+// stored under unknown/ so a client and server that have drifted on the
+// part set still deliver the rest of the report (issue #420).
 func (s *Server) handleCreateBugReport(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	if err := auth.RequireScope(ctx, auth.ScopeEndUser); err != nil {
@@ -202,6 +245,15 @@ func (s *Server) handleCreateBugReport(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, http.StatusBadRequest, "validation_failed",
 			"report.json is required", "")
 		return
+	}
+	for name := range files {
+		if !isBugReportPartName(name) {
+			// Logged, not rejected: a name the server doesn't know yet
+			// (client and server drifted, issue #420) is stored under
+			// unknown/ alongside the rest of the bundle instead of
+			// failing the whole upload.
+			s.loggerFrom(ctx).Warn("protoadmin.bugreports.unknown_part", "name", name)
+		}
 	}
 
 	id := newBugReportID(s.clk.Now())
@@ -267,8 +319,13 @@ func (s *Server) handleCreateBugReport(w http.ResponseWriter, r *http.Request) {
 // collectBugReportFiles extracts the drop's files from the parsed
 // multipart form, either from a single "zip" part or from one part per
 // drop file. On success it returns the file contents keyed by their
-// final drop filename ("report.json", "screenshot-1.png", ...). On
-// failure it writes the RFC 7807 response itself and returns false.
+// submitted part name -- a recognised drop filename ("report.json",
+// "screenshot-1.png", "crash.txt", ...) or a name isBugReportPartName
+// does not know, which the caller stores under bugReportUnknownDir
+// rather than rejecting (issue #420). Each part is still capped at its
+// size limit. On failure (a malformed body, a missing report.json
+// handled by the caller, or a part over its cap) it writes the RFC 7807
+// response itself and returns false.
 func collectBugReportFiles(w http.ResponseWriter, r *http.Request) (map[string][]byte, bool) {
 	if r.MultipartForm == nil {
 		writeProblem(w, r, http.StatusBadRequest, "invalid_body", "empty multipart body", "")
@@ -290,11 +347,6 @@ func collectBugReportFiles(w http.ResponseWriter, r *http.Request) (map[string][
 
 	files := make(map[string][]byte)
 	for name, fhs := range r.MultipartForm.File {
-		if !isBugReportPartName(name) {
-			writeProblem(w, r, http.StatusBadRequest, "invalid_body",
-				fmt.Sprintf("unexpected part %q", name), "")
-			return nil, false
-		}
 		if len(fhs) != 1 {
 			writeProblem(w, r, http.StatusBadRequest, "invalid_body",
 				fmt.Sprintf("part %q must appear exactly once", name), "")
@@ -345,11 +397,11 @@ func readMultipartFile(fh *multipart.FileHeader, limit int64) ([]byte, error) {
 }
 
 // unzipBugReportBundle reads every regular file out of a zip archive,
-// keeping only entries whose basename matches the drop layout and
-// capping each decompressed entry at its size class's limit -- the same
-// caps the separate-parts path enforces. Only the basename is ever used
-// as the stored filename, so an archive entry cannot escape the drop
-// directory.
+// keyed by its basename (so an archive entry can never escape the drop
+// directory) and capping each decompressed entry at its size class's
+// limit -- the same caps the separate-parts path enforces. An entry
+// whose basename isBugReportPartName does not recognise is kept, not
+// rejected: the caller stores it under bugReportUnknownDir (issue #420).
 func unzipBugReportBundle(data []byte) (map[string][]byte, error) {
 	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
@@ -361,9 +413,6 @@ func unzipBugReportBundle(data []byte) (map[string][]byte, error) {
 			continue
 		}
 		name := path.Base(f.Name)
-		if !isBugReportPartName(name) {
-			return nil, fmt.Errorf("unexpected entry %q", f.Name)
-		}
 		if _, dup := files[name]; dup {
 			return nil, fmt.Errorf("duplicate entry %q", name)
 		}
