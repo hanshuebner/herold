@@ -10,7 +10,22 @@ import (
 // "Resposta"/"Respuesta"), Wg: (German "Weiterleitung"). Matching is
 // case-insensitive; the colon may be surrounded by whitespace or by
 // none, so both "Re: Subject" and "Re:Subject" strip the same way.
+// This regex's `\s` class is ASCII-only (RE2 does not include U+000B
+// vertical tab, NBSP, or the other Unicode space separators in it), so
+// it only ever runs against input already passed through
+// foldWhitespace, which has replaced every whitespace character
+// unicode.IsSpace recognises with a single ASCII space; that keeps the
+// prefix strip and the final whitespace fold agreeing on what counts
+// as whitespace.
 var baseSubjectPrefixRe = regexp.MustCompile(`(?i)^\s*(?:re|res|aw|fwd?|wg)\s*:\s*`)
+
+// foldWhitespace collapses every run of Unicode whitespace (as
+// unicode.IsSpace defines it — including vertical tab, form feed, and
+// NBSP, not just the ASCII set RE2's \s matches) to a single space and
+// trims the ends, matching what strings.Fields considers whitespace.
+func foldWhitespace(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
 
 // NormalizeBaseSubject derives the base subject used to decide whether
 // a message threads onto an ancestor (issue #437, REQ-STORE-40): every
@@ -20,20 +35,26 @@ var baseSubjectPrefixRe = regexp.MustCompile(`(?i)^\s*(?:re|res|aw|fwd?|wg)\s*:\
 // space, case is lowered) so two subjects that differ only in a marker,
 // spacing, or letter case compare equal.
 //
+// Whitespace is folded before the prefix is stripped (and again after
+// each strip) so the regex only ever sees plain ASCII spaces; this
+// keeps the function idempotent regardless of which Unicode whitespace
+// character separates the prefix word from the colon or surrounds the
+// subject.
+//
 // This is the single place ingest (insertMessageTx) and bulk rethread
 // (RethreadPrincipal) call to compare subjects; there is no fuzzy
 // matching and no prefix-of relation — the folded strings must be
 // exactly equal.
 func NormalizeBaseSubject(subject string) string {
-	s := subject
+	s := foldWhitespace(subject)
 	for {
-		stripped := baseSubjectPrefixRe.ReplaceAllString(s, "")
+		stripped := foldWhitespace(baseSubjectPrefixRe.ReplaceAllString(s, ""))
 		if stripped == s {
 			break
 		}
 		s = stripped
 	}
-	return strings.ToLower(strings.Join(strings.Fields(s), " "))
+	return strings.ToLower(s)
 }
 
 // SubjectsThreadTogether reports whether a message carrying childSubject

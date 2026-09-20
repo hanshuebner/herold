@@ -23,6 +23,12 @@ func TestNormalizeBaseSubject(t *testing.T) {
 		{"wg prefix", "Wg: Topic", "topic"},
 		{"not a prefix", "Result: 5", "result: 5"},
 		{"different topics stay different", "New topic", "new topic"},
+		{"vertical tab between prefix word and colon", "Wg\v: Topic", "topic"},
+		{"form feed between prefix word and colon", "Wg\f: Topic", "topic"},
+		{"nbsp between prefix word and colon", "Wg\u00a0: Topic", "topic"},
+		{"vertical tab around subject", "Re:\vTopic\vhere", "topic here"},
+		{"form feed around subject", "Re:\fTopic\fhere", "topic here"},
+		{"nbsp around subject", "Re:\u00a0Topic\u00a0here", "topic here"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -69,6 +75,9 @@ func FuzzNormalizeBaseSubject(f *testing.F) {
 		"   ",
 		"Result: 5",
 		"WG: Topic",
+		"WG\v:",
+		"Wg\f: Topic",
+		"Wg : Topic",
 	}
 	for _, s := range seeds {
 		f.Add(s)
