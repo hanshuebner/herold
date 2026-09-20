@@ -82,6 +82,8 @@ import com.netzhansa.herold.android.AppContainer
 import com.netzhansa.herold.android.SessionScope
 import com.netzhansa.herold.android.ui.common.LabelSheet
 import com.netzhansa.herold.android.ui.common.UndoOffers
+import com.netzhansa.herold.android.ui.common.listState
+import com.netzhansa.herold.android.ui.common.rememberListPositions
 import com.netzhansa.herold.android.ui.common.bottomSystemBarsPadding
 import com.netzhansa.herold.shared.actions.UndoMessages
 import com.netzhansa.herold.android.ui.common.SnoozeSheet
@@ -226,20 +228,28 @@ fun InboxScreen(
         InboxAssembler.threadRows(folderEmails, accounts, mailboxes, accountScope)
     }
 
-    // Each destination keeps its own scroll position, and opens at its
-    // newest conversation.
-    val folderListState = remember(destinationKey) { LazyListState() }
-    var folderScrolled by remember(destinationKey) { mutableStateOf(false) }
-    LaunchedEffect(folderListState) {
-        snapshotFlow { folderListState.isScrollInProgress }
-            .collect { dragging -> if (dragging) folderScrolled = true }
-    }
+    // Where each list of this screen was left, in the screen's own saved
+    // state: a lane, a mailbox and a label each keep their own offset
+    // across a trip into a conversation and across the process
+    // (issue #439, REQ-AND-NAV-25).
+    val positions = rememberListPositions()
+
+    val folderKey = "folder:$destinationKey"
+    val folderListState = positions.listState(folderKey, folderRows.isNotEmpty())
     // The fill below puts conversations ahead of the ones already
     // listed, and a list holds its position against that, so a
     // destination the user has not scrolled is kept at its newest.
     LaunchedEffect(destinationKey, folderRows.firstOrNull()?.threadId) {
-        if (!folderScrolled) folderListState.scrollToItem(0)
+        if (!positions.scrolled(folderKey)) folderListState.scrollToItem(0)
     }
+
+    val laneKey = "lane:${selectedLane ?: "all"}"
+    val laneListState = positions.listState(laneKey, stream.isNotEmpty())
+    LaunchedEffect(laneKey, stream.firstOrNull()?.let { inboxItemKey(it) }) {
+        if (!positions.scrolled(laneKey)) laneListState.scrollToItem(0)
+    }
+
+    val snoozedListState = positions.listState("snoozed")
 
     // The first pass fills the inbox; a destination the user opens is
     // filled when they open it (REQ-AND-SYNC-02, issue #374).
@@ -467,6 +477,7 @@ fun InboxScreen(
             if (destination == MailDestination.Snoozed) {
                 SnoozedList(
                     rows = snoozedRows,
+                    listState = snoozedListState,
                     showAccount = accountScope == null && accounts.size > 1,
                     onOpen = { row -> onOpenThread(row.accountId, row.threadId) },
                 )
@@ -525,13 +536,11 @@ fun InboxScreen(
                     modifier = Modifier.fillMaxWidth().padding(24.dp).testTag("inbox-empty"),
                 )
             }
-            LazyColumn(modifier = Modifier.fillMaxSize().testTag("inbox-list")) {
-                items(stream, key = { item ->
-                    when (item) {
-                        is InboxItem.Conversation -> "thread:${item.row.accountId}:${item.row.threadId}"
-                        is InboxItem.Bundle -> "bundle:${item.row.category}"
-                    }
-                }) { item ->
+            LazyColumn(
+                state = laneListState,
+                modifier = Modifier.fillMaxSize().testTag("inbox-list"),
+            ) {
+                items(stream, key = { item -> inboxItemKey(item) }) { item ->
                     when (item) {
                         is InboxItem.Conversation -> SwipeableThreadRow(
                             row = item.row,
@@ -625,6 +634,17 @@ fun InboxScreen(
 }
 
 /**
+ * What identifies an item of the inbox stream: the conversation's
+ * thread or the bundle's category. The list keys its rows on it, and
+ * the pin that holds an untouched lane at its newest message watches
+ * the leading one.
+ */
+private fun inboxItemKey(item: InboxItem): String = when (item) {
+    is InboxItem.Conversation -> "thread:${item.row.accountId}:${item.row.threadId}"
+    is InboxItem.Bundle -> "bundle:${item.row.category}"
+}
+
+/**
  * The Snoozed destination (suite REQ-SNZ-10/14, issue #353): the
  * conversations the server holds a wake time for, next to wake first,
  * each stating when it comes back. Opening one lands on the thread view,
@@ -633,6 +653,7 @@ fun InboxScreen(
 @Composable
 private fun SnoozedList(
     rows: List<ThreadRow>,
+    listState: LazyListState,
     showAccount: Boolean,
     onOpen: (ThreadRow) -> Unit,
 ) {
@@ -643,7 +664,7 @@ private fun SnoozedList(
         )
         return
     }
-    LazyColumn(modifier = Modifier.fillMaxSize().testTag("snoozed-list")) {
+    LazyColumn(state = listState, modifier = Modifier.fillMaxSize().testTag("snoozed-list")) {
         items(rows, key = { "snoozed:${it.accountId}:${it.threadId}" }) { row ->
             SnoozedRowItem(row = row, showAccount = showAccount, onOpen = { onOpen(row) })
             HorizontalDivider()
