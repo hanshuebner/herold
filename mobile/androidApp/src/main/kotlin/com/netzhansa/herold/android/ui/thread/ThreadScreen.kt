@@ -1271,6 +1271,7 @@ private fun MessageCard(
                         }
                         MessageBodyWebView(
                             html = HtmlSanitizer.document(body.html, darkTheme, content),
+                            imageSources = loadRemoteImages to message.attachments.map { it.blobId },
                             resolveInlineImage = resolveInlineImage,
                             resolveRemoteImage = if (loadRemoteImages) resolveRemoteImage else { _ -> null },
                             onLink = onLink,
@@ -1386,17 +1387,41 @@ private fun MessageDetails(message: Email, zone: TimeZone) {
  * raises as a new window, so a tapped link opens outside the reading pane
  * and the message stays on screen (issue #425). Long-press keeps the
  * platform's own link menu.
+ *
+ * The client is built once, in the factory block, and lives as long as
+ * the WebView does, while what it answers a request with changes while
+ * the message is on screen: the remote-image choice swaps
+ * [resolveRemoteImage], and attachments arriving after the body first
+ * rendered change what [resolveInlineImage] can produce. Every callback
+ * therefore reads the value current at request time (issue #440).
+ *
+ * Internal so the instrumented checks can drive the surface on its own,
+ * with resolvers they control and no network.
  */
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-private fun MessageBodyWebView(
+internal fun MessageBodyWebView(
     html: String,
+    /**
+     * What the resolvers below can produce for this document as it
+     * stands: the remote-image choice, and the parts the message holds.
+     * A new value reloads the document, so images that became
+     * resolvable after it was first shown are asked for again
+     * (issue #440).
+     */
+    imageSources: Any,
     resolveInlineImage: (String) -> Pair<String, ByteArray>?,
     resolveRemoteImage: (String) -> Pair<String, ByteArray>?,
     onLink: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val link by rememberUpdatedState(onLink)
+    val inlineImage by rememberUpdatedState(resolveInlineImage)
+    val remoteImage by rememberUpdatedState(resolveRemoteImage)
+    // One loading of the body: a new instance is what the update block
+    // below reacts to, and the composable makes one whenever the markup
+    // or what the resolvers can serve changes.
+    val document = remember(html, imageSources) { BodyDocument(html) }
     // True while the message document itself is loading, which is the one
     // navigation this WebView performs.
     val rendering = remember { AtomicBoolean(true) }
@@ -1444,14 +1469,17 @@ private fun MessageBodyWebView(
                         val url = request?.url?.toString() ?: return null
                         if (url.startsWith(HtmlSanitizer.INLINE_SCHEME)) {
                             val cid = url.removePrefix(HtmlSanitizer.INLINE_SCHEME)
-                            val resolved = resolveInlineImage(cid) ?: return blocked()
+                            val resolved = inlineImage(cid) ?: return blocked("inline", url)
                             return serve(resolved)
                         }
                         if (url.startsWith("http://") || url.startsWith("https://")) {
-                            val resolved = resolveRemoteImage(url) ?: return blocked()
+                            val resolved = remoteImage(url) ?: return blocked("remote", url)
                             return serve(resolved)
                         }
-                        return blocked()
+                        // What is left is the document's own `data:` URL
+                        // and the favicon it implies: nothing to serve,
+                        // and nothing worth a line.
+                        return refused()
                     }
 
                     private fun serve(resolved: Pair<String, ByteArray>) = WebResourceResponse(
@@ -1460,7 +1488,20 @@ private fun MessageBodyWebView(
                         ByteArrayInputStream(resolved.second),
                     )
 
-                    private fun blocked() =
+                    /**
+                     * What a request the pane will not serve gets: an
+                     * empty body, which the document paints as a broken
+                     * image. The line states which resolver refused and
+                     * names the request's origin rather than its URL, so
+                     * a bug report says what happened without carrying a
+                     * sender's tracking path (issue #440).
+                     */
+                    private fun blocked(reason: String, url: String): WebResourceResponse {
+                        DiagLog.i(THREAD_TAG, "body image blocked ($reason) from ${originOf(url)}")
+                        return refused()
+                    }
+
+                    private fun refused() =
                         WebResourceResponse("text/plain", "utf-8", ByteArrayInputStream(ByteArray(0)))
                 }
                 webChromeClient = object : WebChromeClient() {
@@ -1496,10 +1537,17 @@ private fun MessageBodyWebView(
         },
         update = { webView ->
             rendering.set(true)
-            webView.loadDataWithBaseURL(null, html, "text/html", "utf-8", null)
+            webView.loadDataWithBaseURL(null, document.html, "text/html", "utf-8", null)
         },
     )
 }
+
+/**
+ * One loading of the body document. The reading pane makes a new
+ * instance for every document it wants on screen, including a reload of
+ * the same markup with more images available to it (issue #440).
+ */
+private class BodyDocument(val html: String)
 
 /**
  * One attachment: name, type and size, with a bounded thumbnail for an
@@ -1638,3 +1686,14 @@ private const val CHEVRON_DP = 18
 
 /** What the reading pane's lines say in the diagnostic ring. */
 private const val THREAD_TAG = "herold.thread"
+
+/**
+ * The scheme and host of a request the body made, which is as much of it
+ * as a diagnostic line keeps: the rest of a remote image's URL is the
+ * sender's own path and can identify the reader.
+ */
+private fun originOf(url: String): String {
+    val scheme = url.substringBefore("://", missingDelimiterValue = "")
+    if (scheme.isEmpty()) return url.substringBefore(':') + ":"
+    return scheme + "://" + url.removePrefix("$scheme://").substringBefore('/')
+}
