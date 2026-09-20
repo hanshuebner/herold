@@ -1765,10 +1765,26 @@ function collapseQuotedRegions(root: ParentNode): void {
   // (re #292) inside that later candidate is itself historical, not fresh,
   // and must fold with the rest of the candidate rather than being lifted
   // out as if newly written.
+  //
+  // Being the first-found region is necessary but not sufficient (re #448
+  // second follow-up): a region can BE the first quoted element found and
+  // still not open the document, when it sits nested inside an ancestor
+  // that itself has genuine prose ahead of it (`<p>reply</p><div><p>intro
+  // line</p><blockquote>...`) — the candidate here is the blockquote, the
+  // first (and only) match, but real sender text already precedes it. Only
+  // when NOTHING readable precedes the candidate anywhere in the document
+  // can any of its own leading children possibly be the sender's fresh
+  // text; see `nothingPrecedes`'s doc comment. Failing that check folds the
+  // candidate exactly as found, unsplit, with no further pass-over search.
   const passedOver: Element[] = [];
+  let atTheFirstRegion = true;
   let candidate: Element | null = findFirstQuotedRegion(root, passedOver);
-  if (candidate) splitLeadingFreshContent(candidate);
-  while (candidate && !startsAtTheCitation(candidate)) {
+  while (candidate) {
+    const mayHoldTheSendersText = atTheFirstRegion && nothingPrecedes(root, candidate);
+    atTheFirstRegion = false;
+    if (!mayHoldTheSendersText) break;
+    splitLeadingFreshContent(candidate);
+    if (startsAtTheCitation(candidate)) break;
     passedOver.push(candidate);
     candidate = findFirstQuotedRegion(root, passedOver);
   }
@@ -1796,6 +1812,34 @@ function collapseQuotedRegions(root: ParentNode): void {
   if (!foundSignature && probe !== null) {
     // Fresh content follows the quoted group — leave it expanded.
     return;
+  }
+
+  // The rest of the document above the element the citation sits in counts
+  // too (re #448 second follow-up): a client that wraps the citation and
+  // its quote in a container of their own (Thunderbird's
+  // `moz-forward-container`, for one) leaves a bottom-posted reply OUTSIDE
+  // that container, where the sibling walk above -- scoped to the
+  // candidate's own parent -- never reaches it. Continue the same walk up
+  // the ancestor chain, one level of wrapper at a time, vetoing the fold on
+  // readable text found after each wrapper WITHOUT absorbing it: that text
+  // sits outside the element the fold is about to move, so it stays where
+  // it is if the fold goes ahead.
+  let wrapper: Node | null = candidate.parentNode;
+  while (wrapper !== null) {
+    const above: Node | null = wrapper.parentNode;
+    if (above === null) break;
+    let next: Node | null = wrapper.nextSibling;
+    while (next !== null) {
+      if (!foundSignature) {
+        if (isSignatureDelimiterNode(next)) {
+          foundSignature = true;
+        } else if (!isQuoteOrEmptyNode(next)) {
+          return;
+        }
+      }
+      next = next.nextSibling;
+    }
+    wrapper = above;
   }
 
   const owner = candidate.ownerDocument!;
@@ -1921,6 +1965,51 @@ function isAttributionNode(node: Node): boolean {
   }
   if (node.nodeType !== Node.ELEMENT_NODE) return false;
   return isAttributionLine(((node as Element).textContent ?? '').trim());
+}
+
+/**
+ * True when nothing readable precedes `candidate` anywhere in `root`'s
+ * document order (re #448 second follow-up).
+ *
+ * Where the sender's own text can be is a question of POSITION, not of the
+ * tag or class a region starts with. It is either outside the quote
+ * entirely, or among the leading children of the region the body opens
+ * with, never both and nowhere else: once something readable exists ahead
+ * of `candidate` in the document, `candidate` is already past the point
+ * where any of it can be the sender's, however deeply nested `candidate`
+ * itself is inside an ancestor wrapper — a `<p>reply</p><div><p>citation
+ * introducer</p><blockquote>` shape has the blockquote as the sole
+ * candidate `findFirstQuotedRegion` matches, but the introducer paragraph
+ * and the outer `<p>reply</p>` both precede it in the document, and
+ * `splitLeadingFreshContent` must not treat the blockquote's own children
+ * as fresh just because it happens to be the first REGION found.
+ */
+function nothingPrecedes(root: ParentNode, candidate: Node): boolean {
+  let ahead = '';
+  let reached = false;
+  function walk(node: Node): void {
+    if (reached) return;
+    if (node === candidate) {
+      reached = true;
+      return;
+    }
+    if (node.nodeType === Node.TEXT_NODE) {
+      ahead += node.nodeValue ?? '';
+    } else if (node.nodeType === Node.ELEMENT_NODE) {
+      for (const child of Array.from(node.childNodes)) {
+        walk(child);
+        if (reached) return;
+      }
+    }
+  }
+  // `root` is always the sanitizer's own detached wrapper div (a Node as
+  // well as a ParentNode); walk its childNodes exactly as `walk` does for
+  // any other element.
+  for (const child of Array.from((root as unknown as Node).childNodes)) {
+    walk(child);
+    if (reached) break;
+  }
+  return ahead.trim() === '';
 }
 
 /**

@@ -1538,6 +1538,108 @@ describe('sanitizeHtml — quoted-history collapse', () => {
       expect(quotePos).toBeLessThan(detailsEnd);
     });
   });
+
+  // re #448 second follow-up (issue comment 5663): two further shapes found
+  // by the Android session's generated corpus, both observed against
+  // origin/train with the first two #448 commits already in place.
+  describe('leading children lifted out even though sender text precedes the quote (re #448 second follow-up, shape 1)', () => {
+    it('the reported body: the citation introducer and the quoted top-posted reply stay inside the fold', () => {
+      // Exact body from issue comment 5663. The candidate `findFirstQuotedRegion`
+      // matches is the inner <blockquote> (the outer <div> carries no
+      // recognised class); being the first REGION found is not enough,
+      // because genuine sender prose ("F5", "Mit freundlichen Gruessen")
+      // and the French citation introducer both precede it in the document.
+      const html =
+        '<p>F5</p><p>Mit freundlichen Gruessen</p>\n' +
+        '<div><p>Le 15 septembre 2026 a 18:21, Alice a ecrit:</p>\n' +
+        '<blockquote type="cite"><p>Q5i</p>\n' +
+        '<div class="moz-cite-prefix">Am 14.09.26 um 08:00 schrieb bob@example.test:<br></div>\n' +
+        '<blockquote type="cite">Q5</blockquote></blockquote></div>\n';
+      const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+      const detailsStart = body.indexOf('<details class="herold-quoted">');
+      const detailsEnd = body.indexOf('</details>');
+      expect(detailsStart).toBeGreaterThan(0);
+      // The sender's own two lines stay outside and before the fold.
+      expect(body.indexOf('F5')).toBeLessThan(detailsStart);
+      expect(body.indexOf('Mit freundlichen Gruessen')).toBeLessThan(detailsStart);
+      // The citation introducer and the quoted message's own top-posted
+      // reply are the correspondent's words, not the sender's -- both stay
+      // inside the fold, never rendered ahead of it.
+      const introPos = body.indexOf('Le 15 septembre 2026 a 18:21, Alice a ecrit');
+      const q5iPos = body.indexOf('Q5i');
+      const q5Pos = body.indexOf('>Q5<');
+      expect(introPos).toBeGreaterThan(detailsStart);
+      expect(introPos).toBeLessThan(detailsEnd);
+      expect(q5iPos).toBeGreaterThan(detailsStart);
+      expect(q5iPos).toBeLessThan(detailsEnd);
+      expect(q5Pos).toBeGreaterThan(detailsStart);
+      expect(q5Pos).toBeLessThan(detailsEnd);
+    });
+
+    it('control: the same nested reply-before-quote shape as the document\'s ONLY content still splits (nothing precedes it)', () => {
+      // Regression guard for `nothingPrecedes`: when the candidate really
+      // is the first thing in the document, the #292 lift-out contract
+      // must keep working exactly as before this follow-up.
+      const html =
+        '<blockquote type="cite"><p>Q5i</p>\n' +
+        '<div class="moz-cite-prefix">Am 14.09.26 um 08:00 schrieb bob@example.test:<br></div>\n' +
+        '<blockquote type="cite">Q5</blockquote></blockquote>';
+      const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+      const detailsStart = body.indexOf('<details class="herold-quoted">');
+      expect(detailsStart).toBeGreaterThan(-1);
+      const q5iPos = body.indexOf('Q5i');
+      expect(q5iPos).toBeGreaterThan(-1);
+      expect(q5iPos).toBeLessThan(detailsStart);
+    });
+  });
+
+  describe('a bottom-posted reply outside the citation\'s wrapper does not stop the fold (re #448 second follow-up, shape 2)', () => {
+    it('the reported body: a reply after a moz-forward-container leaves the quote inside it expanded', () => {
+      // Exact body from issue comment 5663. The trailing-sibling walk
+      // scoped to the candidate's own parent (the moz-forward-container)
+      // never reaches "F9" -- it is a sibling of the WRAPPER, not of the
+      // candidate. The fold must not happen at all: the reply answers the
+      // quote, so the quote stays expanded (the documented bottom-post
+      // rule, re #32/#49), and none of "F9" is absorbed into anything.
+      const html =
+        '<div class="moz-forward-container">\n' +
+        '<div class="moz-cite-prefix">Am 15.09.26 um 18:21 schrieb Alice:<br></div>\n' +
+        '<blockquote type="cite">Q9</blockquote></div>\n' +
+        '<p>F9 written below the quote</p>\n';
+      const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+      expect(body).not.toContain('<details');
+      expect(body).toContain('Q9');
+      expect(body).toContain('F9 written below the quote');
+    });
+
+    it('control: the same citation/quote pair with no wrapper still folds (unaffected regression guard)', () => {
+      const html =
+        '<div class="moz-cite-prefix">Am 15.09.26 um 18:21 schrieb Alice:<br></div>\n' +
+        '<blockquote type="cite">Q9</blockquote>\n' +
+        '<p>F9 written below the quote</p>\n';
+      const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+      // No wrapper here, so this is the plain #32/#49 bottom-post case:
+      // fresh content after the quote's own siblings already blocks the
+      // fold -- unaffected by the ancestor-walk this follow-up adds.
+      expect(body).not.toContain('<details');
+      expect(body).toContain('Q9');
+      expect(body).toContain('F9 written below the quote');
+    });
+
+    it('control: a moz-forward-container with no reply after it still folds (unaffected regression guard)', () => {
+      const html =
+        '<div class="moz-forward-container">\n' +
+        '<div class="moz-cite-prefix">Am 15.09.26 um 18:21 schrieb Alice:<br></div>\n' +
+        '<blockquote type="cite">Q9</blockquote></div>\n';
+      const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+      const detailsStart = body.indexOf('<details class="herold-quoted">');
+      const detailsEnd = body.indexOf('</details>');
+      expect(detailsStart).toBeGreaterThan(-1);
+      const quotePos = body.indexOf('Q9');
+      expect(quotePos).toBeGreaterThan(detailsStart);
+      expect(quotePos).toBeLessThan(detailsEnd);
+    });
+  });
 });
 
 describe('sanitizeHtml — script/style filters', () => {
