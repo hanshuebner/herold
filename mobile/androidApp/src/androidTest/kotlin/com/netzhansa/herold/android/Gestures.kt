@@ -76,6 +76,17 @@ object Gestures {
         inject(x, from, x, to, steps)
     }
 
+    /**
+     * Drags the content of [bounds] downwards from near its top, the
+     * pull that asks the message list for a refresh (issue #444).
+     */
+    fun dragDown(bounds: Rect, steps: Int = SWIPE_STEPS) {
+        val x = bounds.center.x.toInt()
+        val from = (bounds.top + bounds.height * 0.15f).toInt()
+        val to = (bounds.top + bounds.height * 0.7f).toInt()
+        inject(x, from, x, to, steps)
+    }
+
     /** Injects a down, [steps] - 1 moves along the line, and an up. */
     private fun inject(fromX: Int, fromY: Int, toX: Int, toY: Int, steps: Int) {
         val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
