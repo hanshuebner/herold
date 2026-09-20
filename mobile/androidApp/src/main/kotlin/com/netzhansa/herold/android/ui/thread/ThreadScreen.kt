@@ -566,6 +566,9 @@ fun ThreadScreen(
                 DraftMessageCard(
                     draft = draft,
                     onEdit = { onCompose(ComposeMode.EDIT_DRAFT, draft.id) },
+                    onDiscard = {
+                        scope.launch { session.drafts.discardSaved(draft.accountId, draft.id) }
+                    },
                 )
                 HorizontalDivider()
             }
@@ -665,10 +668,12 @@ fun ThreadScreen(
 /**
  * A draft answer to this conversation, rendered at the end of it the way
  * the Suite threads drafts (`docs/design/web/requirements/19-drafts.md`,
- * issue #371). Edit reopens the composer on it; sending it removes it.
+ * issue #371). Edit reopens the composer on it; sending it removes it;
+ * Discard throws it away, which is what a reader reaches for once the
+ * snackbar the save offered has come down.
  */
 @Composable
-private fun DraftMessageCard(draft: Email, onEdit: () -> Unit) {
+private fun DraftMessageCard(draft: Email, onEdit: () -> Unit, onDiscard: () -> Unit) {
     ListItem(
         headlineContent = {
             Text(
@@ -705,6 +710,12 @@ private fun DraftMessageCard(draft: Email, onEdit: () -> Unit) {
                     modifier = Modifier.testTag("thread-draft-edit-${draft.id}"),
                 ) {
                     Text("Edit")
+                }
+                IconButton(
+                    onClick = onDiscard,
+                    modifier = Modifier.testTag("thread-draft-discard-${draft.id}"),
+                ) {
+                    Icon(Icons.Filled.Delete, contentDescription = "Discard this draft")
                 }
             }
         },

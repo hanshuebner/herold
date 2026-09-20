@@ -90,6 +90,14 @@ class Drafts(
         handle.draftId?.let { destroy(handle.accountId, it) }
     }
 
+    /**
+     * Throws away a draft that is already a message, named by its id:
+     * what the conversation's own Discard acts on, for a draft whose
+     * save has long since landed and whose snackbar offer is gone
+     * (issue #371).
+     */
+    suspend fun discardSaved(accountId: String, draftId: String) = destroy(accountId, draftId)
+
     private suspend fun destroy(accountId: String, draftId: String) {
         store.deleteEmails(accountId, listOf(draftId))
         outbox.enqueueDestroy(accountId, MailActions.Labels.DISCARD_DRAFT, listOf(draftId))
