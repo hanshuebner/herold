@@ -584,3 +584,138 @@ describe('issue #422 -- lone halves that pair with an ancestor background surviv
     expect(parseColor(window.getComputedStyle(el).color)).toEqual([255, 255, 255, 1]);
   });
 });
+
+/**
+ * Acceptance fixtures for issue #422's second round: the maintainer's
+ * hand-back on comment 5358. `resolveEffectiveBackground` walked ancestors
+ * reading `declaredColorHalves`, which parsed only the `style` attribute --
+ * a background expressed as the legacy `bgcolor` presentational attribute
+ * (kept by DOMPurify; not in `FORBID_ATTR`) was invisible to it, so a lone
+ * `color` paired against a `bgcolor` ancestor resolved against the reading-
+ * pane's own default foreground instead and was stripped as an apparent
+ * collision. The reduced case is the Icelandair check-in mail's footer: a
+ * `<td bgcolor="#001B71">` (no CSS background) whose own `color: #FFFFFF`
+ * (and a nested span's own `color:#FFFFFF`) rendered near-black.
+ */
+describe('issue #422 second round -- bgcolor presentational attribute counts as a declared background', () => {
+  it('reduced case: <td bgcolor> with a lone color -- fails before the fix, resolving near-black instead of white', () => {
+    withTheme('light');
+    // The control cell (CSS background-color) already worked before this
+    // round's fix; the bgcolor cell is this ticket's regression.
+    const html = `
+      <table><tr>
+        <td bgcolor="#001B71" style="color: #FFFFFF">
+          <span style="color:#FFFFFF;">(c)1999-2026 Icelandair. All rights reserved.</span>
+        </td>
+        <td style="background-color:#001B71; color: #FFFFFF">
+          <span style="color:#FFFFFF;">control cell, background-color in style</span>
+        </td>
+      </tr></table>`;
+    const srcdoc = sanitizeHtml(html, { loadImages: false });
+    const { window, document } = renderSrcdoc(srcdoc, 'light');
+    const spans = [...document.querySelectorAll('span')];
+    const bgcolorSpan = spans.find((s) => (s.textContent ?? '').includes('Icelandair'))!;
+    const controlSpan = spans.find((s) => (s.textContent ?? '').includes('control cell'))!;
+
+    // The control (CSS background-color) cell keeps its authored white text.
+    expect(parseColor(window.getComputedStyle(controlSpan).color)).toEqual([255, 255, 255, 1]);
+    // The bgcolor cell's lone color must ALSO keep its authored white text --
+    // the defect resolved it against the reading pane's own near-black
+    // default (rgb(22, 22, 22)) instead of the navy `bgcolor` background.
+    expect(parseColor(window.getComputedStyle(bgcolorSpan).color)).toEqual([255, 255, 255, 1]);
+  });
+
+  it('a lone color on the SAME element as its own bgcolor attribute survives (the reduced case\'s own <td> color)', () => {
+    withTheme('light');
+    const html = '<table><tr><td bgcolor="#001B71" style="color: #FFFFFF">text</td></tr></table>';
+    const srcdoc = sanitizeHtml(html, { loadImages: false });
+    const { window, document } = renderSrcdoc(srcdoc, 'light');
+    const td = document.querySelector('td')!;
+    expect(parseColor(window.getComputedStyle(td).color)).toEqual([255, 255, 255, 1]);
+  });
+
+  // The table/tr/th ancestors below are wrapped in a <body style="color:
+  // #616161"> carrying a foreground chosen to clear BOTH contrast checks
+  // this fixture's own-element pass performs: >= 4.5:1 (WCAG AA) against
+  // the light theme's white default background, so `<body>`'s own lone
+  // color survives as a theme-only fallback with no ancestor of its own,
+  // AND >= 1.5:1 (the degenerate bar) against navy, so the table/tr/th's
+  // own "background declared, no local color" check -- which resolves
+  // ITS OWN contrast against this carried-over ancestor foreground -- does
+  // not itself strip the very background this fixture means to exercise.
+  // This sidesteps a separate, pre-existing characteristic of
+  // `sanitizeInlineColorPairs`'s own-element check (present on current
+  // `main`/train for a bare CSS `background-color` too, verified against
+  // an unmodified checkout: a container that declares ONLY a background
+  // with NO ancestor-declared foreground anywhere falls back to
+  // `readingPaneTheme()` for its OWN contrast check and can strip its own
+  // background if that theme default collides) -- out of scope for this
+  // ticket, which is about `bgcolor` reaching parity with CSS
+  // `background-color`, not about that pre-existing fallback behavior.
+  const ANCESTOR_FOREGROUND_CONTEXT = '<body style="color:#616161">';
+
+  it('bgcolor on <table> is treated as a declared background for a descendant lone color', () => {
+    withTheme('light');
+    const html = `<html>${ANCESTOR_FOREGROUND_CONTEXT}<table bgcolor="#001B71"><tr><td><span style="color:#ffffff">via table bgcolor</span></td></tr></table></body></html>`;
+    const srcdoc = sanitizeHtml(html, { loadImages: false });
+    const { window, document } = renderSrcdoc(srcdoc, 'light');
+    const el = document.querySelector('span')!;
+    expect(parseColor(window.getComputedStyle(el).color)).toEqual([255, 255, 255, 1]);
+  });
+
+  it('bgcolor on <tr> is treated as a declared background for a descendant lone color', () => {
+    withTheme('light');
+    const html = `<html>${ANCESTOR_FOREGROUND_CONTEXT}<table><tr bgcolor="#001B71"><td><span style="color:#ffffff">via tr bgcolor</span></td></tr></table></body></html>`;
+    const srcdoc = sanitizeHtml(html, { loadImages: false });
+    const { window, document } = renderSrcdoc(srcdoc, 'light');
+    const el = document.querySelector('span')!;
+    expect(parseColor(window.getComputedStyle(el).color)).toEqual([255, 255, 255, 1]);
+  });
+
+  it('bgcolor on <th> is treated as a declared background for a descendant lone color', () => {
+    withTheme('light');
+    const html = `<html>${ANCESTOR_FOREGROUND_CONTEXT}<table><tr><th bgcolor="#001B71"><span style="color:#ffffff">via th bgcolor</span></th></tr></table></body></html>`;
+    const srcdoc = sanitizeHtml(html, { loadImages: false });
+    const { window, document } = renderSrcdoc(srcdoc, 'light');
+    const el = document.querySelector('span')!;
+    expect(parseColor(window.getComputedStyle(el).color)).toEqual([255, 255, 255, 1]);
+  });
+
+  it('bgcolor on <body> is carried onto the fragment wrapper, same as a CSS background-color', () => {
+    withTheme('light');
+    // <body> declares both halves itself (bgcolor + a CSS color), matching
+    // the reduced case's own same-element shape, so the wrapper's combined
+    // pair is checked for a genuine collision rather than falling back to
+    // the theme-only "no ancestor foreground" path exercised above.
+    const html = '<html><body bgcolor="#001B71" style="color:#e8e8e8"><span style="color:#ffffff">via body bgcolor</span></body></html>';
+    const srcdoc = sanitizeHtml(html, { loadImages: false });
+    const { window, document } = renderSrcdoc(srcdoc, 'light');
+    const wrap = document.body.firstElementChild!;
+    expect(parseColor(window.getComputedStyle(wrap).backgroundColor)).toEqual([0x00, 0x1b, 0x71, 1]);
+    const el = document.querySelector('span')!;
+    expect(parseColor(window.getComputedStyle(el).color)).toEqual([255, 255, 255, 1]);
+  });
+
+  it('a CSS background-color on the same element wins over a conflicting bgcolor attribute', () => {
+    withTheme('light');
+    // bgcolor says white (which WOULD collide with a white descendant
+    // color); the CSS background-color says navy (which would not). CSS
+    // must win, so the descendant's white text must survive.
+    const html = `<html>${ANCESTOR_FOREGROUND_CONTEXT}<table><tr><td bgcolor="#ffffff" style="background-color:#001B71"><span style="color:#ffffff">text</span></td></tr></table></body></html>`;
+    const srcdoc = sanitizeHtml(html, { loadImages: false });
+    const { window, document } = renderSrcdoc(srcdoc, 'light');
+    const el = document.querySelector('span')!;
+    expect(parseColor(window.getComputedStyle(el).color)).toEqual([255, 255, 255, 1]);
+  });
+
+  it('a bgcolor that genuinely collides with the descendant color is still stripped', () => {
+    withTheme('light');
+    const html = '<table><tr><td bgcolor="#ffffff"><span style="color:#fefefe">text</span></td></tr></table>';
+    const srcdoc = sanitizeHtml(html, { loadImages: false });
+    const { window, document } = renderSrcdoc(srcdoc, 'light');
+    const el = document.querySelector('span')!;
+    // #fefefe on #ffffff is a near-invisible collision -- stripped to the
+    // reading pane's own theme foreground, not left as authored.
+    expect(parseColor(window.getComputedStyle(el).color)).toEqual(THEME.light.color);
+  });
+});
