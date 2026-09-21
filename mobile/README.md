@@ -73,11 +73,25 @@ them:
     #t71 offline: the same measurements with no connection
     adb shell svc data enable && adb shell svc wifi enable
 
-`SyncFreshnessAcceptanceTest` runs online and needs no device setup. It
-measures how far behind the server the app gets (issue #436): each
-method signs in through a relay in the test process, so the check takes
-the wire away and gives it back with the radios untouched. `t92` turns
-the screen off and on, so run it on an emulator with no screen lock.
+`SyncFreshnessAcceptanceTest` runs online. It measures how far behind
+the server the app gets (issue #436): each method signs in through a
+relay in the test process, so the check takes the wire away and gives
+it back with the radios untouched. `t92` turns the screen off and on,
+so run it on an emulator with no screen lock. It delivers its probes
+over SMTP, so pass the instance's `SMTP_ADDR`:
+
+    adb shell am instrument -w -r \
+      -e class com.netzhansa.herold.android.SyncFreshnessAcceptanceTest \
+      -e heroldBaseUrl http://10.0.2.2:<backend-port> \
+      -e heroldSmtpAddr 10.0.2.2:<smtp-port> \
+      com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+
+Start every invocation on an awake screen. A run begun while the
+emulator sleeps fails in its setup with "No compose hierarchies found
+in the app": the rule's activity never reaches the composition the
+first wait reads. `adb shell input keyevent KEYCODE_WAKEUP` and
+`adb shell wm dismiss-keyguard` before each `am instrument` keeps a
+long session out of it.
 
 `UndoSendAcceptanceTest` runs online and needs no phases.
 `t64` needs the foreign-identity seed, so start the instance with
