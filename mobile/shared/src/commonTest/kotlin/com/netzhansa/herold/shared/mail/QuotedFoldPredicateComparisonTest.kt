@@ -29,6 +29,8 @@ class QuotedFoldPredicateComparisonTest {
         val html: String,
         val relational: Boolean,
         val intrinsic: Boolean,
+        /** The same rule read as ancestors only, the candidate aside. */
+        val intrinsicAncestorsOnly: Boolean,
         /** Whether the answer changes what the reader sees. */
         val consequential: Boolean,
     )
@@ -45,7 +47,16 @@ class QuotedFoldPredicateComparisonTest {
                 "\tdiffering=${differing.size}\tconsequential=${consequential.size}",
         )
         consequential.forEach {
-            println("DIFFERS\t${it.name}\trelational=${it.relational}\tintrinsic=${it.intrinsic}\t${it.html}")
+            println(
+                "DIFFERS\t${it.name}\trelational=${it.relational}\tintrinsic=${it.intrinsic}" +
+                    "\tintrinsicAncestorsOnly=${it.intrinsicAncestorsOnly}\t${it.html}",
+            )
+        }
+        answers.filter { it.relational != it.intrinsicAncestorsOnly && it.consequential }.forEach {
+            println(
+                "DIFFERSANCESTORSONLY\t${it.name}\trelational=${it.relational}" +
+                    "\tintrinsicAncestorsOnly=${it.intrinsicAncestorsOnly}\t${it.html}",
+            )
         }
         differing.map { it.name.substringBefore('#') }.toSet().sorted().forEach { kind ->
             println(
@@ -77,6 +88,7 @@ class QuotedFoldPredicateComparisonTest {
             html = html,
             relational = !QuotedHtml.isBeneathACitation(candidate),
             intrinsic = !isInsideAQuoteContainer(candidate),
+            intrinsicAncestorsOnly = !isInsideAQuoteContainer(candidate, countTheCandidate = false),
             consequential = QuotedHtml.liftableLeadingContent(candidate) > 0,
         )
     }
@@ -87,8 +99,8 @@ class QuotedFoldPredicateComparisonTest {
      * class. A citation-prefix div is not one - it names the
      * attribution line rather than holding a message.
      */
-    private fun isInsideAQuoteContainer(candidate: HtmlElement): Boolean {
-        var element: HtmlElement? = candidate
+    private fun isInsideAQuoteContainer(candidate: HtmlElement, countTheCandidate: Boolean = true): Boolean {
+        var element: HtmlElement? = if (countTheCandidate) candidate else candidate.parent
         while (element != null) {
             if (element.name == "blockquote" || containerClass.containsMatchIn(element.classes)) return true
             element = element.parent
@@ -148,6 +160,22 @@ class QuotedFoldPredicateComparisonTest {
             "<blockquote type=\"cite\">Q9</blockquote></div><p>Written below the quote.</p>",
         "defect-sender-line-reads-as-an-attribution" to
             "<p>Am 19.09.26 um 09:00 schrieb Bob:</p>$THUNDERBIRD_REPLY",
+        // The three shapes the Suite's own table names, where the two
+        // rules part company on real mail rather than on a
+        // construction.
+        "crossclient-quoted-lead-in-a-plain-wrapper" to
+            "<p>My reply.</p><div><p>On Mon, 15 Sep 2026, Alice wrote:</p>$CITED_QUOTE</div>",
+        "crossclient-quoted-lead-in-a-plain-wrapper-german" to
+            "<p>Danke.</p><div><p>Am 15.09.26 um 18:21 schrieb Alice:</p>$CITED_QUOTE</div>",
+        "crossclient-attribution-then-wrapped-cite-prefix" to
+            "<p>On Mon, 15 Sep 2026, Alice wrote:</p><div>$THUNDERBIRD_REPLY</div>",
+        "crossclient-forwarding-note-in-a-forward-container" to
+            "<div class=\"moz-forward-container\">" +
+            "<div class=\"moz-cite-prefix\">Weitergeleitet, weil es dich betrifft.<br><br>" +
+            "Am 15.09.26 um 18:21 schrieb Alice:<br></div>" +
+            "<blockquote type=\"cite\">The forwarded message.</blockquote></div>",
+        "crossclient-prose-matching-the-attribution-regex" to
+            "<p>On the anniversary, my grandmother always wrote:</p>$THUNDERBIRD_REPLY",
     )
 
     /**
