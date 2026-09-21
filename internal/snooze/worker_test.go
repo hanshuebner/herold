@@ -598,3 +598,127 @@ func TestWorker_LogsPerMessageWake(t *testing.T) {
 		t.Errorf("destination_mailbox_id = %v (ok=%v), want %d", dest, ok, f.inboxID)
 	}
 }
+
+// -- re #460: a trashed message must not wake into another mailbox ---
+
+// testTrashedViaMoveMessageNeverWakes reproduces the reported symptom
+// end-to-end: a message snoozed while in Sent, then trashed by a plain
+// MoveMessage (Email/set's move-to-Trash fast path). Before the fix,
+// MoveMessage carried the active snooze onto the Trash row, so it
+// later elapsed and the worker added an Inbox membership behind the
+// untouched Trash one. After the fix MoveMessage clears the snooze on
+// the way into Trash, so the message never becomes due again and the
+// worker's next sweep releases nothing for it.
+func testTrashedViaMoveMessageNeverWakes(t *testing.T, f *fixture) {
+	sent := f.insertMailbox(t, "Sent")
+	trash, err := f.store.Meta().InsertMailbox(context.Background(), store.Mailbox{
+		PrincipalID: f.pid, Name: "Trash", Attributes: store.MailboxAttrTrash,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox(Trash): %v", err)
+	}
+	due := time.Date(2030, 1, 1, 1, 0, 0, 0, time.UTC)
+	wake := f.inboxID
+	id := f.snoozeMessageInto(t, sent, "trashed-while-snoozed", due, &wake)
+
+	// Trash it exactly like Email/set's single-remove/single-add fast
+	// path (applyMailboxDiff -> MoveMessage) does.
+	if err := f.store.Meta().MoveMessage(context.Background(), id, sent, trash.ID); err != nil {
+		t.Fatalf("MoveMessage(sent->trash): %v", err)
+	}
+
+	w := newWorker(f)
+	f.clk.Advance(2 * time.Hour)
+	// The message must no longer be due at all, so give the worker a
+	// moment to run its first tick (an empty/no-op sweep, like
+	// TestWorker_NoDueMessages_NoOp) rather than waiting for a release
+	// that should never come.
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- w.Run(ctx) }()
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("worker.Run: %v", err)
+	}
+	if got := w.Released(); got != 0 {
+		t.Errorf("Released = %d, want 0 (a trashed message must never become due again)", got)
+	}
+
+	got := f.mailboxIDs(t, id)
+	if !got[trash.ID] {
+		t.Errorf("mailboxes = %v, want Trash (%d) retained", got, trash.ID)
+	}
+	if got[f.inboxID] {
+		t.Errorf("mailboxes = %v, message gained Inbox (%d) while still in Trash", got, f.inboxID)
+	}
+	if len(got) != 1 {
+		t.Errorf("mailboxes = %v, want exactly {Trash}", got)
+	}
+	m, err := f.store.Meta().GetMessage(context.Background(), id)
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	if m.SnoozedUntil != nil {
+		t.Errorf("SnoozedUntil = %v, want nil", m.SnoozedUntil)
+	}
+}
+
+func TestWorker_TrashedViaMoveMessageNeverWakes(t *testing.T) {
+	testTrashedViaMoveMessageNeverWakes(t, newFixture(t))
+}
+
+func TestWorker_TrashedViaMoveMessageNeverWakes_Postgres(t *testing.T) {
+	testTrashedViaMoveMessageNeverWakes(t, newFixturePostgres(t))
+}
+
+// testWorkerNeverAddsToTrashedOrigin is the worker's own defense in
+// depth: a message snoozed directly while its origin membership is
+// already Trash (a row predating the MoveMessage fix, or any future
+// path that sets a snooze on an already-trashed message) must still
+// wake in place rather than gain a second, non-Trash membership. The
+// snooze clears; nothing is added.
+func testWorkerNeverAddsToTrashedOrigin(t *testing.T, f *fixture) {
+	trash, err := f.store.Meta().InsertMailbox(context.Background(), store.Mailbox{
+		PrincipalID: f.pid, Name: "Trash", Attributes: store.MailboxAttrTrash,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox(Trash): %v", err)
+	}
+	due := time.Date(2030, 1, 1, 1, 0, 0, 0, time.UTC)
+	wake := f.inboxID
+	// Snooze set directly on the Trash membership, bypassing
+	// MoveMessage entirely -- the state a pre-fix row, or any other
+	// as-yet-unenumerated path, could still produce.
+	id := f.snoozeMessageInto(t, trash.ID, "snoozed-in-trash", due, &wake)
+
+	w := newWorker(f)
+	f.clk.Advance(2 * time.Hour)
+	runToRelease(t, w, 1)
+
+	got := f.mailboxIDs(t, id)
+	if !got[trash.ID] {
+		t.Errorf("mailboxes = %v, want Trash (%d) retained", got, trash.ID)
+	}
+	if got[f.inboxID] {
+		t.Errorf("mailboxes = %v, worker added Inbox (%d) to a message whose origin is Trash", got, f.inboxID)
+	}
+	if len(got) != 1 {
+		t.Errorf("mailboxes = %v, want exactly {Trash} (wake in place)", got)
+	}
+	m, err := f.store.Meta().GetMessage(context.Background(), id)
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	if m.SnoozedUntil != nil {
+		t.Errorf("SnoozedUntil = %v, want nil", m.SnoozedUntil)
+	}
+}
+
+func TestWorker_NeverAddsToTrashedOrigin(t *testing.T) {
+	testWorkerNeverAddsToTrashedOrigin(t, newFixture(t))
+}
+
+func TestWorker_NeverAddsToTrashedOrigin_Postgres(t *testing.T) {
+	testWorkerNeverAddsToTrashedOrigin(t, newFixturePostgres(t))
+}

@@ -2258,6 +2258,22 @@ func (m *metadata) MoveMessage(ctx context.Context, msgID store.MessageID, fromM
 			}
 		}
 
+		// A snooze deadline active on the source membership must not
+		// survive a move into Trash. wake_mailbox_id is never carried
+		// across a move (the INSERT below omits the column), so a
+		// carried-over snoozed_until_us left the Trash row "due" with
+		// no recorded destination. When that deadline later elapsed,
+		// the snooze wake worker (internal/snooze) resolved the
+		// account's Inbox as the fallback destination and added that
+		// membership while leaving the untouched Trash one in place --
+		// a trashed message gaining an Inbox membership without ever
+		// losing Trash (re #460). Clearing both the column and the
+		// "$snoozed" keyword here keeps the (SnoozedUntil != nil) iff
+		// (has "$snoozed") invariant intact on the new row.
+		if isToTrash {
+			snoozedUs = nil
+			srcKeywords = stripKeywordCSV(srcKeywords, "$snoozed")
+		}
 		var snoozedArg any
 		if snoozedUs != nil {
 			snoozedArg = *snoozedUs
@@ -2308,6 +2324,25 @@ func (m *metadata) MoveMessage(ctx context.Context, msgID store.MessageID, fromM
 		return appendStateChange(ctx, tx, store.PrincipalID(pid),
 			store.EntityKindEmail, uint64(msgID), uint64(targetMailboxID), store.ChangeOpUpdated, now)
 	})
+}
+
+// stripKeywordCSV returns csv with every occurrence of kw removed,
+// preserving the order of the rest. Used by MoveMessage to drop
+// "$snoozed" from a membership's keywords_csv alongside clearing
+// snoozed_until_us (re #460), keeping the two in the invariant lockstep
+// SetSnooze maintains everywhere else.
+func stripKeywordCSV(csv, kw string) string {
+	if csv == "" {
+		return csv
+	}
+	parts := strings.Split(csv, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p != "" && p != kw {
+			out = append(out, p)
+		}
+	}
+	return strings.Join(out, ",")
 }
 
 // pgSnapshotPretrashMailboxes records the current non-Trash mailbox memberships

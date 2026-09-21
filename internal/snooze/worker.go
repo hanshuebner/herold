@@ -170,6 +170,14 @@ func (w *Worker) Run(ctx context.Context) error {
 // below. The add happens before the snooze is cleared so a failed
 // clear retries safely on the next tick.
 //
+// A message whose origin membership (msg.MailboxID) currently carries
+// the Trash attribute always wakes in place: MoveMessage clears any
+// snooze it carried at the moment it was trashed (re #460), but a
+// row predating that fix, or a snooze set directly on an
+// already-trashed message, must not resurrect a second, non-Trash
+// membership behind the user's back just because a stale deadline
+// elapsed. The snooze still clears — trashing wins over the reminder.
+//
 // Every release is made observable as an arrival in the change feed
 // (re #349), not just the destination-differs case: when the message
 // was not freshly added to dest by AddMessageToMailbox above — wake in
@@ -192,17 +200,22 @@ func (w *Worker) tick(ctx context.Context) (int, error) {
 	if len(due) == 0 {
 		return 0, nil
 	}
-	// Cache each principal's resolved Inbox for the duration of this
-	// tick so a batch release of many messages for one principal issues
-	// one ListMailboxes call, not one per message.
-	inboxCache := map[store.PrincipalID]*store.MailboxID{}
+	// Cache each principal's mailbox list for the duration of this tick
+	// so a batch release of many messages for one principal issues one
+	// ListMailboxes call, not one per message. The list serves both the
+	// origin-is-Trash check and the default-Inbox wake resolution.
+	mailboxCache := map[store.PrincipalID][]store.Mailbox{}
 	for _, msg := range due {
 		if err := ctx.Err(); err != nil {
 			return 0, err
 		}
-		dest, err := w.resolveWakeDestination(ctx, msg, inboxCache)
+		mbs, err := w.principalMailboxes(ctx, msg.PrincipalID, mailboxCache)
 		if err != nil {
 			return 0, err
+		}
+		dest := msg.MailboxID
+		if !originIsTrash(mbs, msg.MailboxID) {
+			dest = w.resolveWakeDestination(msg, mbs)
 		}
 		arrived := false
 		if dest != msg.MailboxID {
@@ -254,31 +267,48 @@ func (w *Worker) tick(ctx context.Context) (int, error) {
 }
 
 // resolveWakeDestination returns the mailbox a due-snoozed message
-// should be added to on wake. inboxCache memoises the per-principal
-// Inbox lookup across one tick.
-func (w *Worker) resolveWakeDestination(
-	ctx context.Context,
-	msg store.Message,
-	inboxCache map[store.PrincipalID]*store.MailboxID,
-) (store.MailboxID, error) {
+// should be added to on wake, given pid's already-fetched mailbox list.
+// Callers must have already ruled out an origin membership carrying
+// the Trash attribute (see tick).
+func (w *Worker) resolveWakeDestination(msg store.Message, mbs []store.Mailbox) store.MailboxID {
 	if len(msg.Mailboxes) > 0 && msg.Mailboxes[0].WakeMailboxID != nil {
-		return *msg.Mailboxes[0].WakeMailboxID, nil
+		return *msg.Mailboxes[0].WakeMailboxID
 	}
-	inbox, cached := inboxCache[msg.PrincipalID]
-	if !cached {
-		mbs, err := w.store.Meta().ListMailboxes(ctx, msg.PrincipalID)
-		if err != nil {
-			return 0, fmt.Errorf("snooze: list mailboxes for principal %d: %w", msg.PrincipalID, err)
-		}
-		if resolved := store.ResolveInboxMailbox(mbs); resolved != nil {
-			id := resolved.ID
-			inbox = &id
-		}
-		inboxCache[msg.PrincipalID] = inbox
-	}
-	if inbox != nil {
-		return *inbox, nil
+	if resolved := store.ResolveInboxMailbox(mbs); resolved != nil {
+		return resolved.ID
 	}
 	// No resolvable Inbox: wake in place.
-	return msg.MailboxID, nil
+	return msg.MailboxID
+}
+
+// principalMailboxes returns pid's mailboxes, populating cache on
+// first use so a batch release of many messages for one principal
+// issues one ListMailboxes call, not one per message.
+func (w *Worker) principalMailboxes(
+	ctx context.Context,
+	pid store.PrincipalID,
+	cache map[store.PrincipalID][]store.Mailbox,
+) ([]store.Mailbox, error) {
+	if mbs, ok := cache[pid]; ok {
+		return mbs, nil
+	}
+	mbs, err := w.store.Meta().ListMailboxes(ctx, pid)
+	if err != nil {
+		return nil, fmt.Errorf("snooze: list mailboxes for principal %d: %w", pid, err)
+	}
+	cache[pid] = mbs
+	return mbs, nil
+}
+
+// originIsTrash reports whether mailboxID, looked up in mbs, carries
+// the Trash attribute. A due snooze whose origin membership is
+// currently in Trash must wake in place rather than gain a second,
+// non-Trash membership (re #460).
+func originIsTrash(mbs []store.Mailbox, mailboxID store.MailboxID) bool {
+	for _, mb := range mbs {
+		if mb.ID == mailboxID {
+			return mb.Attributes&store.MailboxAttrTrash != 0
+		}
+	}
+	return false
 }

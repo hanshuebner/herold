@@ -530,6 +530,9 @@ func Run(t *testing.T, f Factory) {
 		{"PreTrash_SnapshotClearedAfterRestore", testPreTrashSnapshotClearedAfterRestore},
 		{"PreTrash_FreshSnapshotOnRetrash", testPreTrashFreshSnapshotOnRetrash},
 		{"PreTrash_PermanentDeleteClearsSnapshot", testPreTrashPermanentDeleteClearsSnapshot},
+		// -- Trash/Inbox dual-membership invariant (re #460) ------------
+		{"PreTrash_MoveToTrashClearsActiveSnooze", testPreTrashMoveToTrashClearsActiveSnooze},
+		{"TrashInvariant_NoDualMembershipAfterMoveOrRestore", testTrashInvariantNoDualMembershipAfterMoveOrRestore},
 		// -- Delegated-operator domains (REQ-ADM-307, re #145, re #237) ------
 		// A principal's managed-domain set is a domain:operator grant
 		// (epic #182); the Grants_* tests below cover assign/list/revoke/
@@ -12631,6 +12634,236 @@ func testPreTrashPermanentDeleteClearsSnapshot(t *testing.T, s store.Store) {
 	if _, err := s.Meta().GetMessage(ctx, msgID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("GetMessage after expunge: expected ErrNotFound, got %v", err)
 	}
+}
+
+// -- Trash / Inbox dual-membership invariant (re #460) ----------------
+//
+// A message trashed while an earlier snooze was still active kept that
+// snooze's deadline on the new Trash row (MoveMessage carried
+// snoozed_until_us across the move unconditionally). When the deadline
+// elapsed, the snooze wake worker (internal/snooze) resolved a wake
+// destination and ADDED it via AddMessageToMailbox, retaining the
+// untouched Trash membership -- a message ending up in both Trash and
+// Inbox with no operation that ever removed Trash. The fix clears the
+// carried snooze (and its "$snoozed" keyword) whenever MoveMessage's
+// target is Trash, so a trashed message is never "due" again.
+
+// testPreTrashMoveToTrashClearsActiveSnooze pins the fix directly: a
+// snooze active on a message's source membership does not survive a
+// MoveMessage into Trash, keeping the SnoozedUntil/"$snoozed" pair in
+// lockstep and keeping the message out of ListDueSnoozedMessages for
+// good.
+func testPreTrashMoveToTrashClearsActiveSnooze(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "pretrash-snooze1@example.com")
+	inbox := mustInsertMailbox(t, s, p.ID, "INBOX")
+	sent := mustInsertMailbox(t, s, p.ID, "Sent")
+	trash := mustInsertTrashMailbox(t, s, p.ID)
+
+	msgID := mustInsertSingleMsg(t, s, p.ID, sent)
+	due := time.Date(2031, 1, 1, 0, 0, 0, 0, time.UTC)
+	if _, err := s.Meta().SetSnooze(ctx, msgID, sent.ID, &due, &inbox.ID); err != nil {
+		t.Fatalf("SetSnooze: %v", err)
+	}
+
+	if err := s.Meta().MoveMessage(ctx, msgID, sent.ID, trash.ID); err != nil {
+		t.Fatalf("MoveMessage(sent->trash): %v", err)
+	}
+
+	got, err := s.Meta().GetMessage(ctx, msgID)
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	if got.SnoozedUntil != nil {
+		t.Fatalf("trashed message still carries SnoozedUntil=%v; a due snooze would later add a mailbox without ever removing Trash", *got.SnoozedUntil)
+	}
+	for _, k := range got.Keywords {
+		if k == "$snoozed" {
+			t.Fatalf("trashed message still carries the \"$snoozed\" keyword after SnoozedUntil was cleared: %v", got.Keywords)
+		}
+	}
+	stillDue, err := s.Meta().ListDueSnoozedMessages(ctx, due.Add(48*time.Hour), 100)
+	if err != nil {
+		t.Fatalf("ListDueSnoozedMessages: %v", err)
+	}
+	for _, m := range stillDue {
+		if m.ID == msgID {
+			t.Fatalf("trashed message %d is still returned by ListDueSnoozedMessages; the wake worker would add a mailbox on top of Trash", msgID)
+		}
+	}
+}
+
+// assertNoTrashDualMembership fails t when msg holds a membership in
+// trashID alongside any other mailbox -- the invariant that must hold
+// after every single move or restore (re #460).
+func assertNoTrashDualMembership(t *testing.T, msg store.Message, trashID store.MailboxID, step string) {
+	t.Helper()
+	inTrash := false
+	var others []store.MailboxID
+	for _, mm := range msg.Mailboxes {
+		if mm.MailboxID == trashID {
+			inTrash = true
+		} else {
+			others = append(others, mm.MailboxID)
+		}
+	}
+	if inTrash && len(others) > 0 {
+		t.Fatalf("%s: message %d holds Trash (%d) alongside %v", step, msg.ID, trashID, others)
+	}
+}
+
+// testTrashInvariantNoDualMembershipAfterMoveOrRestore runs several
+// representative move/restore sequences and checks the Trash-exclusive
+// invariant after every single step -- a property over the operations
+// rather than one example, since the ticket's own shape is that some
+// unenumerated path produced the impossible state.
+func testTrashInvariantNoDualMembershipAfterMoveOrRestore(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "trash-invariant@example.com")
+	inbox := mustInsertMailbox(t, s, p.ID, "INBOX")
+	sent := mustInsertMailbox(t, s, p.ID, "Sent")
+	labelA := mustInsertMailbox(t, s, p.ID, "LabelA")
+	trash := mustInsertTrashMailbox(t, s, p.ID)
+
+	getMsg := func(id store.MessageID) store.Message {
+		t.Helper()
+		m, err := s.Meta().GetMessage(ctx, id)
+		if err != nil {
+			t.Fatalf("GetMessage(%d): %v", id, err)
+		}
+		return m
+	}
+
+	// Scenario 1: a message snoozed before it was trashed (MoveMessage
+	// fast path), then moved straight back to the Inbox (the other
+	// MoveMessage fast path). MoveMessage out of Trash also replays the
+	// pre-trash snapshot (the label-preserving Restore of issue #29:
+	// moving a trashed message to a specific mailbox restores its other
+	// pre-trash memberships too), so Sent legitimately reappears
+	// alongside Inbox here -- the invariant under test is Trash
+	// exclusivity, not the exact resulting set.
+	t.Run("snooze_then_trash_then_move_to_inbox", func(t *testing.T) {
+		id := mustInsertSingleMsg(t, s, p.ID, sent)
+		due := time.Date(2031, 1, 1, 0, 0, 0, 0, time.UTC)
+		if _, err := s.Meta().SetSnooze(ctx, id, sent.ID, &due, &inbox.ID); err != nil {
+			t.Fatalf("SetSnooze: %v", err)
+		}
+		if err := s.Meta().MoveMessage(ctx, id, sent.ID, trash.ID); err != nil {
+			t.Fatalf("MoveMessage(sent->trash): %v", err)
+		}
+		assertNoTrashDualMembership(t, getMsg(id), trash.ID, "after trash")
+
+		if err := s.Meta().MoveMessage(ctx, id, trash.ID, inbox.ID); err != nil {
+			t.Fatalf("MoveMessage(trash->inbox): %v", err)
+		}
+		m := getMsg(id)
+		assertNoTrashDualMembership(t, m, trash.ID, "after move to inbox")
+		if messageInMailbox(m, trash.ID) {
+			t.Fatalf("message still in Trash after move to Inbox: %v", m.Mailboxes)
+		}
+		if !messageInMailbox(m, inbox.ID) {
+			t.Fatalf("mailboxes after move to inbox = %v, want Inbox present", m.Mailboxes)
+		}
+	})
+
+	// Scenario 1b: the ticket's own round trip -- a message trashed
+	// straight from the Inbox (its pre-trash snapshot is therefore
+	// {Inbox} itself, the mailbox MoveMessage snapshots before deleting
+	// the source row) and moved back to the Inbox. Replay's "already a
+	// member" skip means restoring the very mailbox it snapshotted adds
+	// nothing extra, so "moved to the Inbox leaves it in the Inbox
+	// only" holds literally here.
+	t.Run("trash_from_inbox_then_move_to_inbox_leaves_inbox_only", func(t *testing.T) {
+		id := mustInsertSingleMsg(t, s, p.ID, inbox)
+		if err := s.Meta().MoveMessage(ctx, id, inbox.ID, trash.ID); err != nil {
+			t.Fatalf("MoveMessage(inbox->trash): %v", err)
+		}
+		assertNoTrashDualMembership(t, getMsg(id), trash.ID, "after trash")
+
+		if err := s.Meta().MoveMessage(ctx, id, trash.ID, inbox.ID); err != nil {
+			t.Fatalf("MoveMessage(trash->inbox): %v", err)
+		}
+		m := getMsg(id)
+		assertNoTrashDualMembership(t, m, trash.ID, "after move to inbox")
+		if messageInMailbox(m, trash.ID) {
+			t.Fatalf("message still in Trash after move to Inbox: %v", m.Mailboxes)
+		}
+		if !messageInMailbox(m, inbox.ID) || len(m.Mailboxes) != 1 {
+			t.Fatalf("mailboxes after move to inbox = %v, want exactly {Inbox}", m.Mailboxes)
+		}
+	})
+
+	// Scenario 2: multi-mailbox trash via the general JMAP path (add
+	// Trash, then remove every other membership), then restore by
+	// removing Trash (which replays the pre-trash snapshot). The
+	// invariant is checked once the client-visible trash operation
+	// (every remove in the sequence) has completed -- the interior
+	// add-then-remove-one-at-a-time steps are the general path's own
+	// documented non-atomic shape (Email/set adds Trash before removing
+	// the originals so a transient "no membership" state is never
+	// visible), not a "single move".
+	t.Run("multi_mailbox_trash_then_restore", func(t *testing.T) {
+		id := mustInsertSingleMsg(t, s, p.ID, inbox)
+		if _, _, err := s.Meta().AddMessageToMailbox(ctx, id, labelA.ID); err != nil {
+			t.Fatalf("AddMessageToMailbox(labelA): %v", err)
+		}
+		if _, _, err := s.Meta().AddMessageToMailbox(ctx, id, trash.ID); err != nil {
+			t.Fatalf("AddMessageToMailbox(trash): %v", err)
+		}
+		for _, mb := range []store.MailboxID{inbox.ID, labelA.ID} {
+			if err := s.Meta().RemoveMessageFromMailbox(ctx, id, mb); err != nil {
+				t.Fatalf("RemoveMessageFromMailbox(%d): %v", mb, err)
+			}
+		}
+		m := getMsg(id)
+		assertNoTrashDualMembership(t, m, trash.ID, "after trashing complete")
+		if !messageInMailbox(m, trash.ID) || len(m.Mailboxes) != 1 {
+			t.Fatalf("mailboxes after trash = %v, want exactly {Trash}", m.Mailboxes)
+		}
+
+		if err := s.Meta().RemoveMessageFromMailbox(ctx, id, trash.ID); err != nil {
+			t.Fatalf("RemoveMessageFromMailbox(trash) (restore): %v", err)
+		}
+		m = getMsg(id)
+		assertNoTrashDualMembership(t, m, trash.ID, "after restore")
+		if messageInMailbox(m, trash.ID) {
+			t.Fatalf("message still in Trash after restore: %v", m.Mailboxes)
+		}
+		want := map[store.MailboxID]bool{inbox.ID: true, labelA.ID: true}
+		got := map[store.MailboxID]bool{}
+		for _, mm := range m.Mailboxes {
+			got[mm.MailboxID] = true
+		}
+		if len(got) != len(want) || !got[inbox.ID] || !got[labelA.ID] {
+			t.Fatalf("restored mailboxes = %v, want %v", got, want)
+		}
+	})
+
+	// Scenario 3: the production sequence (re #460) -- a snoozed
+	// message is trashed, and its deadline elapses. Once MoveMessage
+	// clears the carried snooze, the message never reappears in
+	// ListDueSnoozedMessages, so nothing can ever add a second
+	// membership on top of the untouched Trash one.
+	t.Run("stale_snooze_never_resurfaces_a_trashed_message", func(t *testing.T) {
+		id := mustInsertSingleMsg(t, s, p.ID, sent)
+		due := time.Date(2031, 1, 1, 0, 0, 0, 0, time.UTC)
+		if _, err := s.Meta().SetSnooze(ctx, id, sent.ID, &due, &inbox.ID); err != nil {
+			t.Fatalf("SetSnooze: %v", err)
+		}
+		if err := s.Meta().MoveMessage(ctx, id, sent.ID, trash.ID); err != nil {
+			t.Fatalf("MoveMessage(sent->trash): %v", err)
+		}
+		stillDue, err := s.Meta().ListDueSnoozedMessages(ctx, due.Add(48*time.Hour), 100)
+		if err != nil {
+			t.Fatalf("ListDueSnoozedMessages: %v", err)
+		}
+		for _, m := range stillDue {
+			if m.ID == id {
+				t.Fatalf("trashed message %d is still due 48h after trashing", id)
+			}
+		}
+		assertNoTrashDualMembership(t, getMsg(id), trash.ID, "48h after the original due time")
+	})
 }
 
 // testBodyMeta runs the body-meta precompute scenarios as subtests against
