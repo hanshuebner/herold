@@ -8,7 +8,12 @@
   import { movePicker } from '../lib/mail/move-picker.svelte';
   import { snoozePicker } from '../lib/mail/snooze-picker.svelte';
   import { categoryPicker } from '../lib/mail/category-picker.svelte';
-  import { categorySettings, emailMatchesTab, categoryKeyword } from '../lib/settings/category-settings.svelte';
+  import {
+    categorySettings,
+    emailMatchesTab,
+    categoryKeyword,
+    PRIMARY_ROLE_NAME,
+  } from '../lib/settings/category-settings.svelte';
   import { decodeChips } from '../lib/mail/search-query';
   import { threadDnd, dragIdsForRow } from '../lib/mail/dnd-thread.svelte';
   import ThreadReader from '../lib/mail/ThreadReader.svelte';
@@ -1513,7 +1518,7 @@
     {#if showTabs}
       <nav class="tab-strip" aria-label={t('mail.list.tabsAria')}>
         {#each categorySettings.derivedCategories as name (name)}
-          {@const tabKey = name.toLowerCase() === 'primary' ? null : name}
+          {@const tabKey = name.toLowerCase() === PRIMARY_ROLE_NAME ? null : name}
           {@const isActive = activeTabName === tabKey}
           {@const unread = tabUnreadCount(tabKey)}
           <button

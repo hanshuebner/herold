@@ -179,7 +179,11 @@ describe('emailMatchesTab', () => {
     expect(emailMatchesTab({ $seen: true }, null, cats)).toBe(true);
   });
 
-  it('Primary tab does not match an email with a category keyword', () => {
+  it('Primary tab matches emails carrying the primary-role keyword itself (REQ-FILT-202)', () => {
+    expect(emailMatchesTab({ '$category-primary': true }, null, cats)).toBe(true);
+  });
+
+  it('Primary tab does not match an email with a different category keyword', () => {
     expect(emailMatchesTab({ '$category-social': true }, null, cats)).toBe(false);
   });
 

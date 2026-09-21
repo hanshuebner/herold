@@ -281,6 +281,14 @@ class CategorySettingsStore {
 export const categorySettings = new CategorySettingsStore();
 
 /**
+ * Name of the primary-role category (REQ-FILT-202, REQ-CAT-03). Fixed by
+ * the server contract, not user-editable: a category named `primary`
+ * (case-insensitive) is the one whose keyword and whose absence are the
+ * same lane.
+ */
+export const PRIMARY_ROLE_NAME = 'primary';
+
+/**
  * Return the `$category-<name>` keyword for a category name.
  * The name is lowercased and stripped of whitespace per the wire contract.
  */
@@ -291,7 +299,7 @@ export function categoryKeyword(name: string): string {
 /**
  * Given an email's keywords map, return the category name it belongs to,
  * or null if no `$category-*` keyword is present (treated as Primary per
- * REQ-CAT-03).
+ * REQ-CAT-03/REQ-FILT-202).
  */
 export function emailCategory(
   keywords: Record<string, true | undefined>,
@@ -306,8 +314,11 @@ export function emailCategory(
 
 /**
  * True when the given email keyword set matches the given category tab.
- * The Primary tab (tabName === null) matches emails with NO category keyword;
- * all other tabs match emails whose `$category-<name>` keyword is present.
+ * The Primary tab (tabName === null) matches emails with NO category
+ * keyword AND emails carrying the primary-role keyword itself
+ * (REQ-FILT-202: a client treats the two as one lane, so an explicit
+ * `$category-primary` assignment does not open a second tab). All other
+ * tabs match emails whose `$category-<name>` keyword is present.
  */
 export function emailMatchesTab(
   keywords: Record<string, true | undefined>,
@@ -316,8 +327,7 @@ export function emailMatchesTab(
 ): boolean {
   const actual = emailCategory(keywords, derivedCategories);
   if (tabName === null) {
-    // Primary tab: no category keyword set.
-    return actual === null;
+    return actual === null || actual.toLowerCase() === PRIMARY_ROLE_NAME;
   }
   return actual === tabName;
 }
