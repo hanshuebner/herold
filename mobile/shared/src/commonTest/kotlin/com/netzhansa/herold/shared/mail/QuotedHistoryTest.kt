@@ -451,6 +451,100 @@ class QuotedHistoryTest {
     }
 
     @Test
+    fun keepsTheQuotedMessagesOwnReplyInsideTheFoldBeneathACitation() {
+        // The counterpart of the body above: text stands before the
+        // quoted region here too, but a citation introduces the region,
+        // so what it leads with is the quoted message's own top-posted
+        // reply and belongs behind the chip.
+        val html = folded(
+            "<p>My reply.</p><p>Mit freundlichen Gruessen</p>" +
+                "<div><p>Le 15 septembre 2026 a 18:21, Alice a ecrit:</p>" +
+                "<blockquote type=\"cite\"><p>What Alice wrote above her own quote.</p>" +
+                "<div class=\"moz-cite-prefix\">Am 14.09.26 um 08:00 schrieb bob@example.test:<br></div>" +
+                "<blockquote type=\"cite\">The oldest message.</blockquote></blockquote></div>",
+        )
+
+        assertBeforeFold(html, "My reply.")
+        assertBeforeFold(html, "Mit freundlichen Gruessen")
+        assertInsideFold(html, "Le 15 septembre 2026 a 18:21, Alice a ecrit:")
+        assertInsideFold(html, "What Alice wrote above her own quote.")
+        assertInsideFold(html, "The oldest message.")
+    }
+
+    @Test
+    fun findsTheCitationPastSeparatorsCommentsAndEmptyElements() {
+        // What sits between a citation and the region it introduces
+        // carries nothing: a comment, an empty span, whitespace and a
+        // line break do not break the tie between them.
+        val html = folded(
+            "<p>My reply.</p>" +
+                "<div><p>Le 15 septembre 2026 a 18:21, Alice a ecrit:</p>" +
+                "<!-- a comment -->\n  <span></span><br>" +
+                "<blockquote type=\"cite\"><p>What Alice wrote above her own quote.</p>" +
+                "<div class=\"moz-cite-prefix\">Am 14.09.26 um 08:00 schrieb bob@example.test:<br></div>" +
+                "<blockquote type=\"cite\">The oldest message.</blockquote></blockquote></div>",
+        )
+
+        assertBeforeFold(html, "My reply.")
+        assertInsideFold(html, "Le 15 septembre 2026 a 18:21, Alice a ecrit:")
+        assertInsideFold(html, "What Alice wrote above her own quote.")
+        assertInsideFold(html, "The oldest message.")
+    }
+
+    @Test
+    fun findsTheCitationSeveralLevelsAboveTheQuote() {
+        // The citation introduces a container two levels above the
+        // quote it belongs to; what it says about the quote holds
+        // however deep the client nested it.
+        val html = folded(
+            "<div><p>Le 15 septembre 2026 a 18:21, Alice a ecrit:</p><div><div>" +
+                "<blockquote type=\"cite\"><p>What Alice wrote above her own quote.</p>" +
+                "<div class=\"moz-cite-prefix\">Am 14.09.26 um 08:00 schrieb bob@example.test:<br></div>" +
+                "<blockquote type=\"cite\">The oldest message.</blockquote></blockquote>" +
+                "</div></div></div>",
+        )
+
+        assertInsideFold(html, "What Alice wrote above her own quote.")
+        assertInsideFold(html, "The oldest message.")
+    }
+
+    @Test
+    fun keepsTheReplyVisibleWhenTheSendersOwnLineReadsLikeAnAttribution() {
+        // A line the sender wrote in the shape of an attribution
+        // stands above a Thunderbird citation. It says nothing about
+        // what the citation div holds: the reply written into that div
+        // is still the sender's and still renders.
+        val html = folded(
+            "<p>Am 19.09.26 um 09:00 schrieb Bob:</p>" +
+                "<div class=\"moz-cite-prefix\">Hallo Jane,<br><br>das passt mir gut.<br><br>" +
+                "Am 20.09.26 um 14:12 schrieb " +
+                "<a href=\"mailto:jane@example.test\">jane@example.test</a>:<br></div>" +
+                "<blockquote type=\"cite\">Original quoted text.</blockquote>",
+        )
+
+        assertBeforeFold(html, "das passt mir gut.")
+        assertInsideFold(html, "Am 20.09.26 um 14:12 schrieb")
+        assertInsideFold(html, "Original quoted text.")
+    }
+
+    @Test
+    fun leavesAQuoteAboveTheCitationExpanded() {
+        // A quote the sender answered under keeps the whole body
+        // visible: the citation div below it carries their own text,
+        // so the message does not end in quoted history.
+        val html = folded(
+            "<blockquote type=\"cite\">Earlier quoted paragraph.</blockquote>" +
+                "<div class=\"moz-cite-prefix\">Hallo Jane,<br><br>das passt mir gut.<br><br>" +
+                "Am 20.09.26 um 14:12 schrieb " +
+                "<a href=\"mailto:jane@example.test\">jane@example.test</a>:<br></div>" +
+                "<blockquote type=\"cite\">Original quoted text.</blockquote>",
+        )
+
+        assertFalse(html.contains("<details"), "a body the sender wrote into folded")
+        assertContains(html, "das passt mir gut.")
+    }
+
+    @Test
     fun keepsTheSecondRegionsLeadingTextInsideTheFold() {
         // The fold is passed over the citation-prefix div, whose
         // attribution the heuristic does not know, and begins at the
