@@ -9,7 +9,7 @@
  * kind.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/svelte';
 import ListChip from './ListChip.svelte';
 import type { Email } from './types';
@@ -290,5 +290,78 @@ describe('ListChip: popover actions (REQ-LIST-11, 20..22)', () => {
     await fireEvent.mouseEnter(screen.getByTestId('list-chip-anchor'));
     await fireEvent.click(screen.getByText('mailingList.action.replyToList'));
     expect(composeMock.openReplyToList).toHaveBeenCalledWith(email, 'list@example.com');
+  });
+});
+
+describe('ListChip: popover escapes a clipping ancestor (issue #457)', () => {
+  // Mirrors MessageAccordion's `.from` sender row the chip actually
+  // renders inside: one line tall with `overflow: hidden` so the chip's
+  // own label can ellipsis (issue #415). A popover that opens below this
+  // row and stays a normal descendant of it is clipped away entirely --
+  // mounting the chip in isolation (as every other test in this file
+  // does) never exercises that clip, which is why those tests kept
+  // passing while the chip was unusable in the real thread view.
+  let clippingRow: HTMLDivElement;
+
+  beforeEach(() => {
+    clippingRow = document.createElement('div');
+    clippingRow.className = 'from';
+    clippingRow.style.overflow = 'hidden';
+    clippingRow.style.display = 'flex';
+    clippingRow.style.height = '20px';
+    clippingRow.style.lineHeight = '20px';
+    document.body.appendChild(clippingRow);
+  });
+
+  afterEach(() => {
+    clippingRow.remove();
+  });
+
+  it('renders the open popover outside the clipping row rather than as its descendant', async () => {
+    render(ListChip, {
+      target: clippingRow,
+      props: {
+        email: makeEmail({
+          'header:List-ID:asText': '<a.example.com>',
+          'header:List-Archive:asText': '<https://example.com/archive>',
+        }),
+      },
+    });
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    await fireEvent.click(screen.getByRole('button'));
+    const menu = screen.getByRole('menu');
+    // The defect: a popover that stays inside `clippingRow` is clipped
+    // by its `overflow: hidden` and never seen, even though it is in
+    // the DOM and `aria-expanded` is true.
+    expect(clippingRow.contains(menu)).toBe(false);
+    expect(document.body.contains(menu)).toBe(true);
+    expect(screen.getByText('mailingList.action.viewArchive')).toBeInTheDocument();
+  });
+
+  it('still shows the identifier and no-actions note when escaped from the clipping row', async () => {
+    render(ListChip, {
+      target: clippingRow,
+      props: {
+        email: makeEmail({ 'header:List-ID:asText': '<a.example.com>' }),
+      },
+    });
+    await fireEvent.click(screen.getByRole('button'));
+    const menu = screen.getByRole('menu');
+    expect(clippingRow.contains(menu)).toBe(false);
+    expect(screen.getByText('mailingList.noActions')).toBeInTheDocument();
+    expect(screen.getByTestId('list-chip-raw-id')).toHaveTextContent('a.example.com');
+  });
+
+  it('removes the portalled popover from the document when the component unmounts', async () => {
+    const { unmount } = render(ListChip, {
+      target: clippingRow,
+      props: {
+        email: makeEmail({ 'header:List-ID:asText': '<a.example.com>' }),
+      },
+    });
+    await fireEvent.click(screen.getByRole('button'));
+    expect(screen.getByRole('menu')).toBeInTheDocument();
+    unmount();
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
   });
 });

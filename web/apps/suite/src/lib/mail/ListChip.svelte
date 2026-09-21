@@ -81,6 +81,67 @@
   }
 
   /**
+   * The popover renders through a `document.body` portal (issue #457)
+   * rather than as a normal descendant of the chip anchor: the anchor
+   * sits inside MessageAccordion's `.from` sender row, which is one
+   * line tall with `overflow: hidden` so the chip's own label can
+   * ellipsis (issue #415). A popover opening below that one-line row
+   * is clipped away by the same rule that makes the label elide, so
+   * removing the clip is not an option -- the popover instead escapes
+   * the clipping ancestor entirely and is positioned `fixed` from the
+   * button's measured rect.
+   *
+   * A `position: fixed` portal has no layout relationship to the
+   * button the way the previous `position: absolute` child did, so its
+   * position has to be re-measured on every scroll and resize tick
+   * while it is open, and once more after it renders (a no-actions
+   * popover is narrower than one with actions, which can shift the
+   * right-edge clamp).
+   */
+  const POPOVER_GAP = 4; // --spacing-02
+  const VIEWPORT_MARGIN = 4;
+
+  let buttonEl = $state<HTMLButtonElement | null>(null);
+  let popoverEl = $state<HTMLDivElement | null>(null);
+  let position = $state<{ top: number; left: number }>({ top: 0, left: 0 });
+
+  function layoutPopover(): void {
+    if (!buttonEl) return;
+    const rect = buttonEl.getBoundingClientRect();
+    const width = popoverEl?.offsetWidth ?? 180;
+    const left = Math.max(
+      VIEWPORT_MARGIN,
+      Math.min(window.innerWidth - width - VIEWPORT_MARGIN, rect.left),
+    );
+    position = { top: rect.bottom + POPOVER_GAP, left };
+  }
+
+  $effect(() => {
+    if (!open) return;
+    layoutPopover();
+    const onViewportChange = (): void => layoutPopover();
+    const ro = new ResizeObserver(onViewportChange);
+    if (popoverEl) ro.observe(popoverEl);
+    window.addEventListener('scroll', onViewportChange, true);
+    window.addEventListener('resize', onViewportChange);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('scroll', onViewportChange, true);
+      window.removeEventListener('resize', onViewportChange);
+    };
+  });
+
+  /** Moves `node` to `document.body` on mount and detaches it on destroy. */
+  function portal(node: HTMLElement): { destroy(): void } {
+    document.body.appendChild(node);
+    return {
+      destroy(): void {
+        node.remove();
+      },
+    };
+  }
+
+  /**
    * Click and keyboard (Enter/Space) activation both open the popover
    * explicitly (issue #415) rather than toggling it: a real mouse click
    * is preceded by `mouseenter`, which has already opened it via
@@ -163,6 +224,7 @@
     role="presentation"
   >
     <button
+      bind:this={buttonEl}
       type="button"
       class="list-chip"
       aria-haspopup="true"
@@ -203,7 +265,18 @@
       </svg>
     </button>
     {#if open}
-      <div class="list-popover" role="menu">
+      <div
+        class="list-popover"
+        role="menu"
+        use:portal
+        bind:this={popoverEl}
+        style:top="{position.top}px"
+        style:left="{position.left}px"
+        onmouseenter={show}
+        onmouseleave={scheduleHide}
+        onfocusin={show}
+        onfocusout={scheduleHide}
+      >
         {#if archiveAction}
           <button type="button" role="menuitem" onclick={viewArchive}>
             {t('mailingList.action.viewArchive')}
@@ -283,10 +356,14 @@
     white-space: nowrap;
   }
 
+  /*
+   * `position: fixed` and no `top`/`left` here -- both are set inline
+   * from the button's measured rect (issue #457), since this element
+   * is portalled to `document.body` and has no layout relationship to
+   * the anchor a `position: absolute` child would have had.
+   */
   .list-popover {
-    position: absolute;
-    top: calc(100% + var(--spacing-02));
-    left: 0;
+    position: fixed;
     z-index: 200;
     display: flex;
     flex-direction: column;
