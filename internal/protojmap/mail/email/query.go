@@ -536,6 +536,29 @@ func messageInMailbox(m store.Message, mailboxID store.MailboxID) bool {
 	return false
 }
 
+// messageHasMailboxOutside reports whether m belongs to at least one
+// mailbox that is not in excluded, per RFC 8621 section 4.4.1:
+// "An Email must be in at least one Mailbox not in this list to match
+// the condition." (re #459: the prior matchConditionWithAttachments
+// rejected a message for being in ANY listed mailbox -- "in none of
+// these" -- which is the negation of the spec's "in at least one
+// other" and dropped a message filed in both Inbox and Trash from
+// every search that excluded Trash, even though it was still visible
+// in the Inbox.) Evaluated against the message's complete
+// mailbox-membership set (m.Mailboxes), same as messageInMailbox,
+// falling back to MailboxID when Mailboxes is empty.
+func messageHasMailboxOutside(m store.Message, excluded map[store.MailboxID]bool) bool {
+	if len(m.Mailboxes) == 0 {
+		return !excluded[m.MailboxID]
+	}
+	for _, mm := range m.Mailboxes {
+		if !excluded[mm.MailboxID] {
+			return true
+		}
+	}
+	return false
+}
+
 // matchConditionWithAttachments evaluates a FilterCondition against m
 // with precomputed blob filter data.
 func matchConditionWithAttachments(m store.Message, f *emailFilter, all []store.Message, fd *filterData) bool {
@@ -546,10 +569,14 @@ func matchConditionWithAttachments(m store.Message, f *emailFilter, all []store.
 		}
 	}
 	if len(f.InMailboxOtherThan) > 0 {
+		excluded := make(map[store.MailboxID]bool, len(f.InMailboxOtherThan))
 		for _, raw := range f.InMailboxOtherThan {
-			if id, ok := mailboxIDFromJMAP(raw); ok && messageInMailbox(m, id) {
-				return false
+			if id, ok := mailboxIDFromJMAP(raw); ok {
+				excluded[id] = true
 			}
+		}
+		if !messageHasMailboxOutside(m, excluded) {
+			return false
 		}
 	}
 	if f.Before != nil {

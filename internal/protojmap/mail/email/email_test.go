@@ -817,12 +817,21 @@ func testEmail_Query_AndOfTwoInMailbox_MatchesMultiMembershipMessage(t *testing.
 		t.Fatalf("AND(inMailbox label, OR(inMailbox junk, inMailbox other)) ids = %v, want [%s] (raw=%s)", resp.IDs, wantID, raw)
 	}
 
-	// AND(inMailbox label, NOT inMailboxOtherThan [label, junk]) also
-	// matches the multi-membership message -- it is in at least one of
-	// {label, junk}. (The label-only message also satisfies this same
-	// filter for the same reason, so this checks presence rather than
-	// exclusivity; exclusivity of the multi-membership match is already
-	// covered by the AND(inMailbox label, inMailbox junk) case above.)
+	// AND(inMailbox label, NOT inMailboxOtherThan [label, junk]) matches
+	// neither message (re #459): insertMessage always also files a new
+	// message in f.inbox, so both m and the label-only message carry a
+	// membership -- Inbox -- outside {label, junk}. Per RFC 8621 section
+	// 4.4.1, inMailboxOtherThan[label,junk] is therefore true for both
+	// ("in at least one Mailbox not in this list"), so its NOT is false
+	// and the AND cannot match either message. Before #459 fixed
+	// matchConditionWithAttachments to the spec's "at least one other"
+	// test, this filter evaluated inMailboxOtherThan as "in none of
+	// these", which m and the label-only message both failed (each has
+	// a membership in the list) regardless of their Inbox membership --
+	// so NOT inverted that failure into a match. The union-merge
+	// coverage this block originally pinned (re #402: matching evaluated
+	// against the complete mailbox set, not one per-membership row) is
+	// still exercised, just with the corrected expected outcome.
 	_, raw = f.invoke(t, "Email/query", map[string]any{
 		"accountId": protojmap.AccountIDForPrincipal(f.pid),
 		"filter": map[string]any{
@@ -841,14 +850,8 @@ func testEmail_Query_AndOfTwoInMailbox_MatchesMultiMembershipMessage(t *testing.
 	if err := json.Unmarshal(raw, &resp); err != nil {
 		t.Fatalf("unmarshal AND(label,NOT inMailboxOtherThan): %v: %s", err, raw)
 	}
-	found := false
-	for _, id := range resp.IDs {
-		if id == wantID {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("AND(inMailbox label, NOT inMailboxOtherThan [label, junk]) ids = %v, want to include %s (raw=%s)", resp.IDs, wantID, raw)
+	if len(resp.IDs) != 0 {
+		t.Fatalf("AND(inMailbox label, NOT inMailboxOtherThan [label, junk]) ids = %v, want [] (raw=%s)", resp.IDs, raw)
 	}
 
 	// AND(inMailbox label, inMailbox other) matches nothing: the
@@ -868,6 +871,115 @@ func testEmail_Query_AndOfTwoInMailbox_MatchesMultiMembershipMessage(t *testing.
 	}
 	if len(resp.IDs) != 0 {
 		t.Fatalf("AND(inMailbox label, inMailbox other) ids = %v, want [] (raw=%s)", resp.IDs, raw)
+	}
+}
+
+// TestEmail_Query_InMailboxOtherThan_MatchesMessageAlsoInExcludedMailbox
+// pins re #459: a message filed in both Inbox and Trash must still
+// match an `inMailboxOtherThan: [Trash, Junk]` condition, per RFC 8621
+// section 4.4.1 ("An Email must be in at least one Mailbox not in this
+// list to match the condition"). Before the fix,
+// matchConditionWithAttachments rejected a message for being in ANY
+// listed mailbox -- "in none of these" rather than "in at least one
+// other" -- so this exact message, visible in the Inbox, disappeared
+// from every search that excluded Trash. The filter also carries a
+// `text` predicate matching all three messages below: `text` is not
+// SQL-pushable (fastquery.go's mergeFlatFilterIntoOpts), so the request
+// is forced through matchConditionWithAttachments -- the reported
+// Android search used the same shape (`{text, inMailboxOtherThan}`) for
+// the same reason. A bare `inMailboxOtherThan` filter with no other
+// unpushable predicate instead reaches the SQL fast path
+// (Metadata.QueryEmailFast), which implements the opposite semantics on
+// purpose per #310 and is out of scope here (see the issue comment).
+func TestEmail_Query_InMailboxOtherThan_MatchesMessageAlsoInExcludedMailbox(t *testing.T) {
+	testEmail_Query_InMailboxOtherThan_MatchesMessageAlsoInExcludedMailbox(t, setupFixture(t))
+}
+
+// TestEmail_Query_InMailboxOtherThan_MatchesMessageAlsoInExcludedMailbox_Postgres
+// is the Postgres leg: the fix touches matchConditionWithAttachments,
+// which is backend-agnostic Go code layered over the store.Message
+// union listAccountMessages/loadMessageForPrincipal already produce, so
+// both backends need direct coverage. Skips when HEROLD_PG_DSN is not
+// set.
+func TestEmail_Query_InMailboxOtherThan_MatchesMessageAlsoInExcludedMailbox_Postgres(t *testing.T) {
+	testEmail_Query_InMailboxOtherThan_MatchesMessageAlsoInExcludedMailbox(t, setupFixturePostgres(t))
+}
+
+func testEmail_Query_InMailboxOtherThan_MatchesMessageAlsoInExcludedMailbox(t *testing.T, f *fixture) {
+	ctx := context.Background()
+
+	trash, err := f.srv.Store.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: f.pid,
+		Name:        "Trash",
+		Attributes:  store.MailboxAttrTrash,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox Trash: %v", err)
+	}
+	junk, err := f.srv.Store.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: f.pid,
+		Name:        "Junk",
+		Attributes:  store.MailboxAttrJunk,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox Junk: %v", err)
+	}
+
+	// dual: filed in both Inbox (insertMessage's default) and Trash.
+	// Must match: it has a membership (Inbox) outside the exclusion list.
+	dual := f.insertMessage(t,
+		"From: a@example.test\r\nTo: b@example.test\r\nSubject: dual\r\n\r\nbody",
+		"dual", "a@example.test", "b@example.test", nil, "quisquam searchterm dual")
+	if _, _, err := f.srv.Store.Meta().AddMessageToMailbox(ctx, dual.ID, trash.ID); err != nil {
+		t.Fatalf("AddMessageToMailbox trash (dual): %v", err)
+	}
+
+	// trashOnly: filed in Inbox then removed, leaving only Trash. Must
+	// stay excluded: every membership it has is in the exclusion list.
+	trashOnly := f.insertMessage(t,
+		"From: a@example.test\r\nTo: b@example.test\r\nSubject: trashOnly\r\n\r\nbody",
+		"trashOnly", "a@example.test", "b@example.test", nil, "quisquam searchterm trashonly")
+	if _, _, err := f.srv.Store.Meta().AddMessageToMailbox(ctx, trashOnly.ID, trash.ID); err != nil {
+		t.Fatalf("AddMessageToMailbox trash (trashOnly): %v", err)
+	}
+	if err := f.srv.Store.Meta().RemoveMessageFromMailbox(ctx, trashOnly.ID, f.inbox.ID); err != nil {
+		t.Fatalf("RemoveMessageFromMailbox inbox (trashOnly): %v", err)
+	}
+
+	// noMailbox: filed in Inbox then removed from it. RemoveMessageFromMailbox
+	// deletes the messages row outright once its last membership is gone
+	// (storesqlite/storepg both purge on remaining==0), so a message can
+	// never persist with zero real mailbox memberships; this exercises
+	// that removing the only mailbox leaves nothing for the query to find,
+	// which is what "in no mailbox at all is still excluded" reduces to
+	// in practice.
+	noMailbox := f.insertMessage(t,
+		"From: a@example.test\r\nTo: b@example.test\r\nSubject: noMailbox\r\n\r\nbody",
+		"noMailbox", "a@example.test", "b@example.test", nil, "quisquam searchterm nomailbox")
+	if err := f.srv.Store.Meta().RemoveMessageFromMailbox(ctx, noMailbox.ID, f.inbox.ID); err != nil {
+		t.Fatalf("RemoveMessageFromMailbox inbox (noMailbox): %v", err)
+	}
+
+	trashJmapID := fmt.Sprintf("%d", trash.ID)
+	junkJmapID := fmt.Sprintf("%d", junk.ID)
+
+	_, raw := f.invoke(t, "Email/query", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"filter": map[string]any{
+			"text":               "quisquam searchterm",
+			"inMailboxOtherThan": []string{trashJmapID, junkJmapID},
+		},
+	})
+	var resp struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	wantID := fmt.Sprintf("%d", dual.ID)
+	if len(resp.IDs) != 1 || resp.IDs[0] != wantID {
+		t.Fatalf("ids = %v, want [%s] (the Inbox+Trash message; trashOnly %d and noMailbox %d must stay excluded) (raw=%s)",
+			resp.IDs, wantID, trashOnly.ID, noMailbox.ID, raw)
 	}
 }
 
