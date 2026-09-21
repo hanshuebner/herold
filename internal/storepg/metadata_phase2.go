@@ -2676,14 +2676,77 @@ func ensureCategoryLabelMailboxesPG(ctx context.Context, tx pgx.Tx, now time.Tim
 // not, so a principal whose persisted derived-categories row pre-dates the
 // label-mailbox feature still gets its mailboxes on the next classified
 // message rather than only on the next change.
+//
+// The steady state -- every derived category already has a label
+// mailbox -- is checked with a plain read on m.s.pool first, outside any
+// transaction. Only when that read finds a missing name does this open
+// the write transaction (runTx), so the common case of a classifier
+// repeatedly returning the same category set costs one read per
+// message, not one write transaction.
 func (m *metadata) EnsureCategoryLabelMailboxes(ctx context.Context, pid store.PrincipalID, categories []string) error {
 	cats := sanitiseDerivedCategories(categories)
 	if len(cats) == 0 {
 		return nil
 	}
+	complete, err := categoryLabelMailboxesCompletePG(ctx, m.s.pool, pid, cats)
+	if err != nil {
+		return err
+	}
+	if complete {
+		return nil
+	}
 	return m.runTx(ctx, func(tx pgx.Tx) error {
 		return ensureCategoryLabelMailboxesPG(ctx, tx, m.s.clock.Now().UTC(), m.s.randReader, pid, cats)
 	})
+}
+
+// categoryLabelMailboxesCompletePG reports whether every name in cats
+// already has a backing mailbox for pid, via a plain read on q (a pool
+// or a transaction). It is the read-only fast path EnsureCategoryLabel
+// Mailboxes uses to skip opening a write transaction when there is
+// nothing to create.
+func categoryLabelMailboxesCompletePG(ctx context.Context, q interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}, pid store.PrincipalID, cats []string) (bool, error) {
+	want := make(map[string]bool, len(cats))
+	for _, name := range cats {
+		if name != "" {
+			want[name] = true
+		}
+	}
+	if len(want) == 0 {
+		return true, nil
+	}
+	placeholders := make([]string, 0, len(want))
+	args := make([]any, 0, len(want)+1)
+	args = append(args, int64(pid))
+	i := 2
+	for name := range want {
+		placeholders = append(placeholders, fmt.Sprintf("$%d", i))
+		args = append(args, name)
+		i++
+	}
+	rows, err := q.Query(ctx,
+		`SELECT name FROM mailboxes WHERE principal_id = $1 AND name IN (`+strings.Join(placeholders, ",")+`)`,
+		args...)
+	if err != nil {
+		return false, mapErr(err)
+	}
+	defer rows.Close()
+	found := 0
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return false, mapErr(err)
+		}
+		if want[name] {
+			found++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, mapErr(err)
+	}
+	return found == len(want), nil
 }
 
 // sanitiseDerivedCategories enforces the per-entry and total bounds defined
@@ -2792,10 +2855,16 @@ func (m *metadata) SetLLMClassification(ctx context.Context, rec store.LLMClassi
 // is supplementary state that self-heals on the next classified
 // message, matching the existing best-effort seed write in
 // GetCategorisationConfig, and must never turn a successful
-// classification-record write into a caller-visible failure.
+// classification-record write into a caller-visible failure. A failed
+// heal is still logged at warn level (via m.s.logger, nil-safe) so a
+// broken store is visible instead of silently discarded.
 func (m *metadata) ensureDerivedCategoryFromAssignment(ctx context.Context, pid store.PrincipalID, assigned string) {
 	cfg, err := m.GetCategorisationConfig(ctx, pid)
 	if err != nil {
+		if m.s.logger != nil {
+			m.s.logger.Warn("storepg: category label mailbox heal: load config failed",
+				"principal_id", int64(pid), "err", err.Error())
+		}
 		return
 	}
 	names := make([]string, 0, len(cfg.CategorySet)+1)
@@ -2814,10 +2883,16 @@ func (m *metadata) ensureDerivedCategoryFromAssignment(ctx context.Context, pid 
 		return
 	}
 	if stringSliceEqualPG(names, cfg.DerivedCategories) {
-		_ = m.EnsureCategoryLabelMailboxes(ctx, pid, names)
+		if err := m.EnsureCategoryLabelMailboxes(ctx, pid, names); err != nil && m.s.logger != nil {
+			m.s.logger.Warn("storepg: category label mailbox heal failed",
+				"principal_id", int64(pid), "err", err.Error())
+		}
 		return
 	}
-	_, _ = m.SetDerivedCategories(ctx, pid, names, cfg.DerivedCategoriesEpoch)
+	if _, err := m.SetDerivedCategories(ctx, pid, names, cfg.DerivedCategoriesEpoch); err != nil && m.s.logger != nil {
+		m.s.logger.Warn("storepg: category label mailbox heal via SetDerivedCategories failed",
+			"principal_id", int64(pid), "err", err.Error())
+	}
 }
 
 // stringSliceEqualPG reports whether a and b are element-wise equal.
