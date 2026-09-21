@@ -2091,6 +2091,21 @@ func (m *metadata) CountInternalizePendingTotal(ctx context.Context) (uint64, er
 }
 
 // AddMessageToMailbox adds an existing message to mailboxID.
+// AddMessageToMailbox adds an existing message to mailboxID.
+//
+// When mailboxID does not itself carry the Trash attribute, adding it
+// un-trashes the message: every membership the message currently holds
+// in a Trash-attributed mailbox is removed and the pre-trash snapshot
+// replays, exactly as RemoveMessageFromMailbox already does when Trash
+// is removed directly. This is the primitive-level half of re #460:
+// every caller of this method -- the JMAP Email/set general path's
+// single-key "mailboxIds/<id>: true" patch included -- converges here,
+// so filing a trashed message anywhere (a specific mailbox or a label)
+// always means "this message is no longer trash", matching what a user
+// filing a message intends, rather than leaving it in both. Guarding
+// only the JMAP layer would leave every other caller (admin tools,
+// IMAP import, the snooze worker) able to reproduce the impossible
+// Trash-plus-non-Trash state the ticket reported.
 func (m *metadata) AddMessageToMailbox(ctx context.Context, msgID store.MessageID, mailboxID store.MailboxID) (store.UID, store.ModSeq, error) {
 	now := m.s.clock.Now().UTC()
 	var allocUID store.UID
@@ -2115,8 +2130,9 @@ func (m *metadata) AddMessageToMailbox(ctx context.Context, msgID store.MessageI
 			`SELECT uidnext, highest_modseq, attributes FROM mailboxes WHERE id = $1`, int64(mailboxID)).Scan(&uidNext, &highest, &attrs); err != nil {
 			return mapErr(err)
 		}
+		isTargetTrash := store.MailboxAttributes(attrs)&store.MailboxAttrTrash != 0
 		// Snapshot pre-trash mailboxes if the target is Trash.
-		if store.MailboxAttributes(attrs)&store.MailboxAttrTrash != 0 {
+		if isTargetTrash {
 			if err := pgSnapshotPretrashMailboxes(ctx, tx, int64(msgID), int64(mailboxID)); err != nil {
 				return err
 			}
@@ -2134,13 +2150,74 @@ func (m *metadata) AddMessageToMailbox(ctx context.Context, msgID store.MessageI
 			int64(allocModSeq), usMicros(now), int64(mailboxID)); err != nil {
 			return mapErr(err)
 		}
-		return appendStateChange(ctx, tx, store.PrincipalID(pid),
-			store.EntityKindEmail, uint64(msgID), uint64(mailboxID), store.ChangeOpCreated, now)
+		if err := appendStateChange(ctx, tx, store.PrincipalID(pid),
+			store.EntityKindEmail, uint64(msgID), uint64(mailboxID), store.ChangeOpCreated, now); err != nil {
+			return err
+		}
+		if isTargetTrash {
+			return nil
+		}
+		return pgRemoveTrashMembershipsAndReplay(ctx, tx, int64(msgID), int64(mailboxID), pid, now)
 	})
 	if err != nil {
 		return 0, 0, err
 	}
 	return allocUID, allocModSeq, nil
+}
+
+// pgRemoveTrashMembershipsAndReplay deletes every membership msgID
+// holds in a Trash-attributed mailbox other than excludeMailboxID (the
+// target just added), then replays the pre-trash snapshot -- the same
+// pair RemoveMessageFromMailbox performs when Trash is removed
+// directly. Called by AddMessageToMailbox so un-trashing is uniform
+// regardless of which primitive removed the last Trash membership (re
+// #460).
+func pgRemoveTrashMembershipsAndReplay(
+	ctx context.Context, tx pgx.Tx, msgID, excludeMailboxID int64, pid int64, now time.Time,
+) error {
+	rows, err := tx.Query(ctx, `
+		SELECT mm.mailbox_id FROM message_mailboxes mm
+		  JOIN mailboxes mb ON mb.id = mm.mailbox_id
+		 WHERE mm.message_id = $1 AND mm.mailbox_id != $2 AND (mb.attributes & $3) != 0`,
+		msgID, excludeMailboxID, int64(store.MailboxAttrTrash))
+	if err != nil {
+		return err
+	}
+	// Drain into a slice before issuing further statements on tx: pgx
+	// pins the connection while a Rows cursor is open.
+	var trashIDs []int64
+	for rows.Next() {
+		var mbID int64
+		if err := rows.Scan(&mbID); err != nil {
+			rows.Close()
+			return err
+		}
+		trashIDs = append(trashIDs, mbID)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(trashIDs) == 0 {
+		return nil
+	}
+	for _, trashID := range trashIDs {
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM message_mailboxes WHERE message_id = $1 AND mailbox_id = $2`,
+			msgID, trashID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE mailboxes SET highest_modseq = highest_modseq + 1, updated_at_us = $1 WHERE id = $2`,
+			usMicros(now), trashID); err != nil {
+			return err
+		}
+		if err := appendStateChange(ctx, tx, store.PrincipalID(pid),
+			store.EntityKindEmail, uint64(msgID), uint64(trashID), store.ChangeOpDestroyed, now); err != nil {
+			return err
+		}
+	}
+	return pgReplayPretrashMailboxes(ctx, tx, msgID, now)
 }
 
 // RemoveMessageFromMailbox removes the (msgID, mailboxID) membership row.

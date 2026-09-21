@@ -12712,11 +12712,29 @@ func assertNoTrashDualMembership(t *testing.T, msg store.Message, trashID store.
 	}
 }
 
-// testTrashInvariantNoDualMembershipAfterMoveOrRestore runs several
-// representative move/restore sequences and checks the Trash-exclusive
-// invariant after every single step -- a property over the operations
-// rather than one example, since the ticket's own shape is that some
-// unenumerated path produced the impossible state.
+// testTrashInvariantNoDualMembershipAfterMoveOrRestore is a property
+// over the store's complete membership-mutation surface, not a
+// curated list of examples. AddMessageToMailbox, RemoveMessageFromMailbox
+// and MoveMessage are the only three store primitives that can change
+// which mailboxes a message belongs to; the loop below applies each of
+// them, from a currently-trashed message, to every other mailbox the
+// fixture holds, and asserts the Trash-exclusivity invariant after
+// every single call. Exhausting the primitive x target grid is what
+// "property" means at this layer: there is no fourth mutator to miss.
+//
+// A first round of this fix (re #460) closed only the JMAP
+// applyMailboxDiff single-add/single-remove fast path (MoveMessage)
+// and the snooze wake worker; it left AddMessageToMailbox itself
+// unguarded, so a bare "mailboxIds/<id>: true" patch with no
+// accompanying removal -- which routes to AddMessageToMailbox alone --
+// still produced the reported dual membership. An independent
+// verifier reproduced that gap directly against the shipped commit
+// with the probe named verifier_probe_MoveMessage_then_bare_AddMessageToMailbox
+// below. The fix now lives in AddMessageToMailbox itself: adding a
+// non-Trash mailbox to a message currently in Trash un-trashes it
+// (removes every Trash membership and replays the pre-trash snapshot),
+// so every caller converges on the same invariant regardless of which
+// primitive it calls.
 func testTrashInvariantNoDualMembershipAfterMoveOrRestore(t *testing.T, s store.Store) {
 	ctx := ctxT(t)
 	p := mustInsertPrincipal(t, s, "trash-invariant@example.com")
@@ -12724,6 +12742,7 @@ func testTrashInvariantNoDualMembershipAfterMoveOrRestore(t *testing.T, s store.
 	sent := mustInsertMailbox(t, s, p.ID, "Sent")
 	labelA := mustInsertMailbox(t, s, p.ID, "LabelA")
 	trash := mustInsertTrashMailbox(t, s, p.ID)
+	targets := []store.Mailbox{inbox, sent, labelA}
 
 	getMsg := func(id store.MessageID) store.Message {
 		t.Helper()
@@ -12734,7 +12753,120 @@ func testTrashInvariantNoDualMembershipAfterMoveOrRestore(t *testing.T, s store.
 		return m
 	}
 
-	// Scenario 1: a message snoozed before it was trashed (MoveMessage
+	// trashedMessage inserts a message into origin and trashes it via
+	// MoveMessage, so its pre-trash snapshot names origin -- every
+	// subsequent restore in this test therefore has a real snapshot to
+	// replay, not an empty one.
+	trashedMessage := func(t *testing.T, origin store.Mailbox) store.MessageID {
+		t.Helper()
+		id := mustInsertSingleMsg(t, s, p.ID, origin)
+		if err := s.Meta().MoveMessage(ctx, id, origin.ID, trash.ID); err != nil {
+			t.Fatalf("MoveMessage(%s->trash): %v", origin.Name, err)
+		}
+		assertNoTrashDualMembership(t, getMsg(id), trash.ID, "after trash")
+		return id
+	}
+
+	// The exhaustive grid: every membership-changing primitive that
+	// can move a trashed message toward a non-Trash mailbox, against
+	// every mailbox the fixture holds.
+	type primitive struct {
+		name  string
+		apply func(id store.MessageID, target store.MailboxID) error
+	}
+	primitives := []primitive{
+		{"AddMessageToMailbox", func(id store.MessageID, target store.MailboxID) error {
+			_, _, err := s.Meta().AddMessageToMailbox(ctx, id, target)
+			return err
+		}},
+		{"MoveMessage", func(id store.MessageID, target store.MailboxID) error {
+			return s.Meta().MoveMessage(ctx, id, trash.ID, target)
+		}},
+	}
+	for _, prim := range primitives {
+		for _, target := range targets {
+			prim, target := prim, target
+			t.Run(prim.name+"_trash_to_"+target.Name, func(t *testing.T) {
+				id := trashedMessage(t, sent)
+				if err := prim.apply(id, target.ID); err != nil {
+					t.Fatalf("%s(trash->%s): %v", prim.name, target.Name, err)
+				}
+				m := getMsg(id)
+				assertNoTrashDualMembership(t, m, trash.ID, "after "+prim.name+" to "+target.Name)
+				if messageInMailbox(m, trash.ID) {
+					t.Fatalf("%s: message still in Trash: %v", prim.name, m.Mailboxes)
+				}
+				if !messageInMailbox(m, target.ID) {
+					t.Fatalf("%s: message missing target %s: %v", prim.name, target.Name, m.Mailboxes)
+				}
+			})
+		}
+	}
+
+	// The third and last membership-changing primitive, which takes no
+	// target: a plain restore.
+	t.Run("RemoveMessageFromMailbox_trash", func(t *testing.T) {
+		id := trashedMessage(t, sent)
+		if err := s.Meta().RemoveMessageFromMailbox(ctx, id, trash.ID); err != nil {
+			t.Fatalf("RemoveMessageFromMailbox(trash): %v", err)
+		}
+		m := getMsg(id)
+		assertNoTrashDualMembership(t, m, trash.ID, "after RemoveMessageFromMailbox")
+		if messageInMailbox(m, trash.ID) {
+			t.Fatalf("message still in Trash after restore: %v", m.Mailboxes)
+		}
+	})
+
+	// The verifier's exact probe shape (re #460, round 2): MoveMessage
+	// into Trash, then a bare AddMessageToMailbox of a non-Trash
+	// mailbox with no accompanying remove in the same call -- the
+	// shape a single-key JMAP patch ("mailboxIds/<id>: true", no
+	// removal) produces, which bypasses applyMailboxDiff's
+	// single-add/single-remove MoveMessage fast path entirely. Named
+	// and kept separate from the grid above so the exact reported
+	// shape has a test that says so.
+	t.Run("verifier_probe_MoveMessage_then_bare_AddMessageToMailbox", func(t *testing.T) {
+		id := mustInsertSingleMsg(t, s, p.ID, sent)
+		if err := s.Meta().MoveMessage(ctx, id, sent.ID, trash.ID); err != nil {
+			t.Fatalf("MoveMessage(sent->trash): %v", err)
+		}
+		if _, _, err := s.Meta().AddMessageToMailbox(ctx, id, inbox.ID); err != nil {
+			t.Fatalf("AddMessageToMailbox(inbox): %v", err)
+		}
+		m := getMsg(id)
+		assertNoTrashDualMembership(t, m, trash.ID, "after MoveMessage(trash) + bare AddMessageToMailbox")
+		if messageInMailbox(m, trash.ID) {
+			t.Fatalf("message still in Trash after bare add: %v", m.Mailboxes)
+		}
+		if !messageInMailbox(m, inbox.ID) {
+			t.Fatalf("message missing Inbox after bare add: %v", m.Mailboxes)
+		}
+	})
+
+	// Adding a LABEL (a plain custom mailbox, not a role-carrying
+	// destination) to a trashed message is the same AddMessageToMailbox
+	// call as adding Inbox, so it un-trashes under the same rule: a
+	// message filed anywhere is no longer trash. Stated explicitly (re
+	// #460, round 2) because the alternative -- refusing the add
+	// outright -- would need a different justification for exactly this
+	// case, and the ticket asked which rule was chosen to be spelled
+	// out for labels too.
+	t.Run("adding_a_label_to_a_trashed_message_untrashes_it", func(t *testing.T) {
+		id := trashedMessage(t, sent)
+		if _, _, err := s.Meta().AddMessageToMailbox(ctx, id, labelA.ID); err != nil {
+			t.Fatalf("AddMessageToMailbox(labelA): %v", err)
+		}
+		m := getMsg(id)
+		assertNoTrashDualMembership(t, m, trash.ID, "after adding a label")
+		if messageInMailbox(m, trash.ID) {
+			t.Fatalf("message still in Trash after label add: %v", m.Mailboxes)
+		}
+		if !messageInMailbox(m, labelA.ID) {
+			t.Fatalf("message missing label after add: %v", m.Mailboxes)
+		}
+	})
+
+	// Scenario: a message snoozed before it was trashed (MoveMessage
 	// fast path), then moved straight back to the Inbox (the other
 	// MoveMessage fast path). MoveMessage out of Trash also replays the
 	// pre-trash snapshot (the label-preserving Restore of issue #29:
@@ -12766,7 +12898,7 @@ func testTrashInvariantNoDualMembershipAfterMoveOrRestore(t *testing.T, s store.
 		}
 	})
 
-	// Scenario 1b: the ticket's own round trip -- a message trashed
+	// The ticket's own round trip -- a message trashed
 	// straight from the Inbox (its pre-trash snapshot is therefore
 	// {Inbox} itself, the mailbox MoveMessage snapshots before deleting
 	// the source row) and moved back to the Inbox. Replay's "already a
@@ -12793,7 +12925,7 @@ func testTrashInvariantNoDualMembershipAfterMoveOrRestore(t *testing.T, s store.
 		}
 	})
 
-	// Scenario 2: multi-mailbox trash via the general JMAP path (add
+	// Multi-mailbox trash via the general JMAP path (add
 	// Trash, then remove every other membership), then restore by
 	// removing Trash (which replays the pre-trash snapshot). The
 	// invariant is checked once the client-visible trash operation
@@ -12839,7 +12971,7 @@ func testTrashInvariantNoDualMembershipAfterMoveOrRestore(t *testing.T, s store.
 		}
 	})
 
-	// Scenario 3: the production sequence (re #460) -- a snoozed
+	// The production sequence (re #460) -- a snoozed
 	// message is trashed, and its deadline elapses. Once MoveMessage
 	// clears the carried snooze, the message never reappears in
 	// ListDueSnoozedMessages, so nothing can ever add a second
