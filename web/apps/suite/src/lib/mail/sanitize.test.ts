@@ -1674,6 +1674,43 @@ describe('sanitizeHtml — quoted-history collapse', () => {
       expect(quotePos).toBeLessThan(detailsEnd);
     });
   });
+
+  // Known gap in isBeneathACitation (see its doc comment, re #448 fourth
+  // follow-up): the ancestor walk gates on isQuoteStartNode, which for a
+  // plain paragraph reduces to a match against the shared isAttributionLine
+  // regex. Ordinary prose that happens to parse as an attribution line,
+  // standing before a genuine moz-cite-prefix div, folds the whole div --
+  // the sender's own fresh text included -- because the walk cannot tell
+  // that prose apart from a real citation introducer. This is
+  // byte-identical to the pre-#448 baseline (cc5721a7): a long-standing
+  // weakness of isAttributionLine, not a regression from any #448 commit,
+  // and it is intentionally NOT fixed here -- it is scoped as its own,
+  // separately tracked defect so the fix and its acceptance test can be
+  // reviewed on their own. This fixture pins CURRENT behaviour so the gap
+  // does not silently change (in either direction) without that change
+  // being noticed.
+  describe('known gap: ordinary prose matching the attribution regex before a genuine citation div (tracked separately, not fixed by #448)', () => {
+    it('pins current behaviour: the whole div, sender text included, folds along with the false-positive "wrote:" paragraph', () => {
+      const html =
+        '<p>On the anniversary, my grandmother always wrote:</p>\n' +
+        '<div class="moz-cite-prefix">Hallo Jane,<br><br>das passt mir gut.<br><br>Am 20.09.26 um 14:12 schrieb ' +
+        '<a class="moz-txt-link-abbreviated" href="mailto:jane@example.test">jane@example.test</a>:<br></div>\n' +
+        '<blockquote type="cite">Original quoted text.</blockquote>';
+      const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+      const detailsStart = body.indexOf('<details class="herold-quoted">');
+      expect(detailsStart).toBe(0);
+      // Pinned (undesired) current behaviour: all three pieces of text --
+      // the false-positive introducer AND the sender's own two lines --
+      // are inside the fold, because isBeneathACitation reads the
+      // preceding paragraph as a real citation.
+      expect(body).toContain(
+        '<details class="herold-quoted"><summary aria-label="Show trimmed content"></summary>' +
+          '<p>On the anniversary, my grandmother always wrote:</p>',
+      );
+      expect(body.indexOf('Hallo Jane,')).toBeGreaterThan(detailsStart);
+      expect(body.indexOf('das passt mir gut.')).toBeGreaterThan(detailsStart);
+    });
+  });
 });
 
 describe('sanitizeHtml — script/style filters', () => {

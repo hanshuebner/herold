@@ -1978,31 +1978,47 @@ function isAttributionNode(node: Node): boolean {
  * True when `candidate` is already beneath a citation somewhere up its own
  * ancestor chain (re #448 third follow-up).
  *
- * Where the sender's own text can be is a question of STRUCTURE, not of how
- * much text happens to precede `candidate` somewhere in the document. Walk
- * from `candidate` up through its ancestors; at each level, if the nearest
- * non-empty preceding sibling is itself a quote-start marker (an
- * attribution line, a further quote-classed element, or a bundling
- * wrapper — the same `isQuoteStartNode` test `splitLeadingFreshContent`
- * uses on a candidate's own children), that marker is the citation
- * introducing the level `candidate` sits inside, and everything `candidate`
- * carries — however deeply nested — is the correspondent's own words, not
- * the sender's: `<p>reply</p><div><p>Le 15 septembre... a ecrit:</p>
- * <blockquote><p>Q5i</p>...` has the inner `<blockquote>` as the sole
- * candidate `findFirstQuotedRegion` matches, but the paragraph immediately
- * ahead of it INSIDE THE SAME `<div>` is the outer level's attribution, so
- * `splitLeadingFreshContent` must not treat the blockquote's own children
- * as fresh.
+ * The test walks from `candidate` up through its ancestors; at each level,
+ * it checks the nearest non-empty preceding sibling with `isQuoteStartNode`
+ * — the same test `splitLeadingFreshContent` uses on a candidate's own
+ * children (a further quote-classed element, a bundling wrapper, or —
+ * critically for a plain `<p>` — a text match against the shared
+ * `isAttributionLine` regex). If that sibling qualifies at any level, it is
+ * the citation introducing the level `candidate` sits inside, and
+ * everything `candidate` carries — however deeply nested — is treated as
+ * the correspondent's own words: `<p>reply</p><div><p>Le 15 septembre...
+ * a ecrit:</p><blockquote><p>Q5i</p>...` has the inner `<blockquote>` as
+ * the sole candidate `findFirstQuotedRegion` matches, but the paragraph
+ * immediately ahead of it INSIDE THE SAME `<div>` is the outer level's
+ * attribution, so `splitLeadingFreshContent` must not treat the
+ * blockquote's own children as fresh.
  *
- * This is deliberately narrower than asking whether ANY readable text
- * precedes `candidate` in the whole document: an unrelated paragraph that
+ * This walks ANCESTRY, not document position: an unrelated paragraph that
  * merely happens to sit earlier in the document, outside anything that
  * introduces `candidate`, does not disqualify `candidate`'s own leading
- * children from being genuinely fresh — `<p>Fresh sender line</p><div
- * class="moz-cite-prefix">Hallo Jane,...Am 20.09.26 um 14:12 schrieb
- * ...:</div><blockquote>...` has the div as the sole (and top-level)
- * candidate, with no citation introducing it at any ancestor level, so its
- * own "Hallo Jane," text is still the sender's to lift out.
+ * children — `<p>Fresh sender line</p><div class="moz-cite-prefix">Hallo
+ * Jane,...Am 20.09.26 um 14:12 schrieb ...:</div><blockquote>...` has the
+ * div as the sole (and top-level) candidate, with no citation introducing
+ * it at any ancestor level, so its own "Hallo Jane," text is still the
+ * sender's to lift out (re #448 fourth follow-up: a whole-document
+ * "does anything precede candidate" predecessor of this function failed
+ * exactly this case).
+ *
+ * The test is therefore structural modulo the `isAttributionLine` regex it
+ * calls through `isQuoteStartNode`, not purely structural: it inherits
+ * that regex's own false positives at this new call site, with a wider
+ * blast radius than the regex's original single-node use (folding just the
+ * matched line) — here a false-positive match on the PRECEDING SIBLING
+ * disqualifies splitting the CANDIDATE's own children, so the candidate's
+ * genuinely fresh text folds away with it. Known instance, tracked as a
+ * separate, dedicated defect rather than fixed here (see the fixture below
+ * this function): ordinary prose that happens to parse as an attribution
+ * line — "On the anniversary, my grandmother always wrote:" — standing
+ * before a genuine `moz-cite-prefix` div carrying the sender's own fresh
+ * text folds the whole div, sender's text included. This is
+ * byte-identical to the pre-#448 baseline (`cc5721a7`): a long-standing
+ * weakness of `isAttributionLine` that this ticket neither caused nor
+ * cures, not a regression from any #448 commit.
  */
 function isBeneathACitation(candidate: Element): boolean {
   let cur: Node = candidate;
