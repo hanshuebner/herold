@@ -22,6 +22,16 @@
 // headers, body) for assertions that the server honoured RFC 8058's
 // POST shape (no cookies, the mandated body, a neutral User-Agent).
 //
+// The server also serves a static PNG at GET /image.png (issue #443).
+// This reuses the same already-SSRF-cleared HTTPS origin -- the same
+// port and certificate a caller already allowlists via
+// [external_images.network] allowed_ports / extra_ca_file for the
+// POST endpoints above -- as the remote-image fixture
+// scripts/dev-instance.sh seeds into a message, so
+// extimg.Internalize's delivery-time fetch (internalize mode) and the
+// operator's SSRF guard configuration exercise one real origin instead
+// of two.
+//
 // For tests, use New which registers cleanup on testing.TB. For
 // standalone dev-tooling (scripts/dev-instance.sh), use NewServer and
 // call Close when done.
@@ -105,6 +115,7 @@ func NewServer(opts Options) (*Server, error) {
 	mux.HandleFunc("/ok", s.handle(http.StatusOK))
 	mux.HandleFunc("/fail", s.handle(s.failStatus))
 	mux.HandleFunc("/requests", s.handleRequests)
+	mux.HandleFunc("/image.png", s.handleImage)
 	s.srv = &http.Server{Handler: mux}
 	go func() { _ = s.srv.Serve(ln) }()
 	return s, nil
@@ -138,6 +149,13 @@ func (s *Server) SuccessURL() string { return s.BaseURL() + "/ok" }
 
 // FailureURL is the endpoint that always returns Options.FailStatus.
 func (s *Server) FailureURL() string { return s.BaseURL() + "/fail" }
+
+// ImageURL is the endpoint that serves a static, valid, deterministic
+// PNG (issue #443): a seeded message's <img src> pointed at this URL
+// gives extimg.Internalize a real image to fetch in internalize mode,
+// and a real remote URL for the client's blocked-remote-images gate to
+// carry in passthrough mode.
+func (s *Server) ImageURL() string { return s.BaseURL() + "/image.png" }
 
 // CertPEM returns the server's self-signed certificate in PEM form, so
 // a caller can install it as a trusted root for the process making the
@@ -185,6 +203,32 @@ func (s *Server) handleRequests(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+// fakeImagePNG is a minimal valid 1x1 PNG (same bytes used by
+// internal/protojmap/mail/email's retry-images fixtures), served
+// verbatim by handleImage.
+var fakeImagePNG = []byte{
+	0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+	0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+	0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+	0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
+	0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41,
+	0x54, 0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00,
+	0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
+	0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE,
+	0x42, 0x60, 0x82,
+}
+
+// handleImage serves the static PNG at GET /image.png.
+func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "image/png")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(fakeImagePNG)
 }
 
 // Requests returns a snapshot of every accepted POST.

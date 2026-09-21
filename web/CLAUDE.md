@@ -304,6 +304,29 @@ On an instance started without `HEROLD_DEV_EXTERNAL_SUBMISSION=1`,
 (`forbiddenFrom`) — no submission path is configured, which is the
 expected default.
 
+### Remote images: internalize vs passthrough (issue #443)
+
+Every instance seeds one message into `bob@example.local`'s INBOX
+carrying a remote `<img src>` (served by the same fake origin as the
+RFC 8058 unsubscribe endpoint above). By default the instance runs in
+`internalize` mode — the same default production uses — so the
+delivery-time fetcher replaces that `<img src>` with a fetched,
+inline `cid:` attachment before the client ever sees it. **Without
+`--external-images-passthrough`, no remote image URL ever reaches
+the client: a placeholder or an already-internalized image proves
+nothing about the blocked-remote-images bar or its "show images"
+accept path, because that surface only gates a live http(s)
+reference the client never receives in the default mode.**
+
+Pass `--external-images-passthrough` to `scripts/dev-instance.sh
+start` to run the instance with `[external_images] mode =
+"passthrough"` instead: the fetcher leaves the seeded message's
+`<img src>` untouched, so `bob@example.local`'s INBOX message is the
+one place in a dev instance where the blocked-remote-images bar and
+its accept path are actually reachable and drivable end to end. The
+`start` output's `EXTERNAL_IMAGES_MODE` line reports which mode the
+running instance is in.
+
 Cleanup discipline:
 
 - `scripts/dev-instance.sh list` shows every live instance.

@@ -3,6 +3,7 @@ package fakeunsubscribe_test
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -72,6 +73,33 @@ func TestFailureURL_DefaultsTo500(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", resp.StatusCode)
+	}
+}
+
+// TestImageURL_ServesPNG pins issue #443's remote-image fixture: the
+// same origin used for the unsubscribe POST endpoints also serves a
+// real, fetchable PNG at ImageURL.
+func TestImageURL_ServesPNG(t *testing.T) {
+	srv := fakeunsubscribe.New(t, fakeunsubscribe.Options{})
+	client := trustingClient(t, srv.CertPEM())
+
+	resp, err := client.Get(srv.ImageURL())
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "image/png" {
+		t.Fatalf("Content-Type = %q, want image/png", ct)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if len(body) < 8 || string(body[:8]) != "\x89PNG\r\n\x1a\n" {
+		t.Fatalf("body does not start with the PNG signature: %x", body[:min(8, len(body))])
 	}
 }
 

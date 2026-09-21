@@ -12,10 +12,32 @@
 # `start` invocation is killed).
 #
 # Subcommands:
-#   start [--detach]
+#   start [--detach] [--external-images-passthrough]
 #       Provision a fresh instance. Foreground mode (default) blocks
 #       until SIGINT/SIGTERM, then tears down. --detach forks the
 #       supervisor and prints a state file path before exiting.
+#
+#       --external-images-passthrough sets [external_images] mode =
+#       "passthrough" for this instance instead of the default
+#       "internalize" (issue #443).
+#
+#       WITHOUT THIS FLAG, NO REMOTE IMAGE URL EVER REACHES THE
+#       CLIENT. internalize is the default in this script and in
+#       production: the delivery-time fetcher already replaced every
+#       remote <img src> with either an inline cid: attachment (fetch
+#       succeeded) or the internalize placeholder data URI (fetch
+#       failed) before Email/get ever runs, so a default instance's
+#       client never sees a live http(s) image reference to gate.
+#       Seeing a placeholder image on a default instance proves
+#       NOTHING about the blocked-remote-images bar or its "show
+#       images" accept path -- that surface only exists to gate a
+#       passthrough-mode message, and only an instance started with
+#       this flag has one. Every instance, with or without the flag,
+#       seeds bob@example.local's INBOX with one message carrying a
+#       remote image (via the fake origin below), so each mode
+#       demonstrates its own behaviour: the default instance shows
+#       the internalized image, the flagged instance shows the
+#       blocked-images bar over the untouched remote URL.
 #
 #       On success, the foreground caller sees these lines on stdout
 #       (one key=value per line, in this order, before any tail-style
@@ -44,7 +66,13 @@
 #               one-click origin, issue #412; append /ok or /fail to a
 #               seeded message's List-Unsubscribe header to drive
 #               Email/unsubscribe's success/failure paths, GET/DELETE
-#               .../requests to inspect/clear recorded POSTs)
+#               .../requests to inspect/clear recorded POSTs; the same
+#               origin also serves the remote-image fixture below at
+#               .../image.png)
+#           EXTERNAL_IMAGES_MODE=internalize|passthrough  (issue #443;
+#               "internalize" unless --external-images-passthrough was
+#               given -- see the flag's warning above before treating a
+#               placeholder image as evidence of anything)
 #
 #       After that line block the script keeps running (so the EXIT
 #       trap can clean up); kill the script to tear down.
@@ -168,6 +196,10 @@ addr_to_url() {
 # port_report_file pointing at TARGET_DIR/ports.toml.
 write_system_toml() {
     local dir="$1"
+    # external_images_mode: "" (default, sysconfig's own zero value is
+    # "internalize") or "passthrough" -- see cmd_start's
+    # --external-images-passthrough flag (issue #443).
+    local external_images_mode="${2:-}"
     local cert="$dir/data/admin.crt"
     local key="$dir/data/admin.key"
     cat > "$dir/system.toml" <<EOF
@@ -290,6 +322,22 @@ EOF
 [server.secrets]
 data_key_ref = "file:$data_key_file"
 EOF
+
+    # [external_images] mode (issue #443). Written only when the caller
+    # asked for passthrough; omitting the key otherwise leaves
+    # sysconfig's own default ("internalize") in force, so a plain
+    # `dev-instance.sh start` keeps exercising the mode production
+    # runs in. [external_images.network] (allow_private, allowed_ports,
+    # extra_ca_file) is appended separately below once the fake origin
+    # is running.
+    if [ -n "$external_images_mode" ]; then
+        cat >> "$dir/system.toml" <<EOF
+
+[external_images]
+mode = "$external_images_mode"
+EOF
+        log "appended [external_images] mode=$external_images_mode to system.toml"
+    fi
 
     # Optional: enable the attachment-share offload feature for puppeteer
     # verification. public_base_url must be https to pass config
@@ -424,7 +472,8 @@ start_fake_fcm() {
 # DIR/bin/, start it, and wait for its report file. Sets these globals
 # for the caller:
 #   FAKEUNSUBSCRIBE_PID  FAKE_UNSUBSCRIBE_URL  FAKE_UNSUBSCRIBE_SUCCESS_URL
-#   FAKE_UNSUBSCRIBE_FAILURE_URL  FAKE_UNSUBSCRIBE_PORT  FAKE_UNSUBSCRIBE_CERT_FILE
+#   FAKE_UNSUBSCRIBE_FAILURE_URL  FAKE_UNSUBSCRIBE_IMAGE_URL
+#   FAKE_UNSUBSCRIBE_PORT  FAKE_UNSUBSCRIBE_CERT_FILE
 #
 # Started unconditionally (re #412) — cheap to run, and gives every dev
 # instance a real RFC 8058 one-click origin the Suite / CI can seed a
@@ -437,10 +486,17 @@ start_fake_fcm() {
 # shares with the external-image fetcher — same Config, issue #412)
 # and points SSL_CERT_FILE at FAKE_UNSUBSCRIBE_CERT_FILE when starting
 # the herold server process so the guarded outbound POST trusts it.
+#
+# The same origin also serves a static PNG at FAKE_UNSUBSCRIBE_IMAGE_URL
+# (issue #443): the remote-image fixture `herold dev seed-remote-image`
+# seeds into every instance points there, so it clears the identical
+# SSRF guard the unsubscribe endpoints already clear rather than
+# needing a second fake origin, port, and certificate.
 FAKEUNSUBSCRIBE_PID=""
 FAKE_UNSUBSCRIBE_URL=""
 FAKE_UNSUBSCRIBE_SUCCESS_URL=""
 FAKE_UNSUBSCRIBE_FAILURE_URL=""
+FAKE_UNSUBSCRIBE_IMAGE_URL=""
 FAKE_UNSUBSCRIBE_PORT=""
 FAKE_UNSUBSCRIBE_CERT_FILE=""
 
@@ -468,10 +524,11 @@ start_fake_unsubscribe() {
     FAKE_UNSUBSCRIBE_URL=$(read_report_key "$report" base_url)
     FAKE_UNSUBSCRIBE_SUCCESS_URL=$(read_report_key "$report" success_url)
     FAKE_UNSUBSCRIBE_FAILURE_URL=$(read_report_key "$report" failure_url)
+    FAKE_UNSUBSCRIBE_IMAGE_URL=$(read_report_key "$report" image_url)
     FAKE_UNSUBSCRIBE_PORT=$(read_report_key "$report" port)
     FAKE_UNSUBSCRIBE_CERT_FILE=$(read_report_key "$report" cert_file)
 
-    log "fake unsubscribe origin running: $FAKE_UNSUBSCRIBE_URL (ok=$FAKE_UNSUBSCRIBE_SUCCESS_URL fail=$FAKE_UNSUBSCRIBE_FAILURE_URL)"
+    log "fake unsubscribe origin running: $FAKE_UNSUBSCRIBE_URL (ok=$FAKE_UNSUBSCRIBE_SUCCESS_URL fail=$FAKE_UNSUBSCRIBE_FAILURE_URL image=$FAKE_UNSUBSCRIBE_IMAGE_URL)"
 }
 
 # build_fake_classifier DIR — build heroldfakeclassify into DIR/bin/ and
@@ -621,7 +678,7 @@ register_oauth2_client() {
 # Caller bootstrapped the admin principal beforehand and passes the
 # resulting API key.
 seed_instance() {
-    local dir="$1" backend_url="$2" api_key="$3" sink_addr="${4:-}"
+    local dir="$1" backend_url="$2" api_key="$3" sink_addr="${4:-}" image_url="${5:-}"
 
     # `herold bootstrap` already created admin@$SEED_DOMAIN, which
     # implicitly registered $SEED_DOMAIN itself. Calling `domain add`
@@ -704,15 +761,40 @@ seed_instance() {
             || { cat "$dir/logs/dev-seed.log" >&2; die "dev seed-external-identities failed"; }
         cat "$dir/logs/dev-seed.log" >&2
     fi
+
+    # Remote-image fixture (issue #443): seeded unconditionally, in
+    # every mode, into bob@$SEED_DOMAIN's INBOX. The command runs the
+    # message through extimg.Internalize against this instance's own
+    # [external_images] config, so which behaviour it demonstrates
+    # depends entirely on whether --external-images-passthrough was
+    # given to `start` -- internalize mode fetches image_url for real
+    # and stores the result as an inline attachment; passthrough mode
+    # leaves image_url untouched in the stored HTML for the client's
+    # blocked-remote-images gate to act on.
+    log "seeding remote-image message for bob@$SEED_DOMAIN (image=$image_url)"
+    "$HEROLD_BIN" dev seed-remote-image \
+        --system-config "$dir/system.toml" \
+        --principal "bob@$SEED_DOMAIN" \
+        --image-url "$image_url" \
+        >"$dir/logs/dev-seed-remote-image.log" 2>&1 \
+        || { cat "$dir/logs/dev-seed-remote-image.log" >&2; die "dev seed-remote-image failed"; }
+    cat "$dir/logs/dev-seed-remote-image.log" >&2
 }
 
 # ── start subcommand ─────────────────────────────────────────────────
 
 cmd_start() {
     local detach=0
+    # external_images_mode selects [external_images] mode written by
+    # write_system_toml. Empty (the default) means "internalize" --
+    # sysconfig's own zero value -- so every instance started without
+    # --external-images-passthrough keeps exercising the mode
+    # production runs in (issue #443).
+    local external_images_mode=""
     while [ $# -gt 0 ]; do
         case "$1" in
             --detach) detach=1 ;;
+            --external-images-passthrough) external_images_mode="passthrough" ;;
             -h|--help) sed -n '/^# Subcommands:/,/^# Reserved ports:/p' "$0" >&2; exit 0 ;;
             *) die "start: unknown flag: $1" ;;
         esac
@@ -734,7 +816,7 @@ cmd_start() {
         >>"$dir/logs/cert.log" 2>&1 \
         || die "make-self-signed-cert.sh failed; see $dir/logs/cert.log"
 
-    write_system_toml "$dir"
+    write_system_toml "$dir" "$external_images_mode"
 
     # Deterministic classifier plugin (re #364): built and configured
     # unconditionally, before bootstrap, so system.toml already names it
@@ -921,7 +1003,7 @@ EOF
     # Seed: domain + principals (admin already created via bootstrap).
     # Pass the fake SMTP sink address when external submission is enabled so the
     # working-external identity's submission row points at the live fake sink.
-    seed_instance "$dir" "$backend_url" "$api_key" "${FAKESMTP_SMTP_ADDR:-}"
+    seed_instance "$dir" "$backend_url" "$api_key" "${FAKESMTP_SMTP_ADDR:-}" "$FAKE_UNSUBSCRIBE_IMAGE_URL"
 
     # Register the Android client in the OAuth2 client registry: the
     # registry is DB state, only writable through the running server.
@@ -1031,6 +1113,13 @@ EOF
     # paths from a seeded message's List-Unsubscribe header; GET/DELETE
     # <FAKE_UNSUBSCRIBE_URL>/requests inspects/clears recorded POSTs.
     echo "FAKE_UNSUBSCRIBE_URL=$FAKE_UNSUBSCRIBE_URL"
+    # issue #443: which [external_images] mode this instance is
+    # actually running -- "internalize" unless --external-images-
+    # passthrough was given. bob@$SEED_DOMAIN's INBOX carries one
+    # seeded message with a remote image in either case; WITHOUT the
+    # flag no remote image URL reaches the client, so a placeholder
+    # there proves nothing (see the flag's warning in --help).
+    echo "EXTERNAL_IMAGES_MODE=${external_images_mode:-internalize}"
 
     if [ "$detach" = "1" ]; then
         log "instance $id detached; supervisor pid $$ exiting"

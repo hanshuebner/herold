@@ -24,6 +24,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/extimg"
 	"github.com/hanshuebner/herold/internal/secrets"
 	"github.com/hanshuebner/herold/internal/store"
 )
@@ -74,6 +75,7 @@ func newDevCmd() *cobra.Command {
 	c.AddCommand(newDevEnrollAdminTOTPCmd())
 	c.AddCommand(newDevGenTOTPCodeCmd())
 	c.AddCommand(newDevSeedSeparableIdentityCmd())
+	c.AddCommand(newDevSeedRemoteImageCmd())
 	return c
 }
 
@@ -651,5 +653,140 @@ func runDevSeedSeparableIdentity(cmd *cobra.Command, principalEmail, identityEma
 	if sinkAddr != "" {
 		fmt.Fprintf(w, "  external submission sink: %s (security=none)\n", sinkAddr)
 	}
+	return nil
+}
+
+// newDevSeedRemoteImageCmd implements the issue #443 dev-seed step: a
+// message carrying one remote <img src>, run through the exact same
+// extimg.Internalize entry point protosmtp's SMTP-DATA ingest path
+// calls, using the instance's own [external_images] configuration.
+//
+// Because Internalize itself branches on cfg.Mode -- fetching and
+// rewriting to a cid: inline attachment in internalize mode, doing
+// nothing in passthrough mode (see internal/extimg/internalize.go) --
+// this single command demonstrates whichever mode the running instance
+// is actually configured for: seeded into an internalize-mode instance
+// the message shows the fetched, internalized image; seeded into a
+// passthrough-mode instance it carries the untouched remote URL for
+// the client's blocked-remote-images gate to act on (re #443).
+//
+// --image-url must already satisfy the instance's
+// [external_images.network] SSRF guard (allow_private / allowed_ports
+// / extra_ca_file) the same way the fake RFC 8058 unsubscribe origin's
+// POST endpoints do -- scripts/dev-instance.sh points both at the same
+// fake origin.
+func newDevSeedRemoteImageCmd() *cobra.Command {
+	var principalEmail string
+	var imageURL string
+	var subject string
+	c := &cobra.Command{
+		Use:   "seed-remote-image",
+		Short: "seed a message with one remote image, internalized per the running config (not for production)",
+		Long: "Builds a message with a single HTML <img src=--image-url> and runs it\n" +
+			"through extimg.Internalize using the instance's own [external_images]\n" +
+			"configuration -- the same entry point protosmtp's SMTP-DATA ingest path\n" +
+			"calls -- before inserting the result into the named principal's INBOX.\n\n" +
+			"In internalize mode (the default) the fetch runs for real and the\n" +
+			"stored message carries the fetched image as an inline cid: attachment.\n" +
+			"In passthrough mode Internalize is a no-op and the stored message\n" +
+			"carries the untouched remote URL, reachable by the client's\n" +
+			"blocked-remote-images gate (issue #443). --image-url must already\n" +
+			"satisfy the instance's [external_images.network] SSRF guard.\n\n" +
+			"The principal must already exist. Run after `herold bootstrap` and\n" +
+			"after the principal is created.",
+		Hidden: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runDevSeedRemoteImage(cmd, principalEmail, imageURL, subject)
+		},
+	}
+	c.Flags().StringVar(&principalEmail, "principal", "bob@example.local",
+		"email of the principal that will own the seeded message")
+	c.Flags().StringVar(&imageURL, "image-url", "",
+		"URL of the remote image the seeded message's <img src> carries (required)")
+	c.Flags().StringVar(&subject, "subject", "Newsletter with a remote image",
+		"subject of the seeded message")
+	_ = c.MarkFlagRequired("image-url")
+	return c
+}
+
+func runDevSeedRemoteImage(cmd *cobra.Command, principalEmail, imageURL, subject string) error {
+	g := globals(cmd.Context())
+	cfg, err := requireConfig(g)
+	if err != nil {
+		return err
+	}
+
+	ctx := cmd.Context()
+	clk := clock.NewReal()
+	st, err := openStore(ctx, cfg, discardLogger(), clk)
+	if err != nil {
+		return fmt.Errorf("dev seed-remote-image: open store: %w", err)
+	}
+	defer st.Close()
+
+	principal, err := st.Meta().GetPrincipalByEmail(ctx, principalEmail)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return fmt.Errorf("dev seed-remote-image: principal %q not found; create it first", principalEmail)
+		}
+		return fmt.Errorf("dev seed-remote-image: lookup principal: %w", err)
+	}
+
+	boxes, err := st.Meta().ListMailboxes(ctx, principal.ID)
+	if err != nil {
+		return fmt.Errorf("dev seed-remote-image: list mailboxes: %w", err)
+	}
+	var inboxID store.MailboxID
+	for _, mb := range boxes {
+		if mb.Attributes&store.MailboxAttrInbox != 0 {
+			inboxID = mb.ID
+			break
+		}
+	}
+	if inboxID == 0 {
+		return fmt.Errorf("dev seed-remote-image: principal %q has no INBOX", principalEmail)
+	}
+
+	from := "newsletter@remote-image.example"
+	now := clk.Now()
+	html := `<html><body><p>Hello ` + principal.CanonicalEmail + `,</p>` +
+		`<p><img src="` + imageURL + `" alt="remote image" width="1" height="1"></p></body></html>`
+	raw := "From: " + from + "\r\n" +
+		"To: " + principal.CanonicalEmail + "\r\n" +
+		"Subject: " + subject + "\r\n" +
+		"Date: " + now.Format(time.RFC1123Z) + "\r\n" +
+		"Content-Type: text/html; charset=\"utf-8\"\r\n\r\n" + html
+
+	extimgCfg := extimg.FromSysConfig(cfg.ExternalImages, cfg.Server.Hostname)
+	out, sum, ierr := extimg.Internalize(ctx, []byte(raw), extimgCfg, extimg.DKIMVerdict{})
+	if ierr != nil {
+		return fmt.Errorf("dev seed-remote-image: internalize: %w", ierr)
+	}
+
+	ref, err := st.Blobs().Put(ctx, bytes.NewReader(out))
+	if err != nil {
+		return fmt.Errorf("dev seed-remote-image: put blob: %w", err)
+	}
+	msg := store.Message{
+		PrincipalID:  principal.ID,
+		MailboxID:    inboxID,
+		InternalDate: now,
+		ReceivedAt:   now,
+		Size:         ref.Size,
+		Blob:         ref,
+		Envelope: store.Envelope{
+			Subject: subject,
+			From:    from,
+			To:      principal.CanonicalEmail,
+			Date:    now,
+		},
+	}
+	if _, _, err := st.Meta().InsertMessage(ctx, msg, []store.MessageMailbox{{MailboxID: inboxID}}); err != nil {
+		return fmt.Errorf("dev seed-remote-image: insert message: %w", err)
+	}
+
+	w := cmd.OutOrStdout()
+	fmt.Fprintf(w, "dev-seed: seeded remote-image message for %s: mode=%s modified=%t candidates=%d internalized=%d failed=%d failurecounts=%+v noteligible=%q parseerr=%q\n",
+		principalEmail, sum.Mode, sum.Modified, sum.Candidates, sum.Internalized, sum.Failed, sum.FailureCounts, sum.NotEligibleReason, sum.ParseError)
 	return nil
 }

@@ -1,9 +1,11 @@
 // Command heroldfakeunsubscribe runs a standalone fakeunsubscribe
 // server for scripts/dev-instance.sh (issue #412). It writes a
-// key=value report file (base_url, success_url, failure_url, port,
-// cert_file) so the shell script can wire a seeded message's
-// List-Unsubscribe header at it and make the herold server process
-// trust its self-signed certificate.
+// key=value report file (base_url, success_url, failure_url,
+// image_url, port, cert_file) so the shell script can wire a seeded
+// message's List-Unsubscribe header at it and make the herold server
+// process trust its self-signed certificate. image_url (issue #443)
+// serves a static PNG from the same origin, for a seeded message's
+// remote <img src>.
 package main
 
 import (
@@ -47,8 +49,8 @@ func main() {
 	// Write the report file atomically so dev-instance.sh can use
 	// wait_for_file to detect readiness without a race.
 	tmp := *reportFile + ".tmp"
-	content := fmt.Sprintf("base_url=%s\nsuccess_url=%s\nfailure_url=%s\nport=%d\ncert_file=%s\n",
-		srv.BaseURL(), srv.SuccessURL(), srv.FailureURL(), srv.Port(), *certFile)
+	content := fmt.Sprintf("base_url=%s\nsuccess_url=%s\nfailure_url=%s\nimage_url=%s\nport=%d\ncert_file=%s\n",
+		srv.BaseURL(), srv.SuccessURL(), srv.FailureURL(), srv.ImageURL(), srv.Port(), *certFile)
 	if err := os.WriteFile(tmp, []byte(content), 0o600); err != nil {
 		log.Fatalf("heroldfakeunsubscribe: write report: %v", err)
 	}
@@ -56,8 +58,8 @@ func main() {
 		log.Fatalf("heroldfakeunsubscribe: rename report: %v", err)
 	}
 
-	log.Printf("heroldfakeunsubscribe: base=%s success=%s failure=%s; report written to %s",
-		srv.BaseURL(), srv.SuccessURL(), srv.FailureURL(), *reportFile)
+	log.Printf("heroldfakeunsubscribe: base=%s success=%s failure=%s image=%s; report written to %s",
+		srv.BaseURL(), srv.SuccessURL(), srv.FailureURL(), srv.ImageURL(), *reportFile)
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
