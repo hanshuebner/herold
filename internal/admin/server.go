@@ -1186,7 +1186,7 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	// ReloadConfig updates propagate to in-flight JMAP calls.
 	sharedCfg := new(atomic.Pointer[sysconfig.Config])
 	sharedCfg.Store(cfg)
-	bundle, err := composeAdminAndUI(ctx, cfg, sharedCfg, st, dir, oidc, clk, logger, ftsIndex, tlsStore, outboundQ, adminServer, smtpServer, hookSigningKey, shareSigningKey, sharesCfg, health, sieveInterp, prebuiltExtSubmitter, clientEmitter, telemetryGate, imapImportDataKey, mlistTokenSigner)
+	bundle, err := composeAdminAndUI(ctx, cfg, sharedCfg, st, dir, oidc, clk, logger, ftsIndex, tlsStore, outboundQ, adminServer, smtpServer, hookSigningKey, shareSigningKey, sharesCfg, health, sieveInterp, prebuiltExtSubmitter, clientEmitter, telemetryGate, imapImportDataKey, mlistTokenSigner, configuredSpamPolicyStore(cfg.Plugin, pluginMgr, spamPluginName))
 	if err != nil {
 		return err
 	}
@@ -2501,6 +2501,81 @@ func pluginNamesOfType(plugins []sysconfig.PluginConfig, kinds ...string) []stri
 	return names
 }
 
+// staticSpamPolicyStore reports a protoadmin.SpamPolicy resolved once at
+// boot. SetSpamPolicy is a no-op: system.toml is never mutated at runtime
+// (STANDARDS.md), so nothing in this wiring ever writes a new policy
+// through this seam; an operator changes the prompt by editing
+// system.toml and restarting.
+type staticSpamPolicyStore struct {
+	policy protoadmin.SpamPolicy
+}
+
+func (s *staticSpamPolicyStore) GetSpamPolicy() protoadmin.SpamPolicy { return s.policy }
+func (s *staticSpamPolicyStore) SetSpamPolicy(protoadmin.SpamPolicy)  {}
+
+// configuredSpamPolicyStore builds the protoadmin.SpamPolicyStore behind
+// LLMTransparency/get's spamPrompt field (REQ-FILT-65/67, re #464). name
+// is the configured spam/classifier plugin's name (empty when none is
+// configured, matching spamStatusProvider's convention); plugins is the
+// same system.toml [[plugin]] list StartServer launched processes from,
+// and mgr is the plugin.Manager those processes were started through.
+//
+// The prompt the panel must report is whichever of the plugin's two
+// prompt-override options its OWN declared manifest type reads at
+// classify time (internal/spam.Classifier, issue #304 Decision 3: a
+// plugin's self-reported type -- not the operator's system.toml `type`
+// string -- decides whether the server dispatches mail.classify or
+// spam.classify). By the time this is called, StartServer has already
+// waited for every configured spam/classify plugin to become healthy, so
+// mgr.Get(name).Type() reports the plugin's real manifest type.
+func configuredSpamPolicyStore(plugins []sysconfig.PluginConfig, mgr *plugin.Manager, name string) protoadmin.SpamPolicyStore {
+	return &staticSpamPolicyStore{policy: resolveSpamPolicy(plugins, mgr, name)}
+}
+
+func resolveSpamPolicy(plugins []sysconfig.PluginConfig, mgr *plugin.Manager, name string) protoadmin.SpamPolicy {
+	if name == "" {
+		return protoadmin.SpamPolicy{}
+	}
+	var spec sysconfig.PluginConfig
+	found := false
+	for _, p := range plugins {
+		if p.Name == name {
+			spec = p
+			found = true
+			break
+		}
+	}
+	if !found {
+		return protoadmin.SpamPolicy{}
+	}
+	// Same option-resolution StartServer applies before handing options to
+	// the plugin process (expands $ENV / file: references), so an operator
+	// who hides the prompt behind one of those still gets the resolved text
+	// reported here rather than the reference itself.
+	opts, err := resolvePluginOptions(spec.Options)
+	if err != nil {
+		return protoadmin.SpamPolicy{PluginName: name}
+	}
+	promptKey := "system_prompt_override"
+	if mgr != nil {
+		if pl := mgr.Get(name); pl != nil && pl.Type() == plugin.TypeClassifier {
+			promptKey = "classify_system_prompt_override"
+		}
+	}
+	policy := protoadmin.SpamPolicy{PluginName: name}
+	if v, ok := opts[promptKey]; ok {
+		if s, ok := v.(string); ok {
+			policy.SystemPromptOverride = strings.TrimSpace(s)
+		}
+	}
+	if v, ok := opts["model"]; ok {
+		if s, ok := v.(string); ok {
+			policy.Model = s
+		}
+	}
+	return policy
+}
+
 // spamStatusProvider builds the protoadmin.SpamStatusProvider backing GET
 // /api/v1/spam/status (Wave 4.1, issue #301). name is the configured spam
 // plugin's name (empty when none is configured); mgr is the same plugin
@@ -2691,6 +2766,7 @@ func composeAdminAndUI(
 	telemetryGate protoadmin.TelemetryGate,
 	imapImportDataKey []byte,
 	mlistTokenSigner *maillist.TokenSigner,
+	spamPolicyStore protoadmin.SpamPolicyStore,
 ) (composedHandlers, error) {
 	// ftsIndex is the chat-side full-text search backend (Wave 2.9.6
 	// Track D, REQ-CHAT-80..82). It is the same Bleve index the mail
@@ -3233,10 +3309,12 @@ func composeAdminAndUI(
 	// get/set normally, returning serverFail only for recategorise.
 	jmapcatsettings.Register(jmapSrv.Registry(), st, nil, nil, logger.With("subsystem", "jmap-categorysettings"), clk)
 	// LLMTransparency/get + Email/llmInspect (G14, REQ-FILT-65..68 / REQ-FILT-216).
-	// spamPolicy is nil until a spam plugin is configured (handler returns empty spam
-	// fields). categoriserEndpoint/Model are empty strings; per-account overrides come
-	// from the store's CategorisationConfig row.
-	jmapllmtransparency.Register(jmapSrv.Registry(), st, nil, "", "")
+	// spamPolicyStore resolves the user-visible prompt from the same
+	// system.toml plugin configuration that starts the classifier process
+	// (re #464); it reports an empty policy when no spam/classifier plugin
+	// is configured. categoriserEndpoint/Model are empty strings; per-account
+	// overrides come from the store's CategorisationConfig row.
+	jmapllmtransparency.Register(jmapSrv.Registry(), st, spamPolicyStore, "", "")
 	// Chat JMAP capability (REQ-CHAT-*). Advertised whenever the chat
 	// subsystem is enabled (the chat WebSocket listener at /chat/ws is
 	// gated on the same flag below). Without this registration the
