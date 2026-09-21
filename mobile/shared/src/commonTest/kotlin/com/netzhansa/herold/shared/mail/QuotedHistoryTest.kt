@@ -492,6 +492,24 @@ class QuotedHistoryTest {
     }
 
     @Test
+    fun keepsTheQuoteWholeWhenProseSitsBetweenTheCitationAndIt() {
+        // The citation is not the quote's immediate neighbour: the
+        // sender wrote a line between the two. What the citation says
+        // about the quote holds all the same, so the quote's leading
+        // paragraph is the quoted message's and stays behind the chip.
+        val html = folded(
+            "<p>On Mon, 15 Sep 2026, Alice wrote:</p><p>Prose of my own in between.</p>" +
+                "<blockquote type=\"cite\"><p>What Alice wrote above her own quote.</p>" +
+                "<div class=\"moz-cite-prefix\">Am 14.09.26 um 08:00 schrieb bob@example.test:<br></div>" +
+                "<blockquote type=\"cite\">The oldest message.</blockquote></blockquote>",
+        )
+
+        assertBeforeFold(html, "Prose of my own in between.")
+        assertInsideFold(html, "What Alice wrote above her own quote.")
+        assertInsideFold(html, "The oldest message.")
+    }
+
+    @Test
     fun findsTheCitationSeveralLevelsAboveTheQuote() {
         // The citation introduces a container two levels above the
         // quote it belongs to; what it says about the quote holds
