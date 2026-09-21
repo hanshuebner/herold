@@ -39,6 +39,7 @@ class EditorHandle {
     internal var webView: WebView? = null
     internal var onHtml: ((String) -> Unit)? = null
     internal var onFocus: ((Boolean) -> Unit)? = null
+    internal var onCaret: ((Float, Float) -> Unit)? = null
 
     /**
      * The bytes of the inline images the body references, which the
@@ -112,6 +113,12 @@ fun RichTextEditor(
     handle: EditorHandle,
     onHtmlChanged: (String) -> Unit,
     onFocusChanged: (Boolean) -> Unit,
+    /**
+     * Where the caret's line is, in window pixels, each time it moves
+     * (issue #453). The composer scrolls on it, since the caret sits in
+     * a document Compose cannot see.
+     */
+    onCaretMoved: (Float, Float) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     // An image the compose already carries - a restored draft, a second
@@ -120,6 +127,7 @@ fun RichTextEditor(
         .forEach { handle.inlineImages[it.cid!!] = it.type to it.bytes!! }
     handle.onHtml = onHtmlChanged
     handle.onFocus = onFocusChanged
+    handle.onCaret = onCaretMoved
 
     AndroidView(
         modifier = modifier,
@@ -145,6 +153,22 @@ fun RichTextEditor(
                         @JavascriptInterface
                         fun focused(focused: Boolean) {
                             post { handle.onFocus?.invoke(focused) }
+                        }
+
+                        /**
+                         * Where the caret's line is drawn, as an offset
+                         * in pixels from the view's top edge. The page
+                         * measures it; the view's own place in the
+                         * window turns it into the coordinates the
+                         * composer's viewport is measured in.
+                         */
+                        @JavascriptInterface
+                        fun caret(top: Float, bottom: Float) {
+                            post {
+                                val location = IntArray(2)
+                                getLocationInWindow(location)
+                                handle.onCaret?.invoke(location[1] + top, location[1] + bottom)
+                            }
                         }
                     },
                     BRIDGE,
@@ -212,12 +236,57 @@ private fun editorDocument(body: String, darkTheme: Boolean): String {
           var herold = {
             publish: function () { $BRIDGE.changed(editor.innerHTML); }
           };
-          editor.addEventListener('input', herold.publish);
-          editor.addEventListener('focus', function () { $BRIDGE.focused(true); });
+          // Where the caret's line is drawn inside the view, in device
+          // pixels from its top edge (issue #453). The renderer chases
+          // the caret by moving the visual viewport, which leaves the
+          // rectangle a range reports offset from what is on screen by
+          // exactly that much, so the offset comes back out.
+          var pending = 0;
+          function reportCaret() {
+            if (pending) { return; }
+            pending = window.requestAnimationFrame(function () {
+              pending = 0;
+              // Only the editable's own caret moves the composer; with
+              // the subject or a recipient holding the focus the body
+              // has no say in where the screen stands.
+              if (document.activeElement !== editor) { return; }
+              var selection = window.getSelection();
+              if (!selection || selection.rangeCount === 0) { return; }
+              var range = selection.getRangeAt(0);
+              if (!editor.contains(range.startContainer)) { return; }
+              var rects = range.getClientRects();
+              var rect = rects.length > 0 ? rects[0] : null;
+              if (!rect || (rect.top === 0 && rect.bottom === 0)) {
+                var node = range.startContainer;
+                var element = node.nodeType === 1 ? node : node.parentElement;
+                rect = element ? element.getBoundingClientRect() : null;
+              }
+              if (!rect) { return; }
+              var visual = window.visualViewport;
+              var offset = visual ? visual.offsetTop : 0;
+              var ratio = window.devicePixelRatio;
+              $BRIDGE.caret((rect.top - offset) * ratio, (rect.bottom - offset) * ratio);
+            });
+          }
+          editor.addEventListener('input', function () {
+            herold.publish();
+            reportCaret();
+          });
+          document.addEventListener('selectionchange', reportCaret);
+          editor.addEventListener('focus', function () {
+            $BRIDGE.focused(true);
+            reportCaret();
+          });
           editor.addEventListener('blur', function () {
             herold.publish();
             $BRIDGE.focused(false);
           });
+          if (window.visualViewport) {
+            // The renderer's own chase moves the caret on screen with no
+            // edit and no selection change behind it.
+            window.visualViewport.addEventListener('scroll', reportCaret);
+            window.visualViewport.addEventListener('resize', reportCaret);
+          }
           (function () {
             var first = editor.firstChild;
             var range = document.createRange();

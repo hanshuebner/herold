@@ -8,6 +8,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -60,7 +61,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -172,6 +177,14 @@ fun ComposeScreen(
     var editorReady by remember { mutableStateOf(false) }
     /** True while the editable holds the caret, so a keystroke reaches it. */
     var editorFocused by remember { mutableStateOf(false) }
+
+    /**
+     * The composer's one scroller, and the window rectangle it leaves
+     * visible once the app bar and the keyboard have taken their share.
+     */
+    val scroll = rememberScrollState()
+    var viewport by remember { mutableStateOf(Rect.Zero) }
+    val caretMargin = with(LocalDensity.current) { CARET_MARGIN.toPx() }
 
     // The compose opens once its inputs have arrived from the local store.
     LaunchedEffect(identities, accounts, parentEmailId, mode) {
@@ -455,7 +468,8 @@ fun ComposeScreen(
                 // The body scrolls inside what the keyboard leaves, so the
                 // field being typed into stays in view (issue #373).
                 .imePadding()
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(scroll)
+                .onGloballyPositioned { viewport = it.boundsInWindow() }
                 .testTag("compose-screen"),
         ) {
             FromRow(
@@ -548,6 +562,27 @@ fun ComposeScreen(
                     editorReady = true
                 },
                 onFocusChanged = { editorFocused = it },
+                // The caret lives in a document Compose cannot see, so
+                // the composer scrolls on what the page reports about it
+                // (issue #453). The renderer keeps the caret inside the
+                // area it believes it has, which is the window less the
+                // keyboard; the composer leaves it less than that, and
+                // the band between the two is where the line being typed
+                // used to disappear. Correcting into the narrower band
+                // satisfies the wider one, so the two scrollers settle
+                // in one step rather than chasing each other.
+                onCaretMoved = { top, bottom ->
+                    val below = bottom + caretMargin - viewport.bottom
+                    val above = viewport.top + caretMargin - top
+                    val delta = when {
+                        below > 0f -> below
+                        above > 0f -> -above
+                        else -> 0f
+                    }
+                    if (!viewport.isEmpty && delta != 0f) {
+                        scope.launch { scroll.animateScrollBy(delta) }
+                    }
+                },
                 modifier = Modifier.fillMaxWidth().heightIn(min = 220.dp).testTag("compose-body"),
             )
 
@@ -867,6 +902,13 @@ private fun typeOf(resolver: android.content.ContentResolver, uri: Uri, name: St
 }
 
 private const val FALLBACK_TYPE = "application/octet-stream"
+
+/**
+ * How much room the composer keeps around the caret's line when it
+ * scrolls to it, so the line being typed stands clear of the edge
+ * rather than against it (issue #453).
+ */
+private val CARET_MARGIN = 12.dp
 
 /**
  * The size choice for an outgoing photo (issue #341): Small, Medium, Large

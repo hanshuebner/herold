@@ -101,6 +101,13 @@ long session out of it.
 and reads the reply back from `bob@example.local`. It sets the undo
 window itself, and the shade shot needs the emulator unlocked.
 
+`ComposeCaretAcceptanceTest` measures the composer against the keyboard
+(issue #453), so the emulator has to show one. An AVD with a hardware
+keyboard hides the soft one until it is told otherwise, once per
+emulator:
+
+    adb shell settings put secure show_ime_with_hard_keyboard 1
+
 ### Sign-in, unlock and sessions (issue #352)
 
 `CustomTabSignInTest` drives the emulator's real browser. Complete
