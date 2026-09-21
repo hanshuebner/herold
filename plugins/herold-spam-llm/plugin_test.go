@@ -91,6 +91,44 @@ func buildPlugin(t *testing.T) string {
 	return bin
 }
 
+// pluginLog is one plugin.log notification (sdk.Logf) captured from a
+// spawned plugin during a test.
+type pluginLog struct {
+	level string
+	msg   string
+}
+
+// logRecorder implements plug.NotificationHandler, capturing plugin.log
+// notifications so tests can assert on boot-time (OnConfigure) warnings
+// (re #454). The SDK sends structured logs as plugin.log JSON-RPC
+// notifications over the same stdio channel as everything else (see
+// plugins/sdk.Logf) rather than writing them to the process's raw
+// stderr, so this is the only place a test can observe them.
+type logRecorder struct {
+	mu   sync.Mutex
+	logs []pluginLog
+}
+
+func (r *logRecorder) OnLog(p plug.LogParams) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.logs = append(r.logs, pluginLog{level: p.Level, msg: p.Msg})
+}
+func (r *logRecorder) OnMetric(plug.MetricParams)        {}
+func (r *logRecorder) OnNotify(plug.NotifyParams)        {}
+func (r *logRecorder) OnUnknown(string, json.RawMessage) {}
+
+func (r *logRecorder) contains(level, substr string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, l := range r.logs {
+		if l.level == level && strings.Contains(l.msg, substr) {
+			return true
+		}
+	}
+	return false
+}
+
 // spawnedPlugin wires a running plugin binary to a supervisor-side Client.
 // Callers drive it via Call; Close stops the read loop and waits for
 // graceful exit.
@@ -99,6 +137,7 @@ type spawnedPlugin struct {
 	cmd    *exec.Cmd
 	client *plug.Client
 	done   chan error
+	logs   *logRecorder
 }
 
 func spawnPlugin(t *testing.T, bin string) *spawnedPlugin {
@@ -122,14 +161,22 @@ func spawnPlugin(t *testing.T, bin string) *spawnedPlugin {
 	// Drain stderr so the pipe buffer never fills and blocks the plugin.
 	go func() { _, _ = io.Copy(io.Discard, stderr) }()
 
+	logs := &logRecorder{}
 	client := plug.NewClient(stdout, stdin, plug.ClientOptions{
 		Name:          "herold-spam-llm",
 		MaxConcurrent: 16,
+		Notifications: logs,
 	})
 	done := make(chan error, 1)
 	go func() { done <- client.Run(context.Background()) }()
 
-	return &spawnedPlugin{t: t, cmd: cmd, client: client, done: done}
+	return &spawnedPlugin{t: t, cmd: cmd, client: client, done: done, logs: logs}
+}
+
+// hasWarnLog reports whether the plugin logged a "warn"-level plugin.log
+// notification whose message contains substr.
+func (s *spawnedPlugin) hasWarnLog(substr string) bool {
+	return s.logs.contains("warn", substr)
 }
 
 func (s *spawnedPlugin) close() {
@@ -1546,5 +1593,122 @@ func TestClassify_ImportedTransactionalMailNoAuthIsHam(t *testing.T) {
 	}
 	if got, _ := res["verdict"].(string); got != "ham" {
 		t.Fatalf("verdict = %q, want ham (spf/dkim/dmarc=\"none\" must never be read as a failure)", got)
+	}
+}
+
+// TestConfigure_WarnsWhenSystemPromptOverrideUnused is the re #454
+// regression test: this binary always declares manifest type
+// "classifier" (see TestInitialize's Manifest.Type check), so herold's
+// server always dispatches mail.classify to it and never spam.classify.
+// Setting system_prompt_override -- which replaces only the spam.classify
+// system prompt -- must therefore log a boot-time warning naming the
+// option, the prompt it would override, and the RPC the server actually
+// dispatches, per #454's acceptance: a security-relevant override that
+// reaches no call the server makes must not fail silently.
+func TestConfigure_WarnsWhenSystemPromptOverrideUnused(t *testing.T) {
+	bin := buildPlugin(t)
+	p := spawnPlugin(t, bin)
+	defer p.close()
+
+	p.initialize(t)
+	if err := p.configure(t, map[string]any{
+		"endpoint":               "http://localhost:11434/v1",
+		"model":                  "fake",
+		"system_prompt_override": "operator guidance that never reaches mail.classify",
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+
+	if !p.hasWarnLog("system_prompt_override") {
+		t.Fatalf("expected a warn-level log naming system_prompt_override, got logs=%v", p.logs.logs)
+	}
+	if !p.hasWarnLog("mail.classify") {
+		t.Fatalf("expected the warning to name mail.classify, the RPC the server actually dispatches, got logs=%v", p.logs.logs)
+	}
+	if !p.hasWarnLog("classify_system_prompt_override") {
+		t.Fatalf("expected the warning to point at classify_system_prompt_override as the option to use instead, got logs=%v", p.logs.logs)
+	}
+}
+
+// TestConfigure_NoWarnWhenClassifySystemPromptOverrideUsed is the
+// negative case for #454: classify_system_prompt_override configures the
+// mail.classify prompt, which this classifier-type plugin's server-
+// dispatched calls do use, so no warning should fire.
+func TestConfigure_NoWarnWhenClassifySystemPromptOverrideUsed(t *testing.T) {
+	bin := buildPlugin(t)
+	p := spawnPlugin(t, bin)
+	defer p.close()
+
+	p.initialize(t)
+	if err := p.configure(t, map[string]any{
+		"endpoint":                        "http://localhost:11434/v1",
+		"model":                           "fake",
+		"classify_system_prompt_override": "operator guidance for mail.classify",
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+
+	if p.hasWarnLog("system_prompt_override") || p.hasWarnLog("classify_system_prompt_override") {
+		t.Fatalf("expected no #454 unused-override warning when only the used prompt is overridden, got logs=%v", p.logs.logs)
+	}
+}
+
+// TestMailClassify_UsesClassifySystemPromptOverride is #454's acceptance
+// test: with classify_system_prompt_override set, the operator's own
+// text -- not the built-in prompt -- is the system message the plugin
+// actually sends on the mail.classify path the server calls, demonstrated
+// by inspecting the request the plugin makes to the model, not the
+// plugin's configuration.
+func TestMailClassify_UsesClassifySystemPromptOverride(t *testing.T) {
+	const operatorGuidance = "dkim=none, spf=none and dmarc=none are not failures and must never be read as such."
+
+	var gotSystemPrompt string
+	var mu sync.Mutex
+	llm := newFakeLLM(t)
+	llm.setHandler(func(w http.ResponseWriter, r *http.Request) {
+		var chatReq struct {
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&chatReq); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		for _, m := range chatReq.Messages {
+			if m.Role == "system" {
+				gotSystemPrompt = m.Content
+			}
+		}
+		mu.Unlock()
+		replyJSON(w, `{"verdict":"ham","score":0.05,"reason":"no authentication signal to distrust"}`)
+	})
+
+	bin := buildPlugin(t)
+	p := spawnPlugin(t, bin)
+	defer p.close()
+
+	p.initialize(t)
+	if err := p.configure(t, map[string]any{
+		"endpoint":                        llm.endpoint(),
+		"model":                           "fake",
+		"classify_system_prompt_override": operatorGuidance,
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := p.mailClassify(ctx, canonicalPayload("x")); err != nil {
+		t.Fatalf("mail.classify: %v", err)
+	}
+
+	mu.Lock()
+	got := gotSystemPrompt
+	mu.Unlock()
+	if got != operatorGuidance {
+		t.Fatalf("system prompt sent to the model = %q, want the operator's classify_system_prompt_override verbatim (%q)", got, operatorGuidance)
 	}
 }

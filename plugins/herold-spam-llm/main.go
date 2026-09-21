@@ -46,9 +46,15 @@
 //     which the verdict is "spam".
 //   - system_prompt_override (string): replaces the built-in spam.classify
 //     system prompt (legacy method; see classify_system_prompt_override
-//     for mail.classify, the method the server actually calls).
+//     for mail.classify, the method the server actually calls). Setting
+//     this while the plugin declares type "classifier" -- which this
+//     binary always does -- logs a boot-time warning (re #454): the
+//     server never calls spam.classify against a classifier-type
+//     plugin, so this option then reaches no call the server makes.
 //   - classify_system_prompt_override (string): replaces the built-in
-//     mail.classify system prompt.
+//     mail.classify system prompt. This is the option a herold server
+//     deployment must set to reach the model on the path it actually
+//     calls (re #454).
 //   - max_body_chars (integer, default 4000, range 1..1000000): body
 //     excerpt cap sent to the model.
 //   - log_samples (boolean, default false): log request/response byte
@@ -113,6 +119,17 @@ const (
 	responseFormatJSONSchema = "json_schema"
 	responseFormatNone       = "none"
 )
+
+// manifestType is this binary's own declared plugin type, matching the
+// sdk.Manifest.Type set in main(). internal/spam.Classify chooses
+// between the spam.classify and mail.classify wire methods from a
+// plugin's OWN declared manifest type, never from an operator's
+// system.toml `type =` string (Decision 3, issue #304); this binary
+// always declares TypeClassifier, so herold's server here always
+// dispatches mail.classify and never spam.classify. OnConfigure
+// compares against this constant, rather than a literal, so its
+// unused-override warning (re #454) tracks main()'s manifest exactly.
+const manifestType = plug.TypeClassifier
 
 // builtinSystemPrompt is the classifier instruction. Keep it terse and
 // structured: small local models follow short prompts better than long
@@ -339,6 +356,7 @@ func (h *handler) OnConfigure(ctx context.Context, opts map[string]any) error {
 		}
 		cfg.spamThreshold = f
 	}
+	systemPromptOverridden := false
 	if v, ok := opts["system_prompt_override"]; ok {
 		s, err := asString(v, "system_prompt_override")
 		if err != nil {
@@ -346,8 +364,10 @@ func (h *handler) OnConfigure(ctx context.Context, opts map[string]any) error {
 		}
 		if s = strings.TrimSpace(s); s != "" {
 			cfg.systemPrompt = s
+			systemPromptOverridden = true
 		}
 	}
+	classifySystemPromptOverridden := false
 	if v, ok := opts["classify_system_prompt_override"]; ok {
 		s, err := asString(v, "classify_system_prompt_override")
 		if err != nil {
@@ -355,6 +375,31 @@ func (h *handler) OnConfigure(ctx context.Context, opts map[string]any) error {
 		}
 		if s = strings.TrimSpace(s); s != "" {
 			cfg.classifySystemPrompt = s
+			classifySystemPromptOverridden = true
+		}
+	}
+	// re #454: an override set for the prompt the declared type's
+	// dispatched RPC never reads reaches no call the server makes. Warn
+	// loudly at configure (boot) time rather than silently accepting a
+	// security-relevant option that has no effect -- this is exactly how
+	// the operator's "dkim=none/spf=none/dmarc=none are not failures"
+	// guidance failed to reach the model in production (#452, #454).
+	//
+	// This does not fail configuration outright: system_prompt_override
+	// is genuinely used when a raw JSON-RPC caller other than the herold
+	// server (a test harness, an operator's own script) invokes
+	// spam.classify directly against this same binary, per this file's
+	// package doc and TestConfigure_StringTypedOptionsFromServer. That
+	// use is legitimate even though the herold server itself never takes
+	// this path, so the option cannot simply be rejected.
+	switch manifestType {
+	case plug.TypeClassifier:
+		if systemPromptOverridden {
+			sdk.Logf("warn", "herold-spam-llm: option system_prompt_override is set, but this plugin declares type=%s so herold's server always dispatches mail.classify to it, never spam.classify; system_prompt_override only replaces the spam.classify system prompt and will not reach the model on the classify path the server calls -- set classify_system_prompt_override instead", manifestType)
+		}
+	case plug.TypeSpam:
+		if classifySystemPromptOverridden {
+			sdk.Logf("warn", "herold-spam-llm: option classify_system_prompt_override is set, but this plugin declares type=%s so herold's server always dispatches spam.classify to it, never mail.classify; classify_system_prompt_override only replaces the mail.classify system prompt and will not reach the model on the classify path the server calls -- set system_prompt_override instead", manifestType)
 		}
 	}
 	if v, ok := opts["max_body_chars"]; ok {
@@ -1150,7 +1195,7 @@ func main() {
 		// (internal/plugin.compatiblePluginType); the server always
 		// dispatches mail.classify to it either way, choosing the wire
 		// contract from THIS declared type, not the operator's string.
-		Type:                  plug.TypeClassifier,
+		Type:                  manifestType,
 		Lifecycle:             plug.LifecycleLongRunning,
 		MaxConcurrentRequests: 16,
 		ABIVersion:            plug.ABIVersion,
