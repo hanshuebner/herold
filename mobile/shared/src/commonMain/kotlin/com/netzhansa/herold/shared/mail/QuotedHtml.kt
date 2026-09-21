@@ -85,11 +85,13 @@ internal object QuotedHtml {
             // leading children is answered by the structure around it,
             // not by how far into the body it sits. Two things settle
             // it: the region is the first the document has, since
-            // everything from there on is the quoted message; and
-            // nothing outside it declares it quoted, since an
-            // attribution introducing a region says that everything
-            // within belongs to the message it introduces.
-            val mayHoldTheSendersText = atTheFirstRegion && !isIntroducedByAnAttribution(candidate)
+            // everything from there on is the quoted message; and no
+            // citation stands ahead of it at any level, since a
+            // citation hands everything under it to the message it
+            // introduces. Both bodies that fooled earlier rules carry
+            // text before the region, which is why where it sits
+            // cannot tell them apart.
+            val mayHoldTheSendersText = atTheFirstRegion && !isBeneathACitation(candidate)
             atTheFirstRegion = false
             if (!mayHoldTheSendersText) return fold(candidate)
 
@@ -100,22 +102,31 @@ internal object QuotedHtml {
     }
 
     /**
-     * True when an attribution line outside [candidate] introduces it,
-     * which makes everything inside the quoted message's own.
+     * True when a citation stands ahead of [candidate] at any level
+     * above it, which makes everything inside it the quoted message's
+     * own.
      *
-     * The line that introduces a region is the nearest sibling ahead of
-     * it that carries anything - separators and empty elements are not
-     * one. A region a client wrapped in a container of its own is
-     * introduced by whatever introduces that container, so the search
-     * carries on above it while a level has no sibling ahead of it.
+     * At each level the nearest sibling ahead that carries anything is
+     * read - separators and empty elements are not one - and a sibling
+     * that marks where quoted material begins settles it. The walk
+     * continues up through the containers a client wrapped the
+     * citation in, since a container introduced by a citation holds
+     * quoted material throughout.
      */
-    private fun isIntroducedByAnAttribution(candidate: HtmlElement): Boolean {
+    private fun isBeneathACitation(candidate: HtmlElement): Boolean {
+        // A citation ahead of an element says that the element holds
+        // the message it introduces. It cannot say that of a citation
+        // line itself: that line is the boundary the sender's client
+        // writes, and the text in it ahead of the attribution is the
+        // sender's however the body reads above it.
+        if (citationPrefixClass.containsMatchIn(candidate.classes)) return false
+
         var element: HtmlElement = candidate
         while (true) {
             val parent = element.parent ?: return false
             var at = parent.indexOf(element) - 1
             while (at >= 0 && isInert(parent.children[at])) at--
-            if (at >= 0) return isAttribution(parent.children[at])
+            if (at >= 0 && isQuoteStart(parent.children[at])) return true
             element = parent
         }
     }

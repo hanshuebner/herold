@@ -83,6 +83,13 @@ class QuotedFoldCorpusTest {
                     quoted = case.quoted,
                     folds = false,
                 ),
+                FoldCase(
+                    name = "${case.name}+around",
+                    html = "<p>A-${case.name}</p>${case.html}<p>B-${case.name}</p>",
+                    fresh = case.fresh + "A-${case.name}" + "B-${case.name}",
+                    quoted = case.quoted,
+                    folds = false,
+                ),
             )
         }
     }
