@@ -4,7 +4,7 @@
    * singleton-per-principal script, so the form loads the first row
    * (if any), downloads its blob, and lets the user edit it as text.
    * Save uploads the current text via /jmap/upload, then dispatches
-   * SieveScript/set { create | update: { ...: {blobId, isActive: true} } }.
+   * Sieve/set { create | update: { ...: {blobId, isActive: true} } }.
    */
   import { jmap, strict } from '../../lib/jmap/client';
   import { Capability } from '../../lib/jmap/types';
@@ -50,7 +50,7 @@
     try {
       const { responses } = await jmap.batch((b) => {
         b.call(
-          'SieveScript/get',
+          'Sieve/get',
           { accountId, ids: null },
           [Capability.Sieve],
         );
@@ -97,7 +97,7 @@
         body: blob,
         type: 'application/sieve',
       });
-      // Dispatch SieveScript/set with create or update.
+      // Dispatch Sieve/set with create or update.
       const setArgs: Record<string, unknown> = { accountId };
       const tempId = 'editor';
       if (scriptId) {
@@ -118,7 +118,7 @@
         };
       }
       const { responses } = await jmap.batch((b) => {
-        b.call('SieveScript/set', setArgs, [Capability.Sieve]);
+        b.call('Sieve/set', setArgs, [Capability.Sieve]);
       });
       strict(responses);
       const result = responses[0]![1] as {
@@ -129,7 +129,7 @@
           {
             type: string;
             description?: string;
-            sieveValidationErrors?: { line: number; column: number; message: string }[];
+            errors?: { line: number; column: number; message: string }[];
           }
         >;
         notUpdated?: Record<
@@ -137,7 +137,7 @@
           {
             type: string;
             description?: string;
-            sieveValidationErrors?: { line: number; column: number; message: string }[];
+            errors?: { line: number; column: number; message: string }[];
           }
         >;
       };
@@ -145,8 +145,8 @@
         ? result.notUpdated?.[scriptId]
         : result.notCreated?.[tempId];
       if (failure) {
-        if (failure.sieveValidationErrors) {
-          validationErrors = failure.sieveValidationErrors;
+        if (failure.errors) {
+          validationErrors = failure.errors;
         }
         toast.show({
           message: failure.description ?? t('settings.sieve.saveFailedReason', { reason: failure.type }),
@@ -175,7 +175,7 @@
 {#if status === 'loading' || status === 'idle'}
   <p class="hint">{t('common.loading')}</p>
 {:else if status === 'error'}
-  <p class="error" role="alert">{error}</p>
+  <p class="error" role="alert" data-testid="sieve-error">{error}</p>
   <Button variant="secondary" onclick={() => void load()}>{t('common.retry')}</Button>
 {:else}
   <p class="hint">
@@ -199,6 +199,7 @@
     <span class="label">{t('settings.sieve.script')}</span>
     <textarea
       class="sieve-body"
+      data-testid="sieve-script"
       bind:value={body}
       rows="12"
       spellcheck="false"
@@ -222,7 +223,12 @@
 
   <div class="row">
     <span class="label"></span>
-    <Button variant="primary" onclick={() => void save()} disabled={saving}>
+    <Button
+      variant="primary"
+      onclick={() => void save()}
+      disabled={saving}
+      testid="sieve-save"
+    >
       {saving ? t('common.saving') : t('common.save')}
     </Button>
   </div>
