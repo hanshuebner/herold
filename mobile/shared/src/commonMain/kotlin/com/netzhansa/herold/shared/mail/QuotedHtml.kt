@@ -24,11 +24,15 @@ package com.netzhansa.herold.shared.mail
  *    is the sender's own text is left outside it, and the search
  *    carries on with the quoted material inside or after that element.
  *  - Leading content is read as the sender's only in the region the
- *    document opens its quoting with, and only while nothing outside
- *    that region declares it quoted. An attribution line introducing a
- *    region hands everything inside it to the message it introduces,
- *    so what such a region leads with is the quoted correspondence's
- *    own top-posted reply rather than anything written here.
+ *    document opens its quoting with, and only while no citation
+ *    stands anywhere ahead of that region, at its own level or any
+ *    level above. A citation hands what follows it to the message it
+ *    names, so what a region under one leads with is the quoted
+ *    correspondence's own top-posted reply. The exception is a
+ *    citation-prefix element, which is a label naming the attribution
+ *    rather than a container holding a message: the text a client
+ *    writes into it ahead of the attribution is the sender's however
+ *    the body reads above it.
  *
  * The fold is a `<details>` element, which opens and closes on a tap
  * with no script, so it works in the reading pane's WebView with
@@ -113,30 +117,36 @@ internal object QuotedHtml {
      * citation in, since a container introduced by a citation holds
      * quoted material throughout.
      */
-    private fun isBeneathACitation(candidate: HtmlElement): Boolean {
+    internal fun isBeneathACitation(candidate: HtmlElement): Boolean {
         // A citation ahead of an element says that the element holds
         // the message it introduces. It cannot say that of a citation
         // line itself: that line is the boundary the sender's client
         // writes, and the text in it ahead of the attribution is the
         // sender's however the body reads above it.
-        if (citationPrefixClass.containsMatchIn(candidate.classes)) return false
+        if (isACitationLabel(candidate)) return false
 
         var element: HtmlElement = candidate
         while (true) {
             val parent = element.parent ?: return false
-            var at = parent.indexOf(element) - 1
-            while (at >= 0 && isInert(parent.children[at])) at--
-            if (at >= 0 && isQuoteStart(parent.children[at])) return true
+            val at = parent.indexOf(element)
+            // Every node ahead at this level is read, not only the
+            // nearest one that carries anything: a client writes prose
+            // between the citation and the quote it introduces, and a
+            // citation anywhere ahead has already handed what follows
+            // to the message it names.
+            if (parent.children.subList(0, at).any { isQuoteStart(it) }) return true
             element = parent
         }
     }
 
-    /** True for a node that carries nothing of its own: space or a rule. */
-    private fun isInert(node: HtmlNode): Boolean = when (node) {
-        is HtmlText -> node.raw.isBlank() || node.text().isBlank()
-        is HtmlElement ->
-            node.name == "br" || node.name == "hr" || node.text().isBlank()
-    }
+    /**
+     * True for an element whose marking names the citation line rather
+     * than holding a message: Thunderbird's citation-prefix div, which
+     * is a label and not a container, and which a reply composed above
+     * the citation is written into.
+     */
+    private fun isACitationLabel(element: HtmlElement): Boolean =
+        citationPrefixClass.containsMatchIn(element.classes)
 
     private fun fold(candidate: HtmlElement): Boolean {
         val parent = candidate.parent ?: return false
@@ -223,7 +233,7 @@ internal object QuotedHtml {
     }
 
     /** The first quoted region in document order, [passedOver] aside. */
-    private fun firstQuotedRegion(root: HtmlElement, passedOver: List<HtmlElement>): HtmlElement? {
+    internal fun firstQuotedRegion(root: HtmlElement, passedOver: List<HtmlElement>): HtmlElement? {
         root.children.forEach { child ->
             if (child is HtmlElement) {
                 if (isQuoteElement(child) && passedOver.none { it === child }) return child
@@ -245,18 +255,28 @@ internal object QuotedHtml {
      */
     private fun splitLeadingFreshContent(candidate: HtmlElement) {
         val parent = candidate.parent ?: return
+        val boundary = liftableLeadingContent(candidate)
+        if (boundary <= 0) return
+        candidate.children.subList(0, boundary).toList()
+            .forEach { parent.insertBefore(it, candidate) }
+    }
+
+    /**
+     * Where [candidate]'s own leading content ends, or -1 when it
+     * holds none that could be the sender's.
+     */
+    internal fun liftableLeadingContent(candidate: HtmlElement): Int {
         val marker = candidate.children.indexOfFirst { isQuoteStart(it) }
         // A marker at the head of the element means the quoted
         // material starts there and nothing of the sender's precedes
         // it. Reading the text again for an attribution would find the
         // one that belongs to a deeper quote and cut the element open
         // at it.
-        if (marker == 0) return
+        if (marker == 0) return -1
         val boundary = if (marker > 0) marker else attributionStart(candidate.children)
-        if (boundary <= 0) return
-        val leading = candidate.children.subList(0, boundary).toList()
-        if (leading.none { !isQuoteOrEmpty(it) }) return
-        leading.forEach { parent.insertBefore(it, candidate) }
+        if (boundary <= 0) return -1
+        val leading = candidate.children.subList(0, boundary)
+        return if (leading.none { !isQuoteOrEmpty(it) }) -1 else boundary
     }
 
     /**
