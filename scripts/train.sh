@@ -64,6 +64,10 @@ worktree=${TRAIN_WORKTREE:-$repo_root/.claude/worktrees/train}
 
 api_base=${TRAIN_API_BASE:-https://code.netzhansa.com/api/v1}
 poll_interval=${TRAIN_CI_POLL_INTERVAL:-30}
+# How many consecutive run-status fetches may fail before the watch gives
+# up. At the default interval that rides out six minutes of a forge or
+# resolver outage while a run continues.
+ci_fetch_attempts=${TRAIN_CI_FETCH_ATTEMPTS:-12}
 ci_repo_owner=herold
 ci_repo_name=herold
 ci_workflow_id=ci.yml
@@ -143,6 +147,29 @@ run_get() {
     api_get "/repos/${ci_repo_owner}/${ci_repo_name}/actions/runs/$1"
 }
 
+# run_get_persistent <run_id> prints the run JSON, re-trying while the
+# fetch keeps failing. A CI run is watched for twenty minutes or more, so
+# a transient DNS or network failure during that window is expected;
+# ending the watch on one would discard a run that is still progressing
+# and leave the batch unstamped even when it goes on to succeed. Only
+# $ci_fetch_attempts consecutive failures end it, which distinguishes a
+# blip from the forge being genuinely unreachable.
+run_get_persistent() {
+    local run_id=$1 body attempt=1
+    while :; do
+        if body=$(run_get "$run_id" 2>/dev/null); then
+            printf '%s' "$body"
+            return 0
+        fi
+        if [ "$attempt" -ge "$ci_fetch_attempts" ]; then
+            return 1
+        fi
+        echo "train: [$(date +%H:%M:%S)] run status fetch failed (attempt $attempt/$ci_fetch_attempts); retrying in ${poll_interval}s" >&2
+        attempt=$((attempt + 1))
+        sleep "$poll_interval"
+    done
+}
+
 run_jobs() {
     api_get "/repos/${ci_repo_owner}/${ci_repo_name}/actions/runs/$1/jobs"
 }
@@ -179,7 +206,7 @@ wait_for_ci_run() {
     forgejo_token >/dev/null 2>&1 || die "no Forgejo API token: set \$FORGEJO_TOKEN or ~/.config/cilog/token"
     echo "train: locating the ci.yml run for $(git rev-parse --short "$sha") on $TRAIN..."
     run_id=$(find_ci_run "$sha") || die "no ci.yml run found yet for $(git rev-parse --short "$sha"); the push may not have registered with Forgejo yet -- retry in a few seconds"
-    run_json=$(run_get "$run_id") || die "could not fetch run $run_id from $api_base"
+    run_json=$(run_get_persistent "$run_id") || die "could not fetch run $run_id from $api_base after $ci_fetch_attempts consecutive attempts; the watch is abandoned, not the run -- re-run 'train.sh verify' to pick it up"
     run_number=$(printf '%s' "$run_json" | jq -r '.index_in_repo')
     echo "train: watching $(printf '%s' "$run_json" | jq -r '.html_url')"
     while :; do
@@ -189,7 +216,7 @@ wait_for_ci_run() {
         printf '%s' "$jobs_json" | jq -r '.[] | "  " + .status + "\t" + .name'
         ci_run_in_progress "$status" || break
         sleep "$poll_interval"
-        run_json=$(run_get "$run_id") || die "could not fetch run $run_id from $api_base"
+        run_json=$(run_get_persistent "$run_id") || die "could not fetch run $run_id from $api_base after $ci_fetch_attempts consecutive attempts; the watch is abandoned, not the run -- re-run 'train.sh verify' to pick it up"
     done
     if [ "$status" = "success" ]; then
         echo "$sha" >"$stamp_file"
