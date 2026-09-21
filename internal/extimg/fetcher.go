@@ -77,6 +77,13 @@ type Fetcher struct {
 
 // NewFetcher constructs a Fetcher. The cfg is copied; mutations after
 // construction are not observed.
+//
+// When cfg.ExtraCACertPEM is set, the fetch transport trusts that
+// certificate in addition to (never instead of) the process's system
+// root pool -- the same trust NewGuardedClient applies for
+// Email/unsubscribe's outbound POST (issue #412), needed here so a
+// dev/test origin's self-signed certificate is trusted for the actual
+// image fetch, not just the unrelated guarded client (issue #443).
 func NewFetcher(cfg Config) *Fetcher {
 	cfg.resolveOptional()
 	guard := NewSSRFGuard(cfg)
@@ -89,6 +96,9 @@ func NewFetcher(cfg Config) *Fetcher {
 		TLSHandshakeTimeout:   cfg.PerImageConnectTimeout,
 		ResponseHeaderTimeout: cfg.PerImageConnectTimeout,
 		DisableKeepAlives:     false,
+	}
+	if tlsCfg := extraCATLSConfig(cfg.ExtraCACertPEM); tlsCfg != nil {
+		transport.TLSClientConfig = tlsCfg
 	}
 	client := &http.Client{
 		Transport: transport,

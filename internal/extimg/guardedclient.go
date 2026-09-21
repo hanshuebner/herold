@@ -36,14 +36,8 @@ func NewGuardedClient(cfg Config, timeout time.Duration) *http.Client {
 		TLSHandshakeTimeout:   cfg.PerImageConnectTimeout,
 		ResponseHeaderTimeout: cfg.PerImageConnectTimeout,
 	}
-	if len(cfg.ExtraCACertPEM) > 0 {
-		pool, err := x509.SystemCertPool()
-		if err != nil || pool == nil {
-			pool = x509.NewCertPool()
-		}
-		if pool.AppendCertsFromPEM(cfg.ExtraCACertPEM) {
-			transport.TLSClientConfig = &tls.Config{RootCAs: pool}
-		}
+	if tlsCfg := extraCATLSConfig(cfg.ExtraCACertPEM); tlsCfg != nil {
+		transport.TLSClientConfig = tlsCfg
 	}
 	return &http.Client{
 		Transport: transport,
@@ -55,4 +49,26 @@ func NewGuardedClient(cfg Config, timeout time.Duration) *http.Client {
 			return guard.ValidateURL(req.URL)
 		},
 	}
+}
+
+// extraCATLSConfig returns a *tls.Config trusting extraCACertPEM in
+// addition to (never instead of) the process's system root pool, or
+// nil when extraCACertPEM is empty or fails to parse. Shared by
+// NewGuardedClient and NewFetcher so both guarded clients trust a
+// configured [external_images.network] extra_ca_file identically --
+// the operator/dev-instance origin issue #412 introduced this for
+// (Email/unsubscribe) and issue #443 relies on for the image fetcher
+// itself.
+func extraCATLSConfig(extraCACertPEM []byte) *tls.Config {
+	if len(extraCACertPEM) == 0 {
+		return nil
+	}
+	pool, err := x509.SystemCertPool()
+	if err != nil || pool == nil {
+		pool = x509.NewCertPool()
+	}
+	if !pool.AppendCertsFromPEM(extraCACertPEM) {
+		return nil
+	}
+	return &tls.Config{RootCAs: pool}
 }

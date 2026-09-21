@@ -2,8 +2,11 @@ package extimg
 
 import (
 	"context"
+	"encoding/pem"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 )
 
@@ -68,6 +71,50 @@ func TestFetcher_ValidImageContentType_Passthrough(t *testing.T) {
 	}
 	if r.ContentType != "image/webp" {
 		t.Fatalf("ContentType=%q, want image/webp", r.ContentType)
+	}
+}
+
+// TestFetcher_TrustsExtraCACertPEM covers issue #443: NewFetcher's
+// transport must trust cfg.ExtraCACertPEM the same way
+// NewGuardedClient already does for Email/unsubscribe's outbound POST
+// (issue #412), so a dev/test origin's self-signed certificate is
+// trusted for the actual image fetch. Before this fix NewFetcher's
+// transport never consulted ExtraCACertPEM at all; every fetch against
+// a self-signed HTTPS origin failed with a TLS verification error
+// regardless of the configured extra_ca_file.
+func TestFetcher_TrustsExtraCACertPEM(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		w.Write(pngBytes())
+	}))
+	defer srv.Close()
+
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})
+
+	cfg := Config{
+		Mode:                ModeInternalize,
+		MaxPerImageBytes:    5 * 1024 * 1024,
+		MaxPerMessageImages: 100,
+		MaxPerMessageBytes:  50 * 1024 * 1024,
+		ConcurrentFetches:   4,
+		RequireHTTPS:        true,
+		AllowPrivate:        true, // allow 127.0.0.1 to reach httptest
+		HostHeader:          "test.local",
+		ExtraCACertPEM:      certPEM,
+	}
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("parse httptest URL: %v", err)
+	}
+	var port int
+	fmt.Sscanf(u.Port(), "%d", &port)
+	cfg.AllowedPorts = []int{port}
+	cfg.resolveOptional()
+
+	f := NewFetcher(cfg)
+	r := f.Fetch(context.Background(), srv.URL+"/image.png")
+	if r.Outcome != FetchOK {
+		t.Fatalf("Outcome=%s reason=%q, want %s (self-signed cert should be trusted via ExtraCACertPEM)", r.Outcome, r.Reason, FetchOK)
 	}
 }
 
