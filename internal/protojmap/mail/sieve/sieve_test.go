@@ -3,6 +3,7 @@ package sieve
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -143,6 +144,87 @@ func TestJMAPSieve_Get_Set_RoundTrip(t *testing.T) {
 	}
 	if gr2.List[0].ID != created.ID {
 		t.Fatalf("ID round-trip: got %q, created %q", gr2.List[0].ID, created.ID)
+	}
+}
+
+// TestJMAPSieve_Get_BlobID_Downloadable is the regression test for
+// #465: the blobId Sieve/get advertises must resolve through the
+// store's blob surface (the same one /jmap/download reads from), not
+// be a synthetic token that only round-trips in the JSON response.
+func TestJMAPSieve_Get_BlobID_Downloadable(t *testing.T) {
+	h, st, p, ctx := newHandlers(t)
+	blob := uploadBlob(t, st, validScript)
+	setArgs, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
+		"create": map[string]any{
+			"new": map[string]any{"name": "main", "blobId": blob},
+		},
+	})
+	if _, mErr := (setHandler{h: h}).Execute(ctx, setArgs); mErr != nil {
+		t.Fatalf("Sieve/set: %v", mErr)
+	}
+
+	getArgs, _ := json.Marshal(map[string]any{"accountId": protojmap.AccountIDForPrincipal(p.ID)})
+	resp, mErr := getHandler{h: h}.Execute(ctx, getArgs)
+	if mErr != nil {
+		t.Fatalf("Sieve/get: %v", mErr)
+	}
+	gr := resp.(getResponse)
+	if len(gr.List) != 1 {
+		t.Fatalf("list = %d, want 1", len(gr.List))
+	}
+	blobID := gr.List[0].BlobID
+
+	rc, err := st.Blobs().Get(context.Background(), blobID)
+	if err != nil {
+		t.Fatalf("Sieve/get's blobId %q does not resolve via Blobs().Get: %v", blobID, err)
+	}
+	defer rc.Close()
+	body, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("read blob: %v", err)
+	}
+	if normaliseLF(string(body)) != normaliseLF(validScript) {
+		t.Fatalf("downloaded blob mismatch:\ngot=%q\nwant=%q", body, validScript)
+	}
+}
+
+// TestJMAPSieve_Get_HealsScriptSavedUnderPriorScheme covers a script
+// that was already persisted in the metadata column before this fix
+// (the only way scripts landed there before Sieve/set re-registered
+// blobs) — e.g. via a direct store.Meta().SetSieveScript call, which
+// is also how appconfig / tagged-address conversion / managed rules
+// write the active script. Sieve/get must still hand back a blobId
+// that resolves, healing it on the next call rather than requiring a
+// re-save.
+func TestJMAPSieve_Get_HealsScriptSavedUnderPriorScheme(t *testing.T) {
+	h, st, p, ctx := newHandlers(t)
+	if err := st.Meta().SetSieveScript(context.Background(), p.ID, validScript); err != nil {
+		t.Fatalf("SetSieveScript: %v", err)
+	}
+
+	getArgs, _ := json.Marshal(map[string]any{"accountId": protojmap.AccountIDForPrincipal(p.ID)})
+	resp, mErr := getHandler{h: h}.Execute(ctx, getArgs)
+	if mErr != nil {
+		t.Fatalf("Sieve/get: %v", mErr)
+	}
+	gr := resp.(getResponse)
+	if len(gr.List) != 1 {
+		t.Fatalf("list = %d, want 1", len(gr.List))
+	}
+	blobID := gr.List[0].BlobID
+
+	rc, err := st.Blobs().Get(context.Background(), blobID)
+	if err != nil {
+		t.Fatalf("Sieve/get's blobId %q does not resolve via Blobs().Get: %v", blobID, err)
+	}
+	defer rc.Close()
+	body, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("read blob: %v", err)
+	}
+	if normaliseLF(string(body)) != normaliseLF(validScript) {
+		t.Fatalf("downloaded blob mismatch:\ngot=%q\nwant=%q", body, validScript)
 	}
 }
 

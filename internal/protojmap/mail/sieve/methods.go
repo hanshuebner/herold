@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"strconv"
+	"strings"
 
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/protojmap"
@@ -143,10 +144,14 @@ func (g getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 		}
 		return resp, nil
 	}
+	blobID, err := g.h.blobIDForScript(ctx, scriptText)
+	if err != nil {
+		return nil, serverFail(err)
+	}
 	row := jmapSieveScript{
 		ID:        idForPrincipal(pid),
 		Name:      "active",
-		BlobID:    blobIDForScript(scriptText),
+		BlobID:    blobID,
 		IsActive:  true,
 		CreatedAt: g.h.clk.Now().UTC(),
 	}
@@ -279,10 +284,14 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 		if err := s.h.store.Meta().SetSieveScript(ctx, pid, string(body)); err != nil {
 			return nil, serverFail(fmt.Errorf("sieve: persist: %w", err))
 		}
+		blobID, berr := s.h.blobIDForScript(ctx, string(body))
+		if berr != nil {
+			return nil, serverFail(fmt.Errorf("sieve: register blob: %w", berr))
+		}
 		row := jmapSieveScript{
 			ID:        idForPrincipal(pid),
 			Name:      defaultName(in.Name),
-			BlobID:    blobIDForScript(string(body)),
+			BlobID:    blobID,
 			IsActive:  true,
 			CreatedAt: s.h.clk.Now().UTC(),
 		}
@@ -345,10 +354,14 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 		if err := s.h.store.Meta().SetSieveScript(ctx, pid, string(body)); err != nil {
 			return nil, serverFail(fmt.Errorf("sieve: persist: %w", err))
 		}
+		blobID, berr := s.h.blobIDForScript(ctx, string(body))
+		if berr != nil {
+			return nil, serverFail(fmt.Errorf("sieve: register blob: %w", berr))
+		}
 		row := jmapSieveScript{
 			ID:        idForPrincipal(pid),
 			Name:      defaultName(deref(patch.Name)),
-			BlobID:    blobIDForScript(string(body)),
+			BlobID:    blobID,
 			IsActive:  true,
 			CreatedAt: s.h.clk.Now().UTC(),
 		}
@@ -514,15 +527,26 @@ func errorsFromSieveErr(err error) []sieveValidationError {
 	return []sieveValidationError{{Line: 1, Column: 1, Message: err.Error()}}
 }
 
-// blobIDForScript returns a stable opaque token identifying the
-// current active script body. The JMAP downloadUrl is tied to the
-// blob hash; when no separate blob is on file (Phase 1 stores the
-// script text in a metadata column, not as a blob), we synthesise
-// "active-<len>" so clients have something to round-trip on /get
-// without paying a blob upload roundtrip. Sieve/set always supplies
-// the real blob hash via the upload path.
-func blobIDForScript(text string) string {
-	return fmt.Sprintf("active-%d", len(text))
+// blobIDForScript returns the real, downloadable blob id for the
+// active script body. Sieve/set already accepts the text as an
+// uploaded blob (via /jmap/upload) and Phase 1 additionally persists
+// it verbatim in a metadata column so ManageSieve and delivery can
+// read it without a blob round-trip (store.Meta().GetSieveScript /
+// GetSieveScriptByName). blobIDForScript re-registers that text under
+// the store's content-addressed blob surface so the blobId Sieve/get
+// advertises always resolves through the same /jmap/download endpoint
+// the client uses for every other JMAP blob. Blobs().Put is
+// idempotent and content-addressed (BLAKE3), so calling it again for
+// text already on file — including scripts saved under the prior
+// scheme, whose text already sits in the metadata column — is a
+// cheap existence check that returns the same hash, not a duplicate
+// write.
+func (h *handlerSet) blobIDForScript(ctx context.Context, text string) (string, error) {
+	ref, err := h.store.Blobs().Put(ctx, strings.NewReader(text))
+	if err != nil {
+		return "", fmt.Errorf("sieve: blob put: %w", err)
+	}
+	return ref.Hash, nil
 }
 
 // defaultName returns name when non-empty, otherwise the canonical
