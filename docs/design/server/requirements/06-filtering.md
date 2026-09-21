@@ -152,7 +152,7 @@ itself — a natural-language `definition`, the `rules` compiled from it, a
 
 - **REQ-FILT-200** Categorisation runs on **all** delivered mail, not only inbox-bound mail, because `filed` is a disposition (REQ-FILT-204) and a categoriser that sees only inbox-bound mail cannot implement it. Mail classified as spam (`\Junk`) is exempt.
 - **REQ-FILT-201** A message may carry **several** category assignments, stored as `$category-<id>` keywords. The inbox presents the message once, in the lane of its highest-priority category (REQ-FILT-205).
-- **REQ-FILT-202** A message matching no category carries no `$category-*` keyword. The suite presents it under the category holding the `primary` role.
+- **REQ-FILT-202** The category holding the `primary` role (REQ-CAT-03) is carried either by its own `$category-primary` keyword (an explicit assignment, machine or user) or by the absence of any `$category-*` keyword (no category matched). A client MUST treat both as the same lane: one Primary tab, not a second tab for an explicitly assigned `primary`.
 - **REQ-FILT-203** Categorisation runs once at delivery. Subsequent edits to the message do not re-trigger it; re-categorisation is explicit (REQ-FILT-220).
 - **REQ-FILT-204** **Disposition.** Each category carries exactly one disposition, and it governs inbox membership, stream presentation, unread badging, and push notification together:
 
