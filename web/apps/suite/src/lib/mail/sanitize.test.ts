@@ -1675,22 +1675,21 @@ describe('sanitizeHtml — quoted-history collapse', () => {
     });
   });
 
-  // Known gap in isBeneathACitation (see its doc comment, re #448 fourth
-  // follow-up): the ancestor walk gates on isQuoteStartNode, which for a
-  // plain paragraph reduces to a match against the shared isAttributionLine
-  // regex. Ordinary prose that happens to parse as an attribution line,
-  // standing before a genuine moz-cite-prefix div, folds the whole div --
-  // the sender's own fresh text included -- because the walk cannot tell
-  // that prose apart from a real citation introducer. This is
-  // byte-identical to the pre-#448 baseline (cc5721a7): a long-standing
-  // weakness of isAttributionLine, not a regression from any #448 commit,
-  // and it is intentionally NOT fixed here -- it is scoped as its own,
-  // separately tracked defect so the fix and its acceptance test can be
-  // reviewed on their own. This fixture pins CURRENT behaviour so the gap
-  // does not silently change (in either direction) without that change
-  // being noticed.
-  describe('known gap: ordinary prose matching the attribution regex before a genuine citation div (tracked separately, not fixed by #448)', () => {
-    it('pins current behaviour: the whole div, sender text included, folds along with the false-positive "wrote:" paragraph', () => {
+  // #451: isBeneathACitation's ancestor walk gated on isQuoteStartNode,
+  // which for a plain paragraph reduces to a match against the shared
+  // isAttributionLine regex. A paragraph that happens to parse as an
+  // attribution line -- whether ordinary prose that merely resembles one,
+  // or a genuine "Am ... schrieb ...:" line the sender wrote about
+  // something else entirely -- standing before a genuine moz-cite-prefix
+  // div folded the whole div, the sender's own fresh text included,
+  // because the walk could not tell that the paragraph does not introduce
+  // THIS div. Measured byte-identical to the pre-#448 baseline (cc5721a7)
+  // and to 3c84c556: a long-standing defect, not a regression from any
+  // #448 commit. Fixed by exempting a citation-prefix div from
+  // isBeneathACitation outright: such a div NAMES its own attribution
+  // rather than being a container an earlier citation can HOLD.
+  describe('ordinary prose matching the attribution regex before a genuine citation div (re #451)', () => {
+    it('the false-positive "wrote:" paragraph and the sender\'s own text both stay outside the fold; only the genuine citation folds', () => {
       const html =
         '<p>On the anniversary, my grandmother always wrote:</p>\n' +
         '<div class="moz-cite-prefix">Hallo Jane,<br><br>das passt mir gut.<br><br>Am 20.09.26 um 14:12 schrieb ' +
@@ -1698,17 +1697,111 @@ describe('sanitizeHtml — quoted-history collapse', () => {
         '<blockquote type="cite">Original quoted text.</blockquote>';
       const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
       const detailsStart = body.indexOf('<details class="herold-quoted">');
-      expect(detailsStart).toBe(0);
-      // Pinned (undesired) current behaviour: all three pieces of text --
-      // the false-positive introducer AND the sender's own two lines --
-      // are inside the fold, because isBeneathACitation reads the
-      // preceding paragraph as a real citation.
-      expect(body).toContain(
-        '<details class="herold-quoted"><summary aria-label="Show trimmed content"></summary>' +
-          '<p>On the anniversary, my grandmother always wrote:</p>',
+      const detailsEnd = body.indexOf('</details>');
+      expect(detailsStart).toBeGreaterThan(-1);
+      // The moz-cite-prefix div is exempt from `isBeneathACitation`: it
+      // names its own attribution rather than being a container an
+      // earlier citation can hold, so the ordinary-prose paragraph ahead
+      // of it no longer disqualifies its own leading text from being
+      // split out as fresh.
+      expect(body.indexOf('On the anniversary, my grandmother always wrote:')).toBeLessThan(
+        detailsStart,
       );
-      expect(body.indexOf('Hallo Jane,')).toBeGreaterThan(detailsStart);
-      expect(body.indexOf('das passt mir gut.')).toBeGreaterThan(detailsStart);
+      expect(body.indexOf('Hallo Jane,')).toBeLessThan(detailsStart);
+      expect(body.indexOf('das passt mir gut.')).toBeLessThan(detailsStart);
+      // The genuine attribution and the quoted text still fold.
+      const attrPos = body.indexOf('Am 20.09.26 um 14:12 schrieb');
+      const quotePos = body.indexOf('Original quoted text.');
+      expect(attrPos).toBeGreaterThan(detailsStart);
+      expect(attrPos).toBeLessThan(detailsEnd);
+      expect(quotePos).toBeGreaterThan(detailsStart);
+      expect(quotePos).toBeLessThan(detailsEnd);
+    });
+
+    it('Body A: a GENUINE attribution line the sender wrote, ahead of an unrelated later citation, is not swallowed either', () => {
+      // Same defect class as the grandmother body, but the preceding
+      // paragraph is not merely prose that resembles an attribution -- it
+      // is grammatically a real "Am ... schrieb ...:" line, just one the
+      // CURRENT sender typed about someone else's earlier message, not an
+      // auto-generated introducer for the div that happens to follow it.
+      // Measured byte-identical at the pre-#448 baseline, at 3c84c556, and
+      // at the origin/train tip before this fix: a long-standing sibling
+      // of the grandmother collision, not a new regression.
+      const html =
+        '<p>Am 19.09.26 um 09:00 schrieb Bob:</p>' +
+        '<div class="moz-cite-prefix">Hallo Jane,<br><br>das passt mir gut.<br><br>Am 20.09.26 um 14:12 schrieb ' +
+        '<a href="mailto:jane@example.test">jane@example.test</a>:<br></div>' +
+        '<blockquote type="cite">Original quoted text.</blockquote>';
+      const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+      const detailsStart = body.indexOf('<details class="herold-quoted">');
+      const detailsEnd = body.indexOf('</details>');
+      expect(detailsStart).toBeGreaterThan(-1);
+      expect(body.indexOf('Am 19.09.26 um 09:00 schrieb Bob:')).toBeLessThan(detailsStart);
+      expect(body.indexOf('Hallo Jane,')).toBeLessThan(detailsStart);
+      expect(body.indexOf('das passt mir gut.')).toBeLessThan(detailsStart);
+      const attrPos = body.indexOf('Am 20.09.26 um 14:12 schrieb');
+      const quotePos = body.indexOf('Original quoted text.');
+      expect(attrPos).toBeGreaterThan(detailsStart);
+      expect(attrPos).toBeLessThan(detailsEnd);
+      expect(quotePos).toBeGreaterThan(detailsStart);
+      expect(quotePos).toBeLessThan(detailsEnd);
+    });
+  });
+
+  describe('the ancestor walk scans every preceding sibling at a level, not just the nearest (re #451 second finding)', () => {
+    it('control: a genuine attribution paragraph directly before a <blockquote> still folds the whole quote (unaffected regression guard)', () => {
+      // Same shape as #448 shape 1: the attribution is the NEAREST
+      // preceding sibling of the <blockquote> candidate, so this must keep
+      // folding exactly as before the #451 fix.
+      const html =
+        '<p>On Mon, 13 Jul 2026, Alice wrote:</p>\n' +
+        '<blockquote type="cite"><p>Q</p></blockquote>';
+      const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+      const detailsStart = body.indexOf('<details class="herold-quoted">');
+      expect(detailsStart).toBe(0);
+      expect(body.indexOf('On Mon, 13 Jul 2026, Alice wrote:')).toBeGreaterThan(-1);
+      expect(body.indexOf('>Q<')).toBeGreaterThan(detailsStart);
+    });
+
+    it('a prose paragraph resembling an attribution before a plain moz-cite-prefix citation div does not fold the sender\'s own leading text (exemption, unaffected by the sibling scan)', () => {
+      const html =
+        '<p>As my father always used to say when the mail arrived, he wrote:</p>\n' +
+        '<div class="moz-cite-prefix">Hallo Jane,<br><br>Am 20.09.26 um 14:12 schrieb ' +
+        '<a class="moz-txt-link-abbreviated" href="mailto:jane@example.test">jane@example.test</a>:<br></div>\n' +
+        '<blockquote type="cite">Original quoted text.</blockquote>';
+      const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+      const detailsStart = body.indexOf('<details class="herold-quoted">');
+      expect(detailsStart).toBeGreaterThan(-1);
+      expect(body.indexOf('he wrote:')).toBeLessThan(detailsStart);
+      expect(body.indexOf('Hallo Jane,')).toBeLessThan(detailsStart);
+    });
+
+    it('Body B: a real fresh paragraph interleaved between a citation and the quote it introduces does not shield the quote\'s own leading text from being recognised as historical', () => {
+      // The outer <blockquote> is the sole top-level candidate. Its
+      // NEAREST preceding sibling ("Prose of my own in between.") is not
+      // an attribution, but the sibling before THAT ("On Mon, ... Alice
+      // wrote:") is -- scanning only the nearest sibling missed it and let
+      // "What Alice wrote above her own quote.", the correspondent's own
+      // words, leak out ahead of the fold via the ordinary #292 lift.
+      // Measured byte-identical at the pre-#448 baseline, at 3c84c556, and
+      // at the origin/train tip before this fix.
+      const html =
+        '<p>On Mon, 15 Sep 2026, Alice wrote:</p>' +
+        '<p>Prose of my own in between.</p>' +
+        '<blockquote type="cite"><p>What Alice wrote above her own quote.</p>' +
+        '<div class="moz-cite-prefix">Am 14.09.26 um 08:00 schrieb bob@example.test:<br></div>' +
+        '<blockquote type="cite">The oldest message.</blockquote></blockquote>';
+      const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+      const detailsStart = body.indexOf('<details class="herold-quoted">');
+      expect(detailsStart).toBeGreaterThan(-1);
+      // The sender's own interleaved prose stays outside the fold.
+      expect(body.indexOf('Prose of my own in between.')).toBeLessThan(detailsStart);
+      // Alice's own top-posted words and the oldest quoted message both
+      // stay inside it -- neither is the current sender's fresh text.
+      const alicePos = body.indexOf('What Alice wrote above her own quote.');
+      const oldestPos = body.indexOf('The oldest message.');
+      expect(alicePos).toBeGreaterThan(detailsStart);
+      expect(oldestPos).toBeGreaterThan(detailsStart);
     });
   });
 });

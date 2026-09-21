@@ -1978,12 +1978,43 @@ function isAttributionNode(node: Node): boolean {
  * True when `candidate` is already beneath a citation somewhere up its own
  * ancestor chain (re #448 third follow-up).
  *
- * The test walks from `candidate` up through its ancestors; at each level,
- * it checks the nearest non-empty preceding sibling with `isQuoteStartNode`
- * — the same test `splitLeadingFreshContent` uses on a candidate's own
- * children (a further quote-classed element, a bundling wrapper, or —
- * critically for a plain `<p>` — a text match against the shared
- * `isAttributionLine` regex). If that sibling qualifies at any level, it is
+ * A citation-prefix div (`moz-cite-prefix`) is exempt from this check
+ * outright (re #451): such a div NAMES the attribution line for the quote
+ * that follows it — a label — rather than being a container a preceding
+ * citation can HOLD the way a `<blockquote>` or a `gmail_quote`/
+ * `yahoo_quoted` div can. Reading an ordinary preceding paragraph as
+ * disqualifying such a div's own leading content is exactly the false
+ * positive this ticket reports: "On the anniversary, my grandmother always
+ * wrote:" ahead of a genuine `moz-cite-prefix` div folded the whole div,
+ * sender's text included, because the walk treated the div as contained by
+ * that unrelated paragraph — and the same false fold happens when the
+ * paragraph is itself a genuine attribution the SENDER wrote, e.g. "Am
+ * 19.09.26 um 09:00 schrieb Bob:", ahead of the sender's own later,
+ * unrelated citation div: that paragraph does not introduce THIS div
+ * either. A citation-prefix div's own leading content is still
+ * independently checked by `startsAtTheCitation`/
+ * `splitLeadingFreshContent` — this exemption only removes an EXTERNAL
+ * paragraph's ability to veto that check before it runs.
+ *
+ * For every other candidate (`<blockquote>`, `gmail_quote`/`yahoo_quoted`
+ * divs — genuine quote CONTAINERS), the test walks from `candidate` up
+ * through its ancestors; at each level, it scans EVERY preceding sibling
+ * (not just the nearest non-empty one) for an `isQuoteStartNode` match (re
+ * #451 second finding): a real fresh paragraph the sender interleaved
+ * between a citation and the quote it introduces must not shield the quote
+ * from being recognised as beneath that citation — `<p>On Mon, Alice
+ * wrote:</p><p>Prose of my own in between.</p><blockquote><p>What Alice
+ * wrote above her own quote.</p><div class="moz-cite-prefix">...
+ * schrieb...:</div><blockquote>The oldest message.</blockquote></blockquote>`
+ * has the OUTER `<blockquote>` as the sole top-level candidate; checking
+ * only its nearest preceding sibling ("Prose of my own in between.", which
+ * is not an attribution) missed the real "On Mon, Alice wrote:" one
+ * sibling further back, and let "What Alice wrote above her own quote." —
+ * itself the correspondent's own words, not the current sender's — leak
+ * out ahead of the fold via `splitLeadingFreshContent`'s ordinary lift.
+ * Scanning the whole sibling run at each level closes this without
+ * touching the `moz-cite-prefix` exemption above or the shared
+ * `isAttributionLine` regex. If ANY sibling at any level qualifies, it is
  * the citation introducing the level `candidate` sits inside, and
  * everything `candidate` carries — however deeply nested — is treated as
  * the correspondent's own words: `<p>reply</p><div><p>Le 15 septembre...
@@ -1996,40 +2027,30 @@ function isAttributionNode(node: Node): boolean {
  * This walks ANCESTRY, not document position: an unrelated paragraph that
  * merely happens to sit earlier in the document, outside anything that
  * introduces `candidate`, does not disqualify `candidate`'s own leading
- * children — `<p>Fresh sender line</p><div class="moz-cite-prefix">Hallo
- * Jane,...Am 20.09.26 um 14:12 schrieb ...:</div><blockquote>...` has the
- * div as the sole (and top-level) candidate, with no citation introducing
- * it at any ancestor level, so its own "Hallo Jane," text is still the
- * sender's to lift out (re #448 fourth follow-up: a whole-document
- * "does anything precede candidate" predecessor of this function failed
- * exactly this case).
- *
- * The test is therefore structural modulo the `isAttributionLine` regex it
- * calls through `isQuoteStartNode`, not purely structural: it inherits
- * that regex's own false positives at this new call site, with a wider
- * blast radius than the regex's original single-node use (folding just the
- * matched line) — here a false-positive match on the PRECEDING SIBLING
- * disqualifies splitting the CANDIDATE's own children, so the candidate's
- * genuinely fresh text folds away with it. Known instance, tracked as a
- * separate, dedicated defect rather than fixed here (see the fixture below
- * this function): ordinary prose that happens to parse as an attribution
- * line — "On the anniversary, my grandmother always wrote:" — standing
- * before a genuine `moz-cite-prefix` div carrying the sender's own fresh
- * text folds the whole div, sender's text included. This is
- * byte-identical to the pre-#448 baseline (`cc5721a7`): a long-standing
- * weakness of `isAttributionLine` that this ticket neither caused nor
- * cures, not a regression from any #448 commit.
+ * children (re #448 fourth follow-up: a whole-document "does anything
+ * precede candidate" predecessor of this function failed exactly this
+ * case) — though for a `moz-cite-prefix` candidate the exemption above
+ * already makes that moot. Scanning every sibling at a level still stops
+ * at that level's own start (the loop only rises to the PARENT once the
+ * sibling chain is exhausted); it never crosses into a different level's
+ * siblings by itself.
  */
 function isBeneathACitation(candidate: Element): boolean {
+  if (
+    candidate.tagName === 'DIV' &&
+    CITATION_PREFIX_CLASS_RE.test(candidate.getAttribute('class') ?? '')
+  ) {
+    return false;
+  }
   let cur: Node = candidate;
   for (;;) {
     const parent: Node | null = cur.parentNode;
     if (parent === null) return false;
     let back: Node | null = cur.previousSibling;
-    while (back !== null && isQuoteOrEmptyNode(back)) {
+    while (back !== null) {
+      if (!isQuoteOrEmptyNode(back) && isQuoteStartNode(back)) return true;
       back = back.previousSibling;
     }
-    if (back !== null && isQuoteStartNode(back)) return true;
     cur = parent;
   }
 }

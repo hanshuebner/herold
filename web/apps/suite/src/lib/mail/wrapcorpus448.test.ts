@@ -121,6 +121,35 @@ const bodies: Record<string, { html: string; freshMarkers: string[] }> = {
       '<blockquote type="cite">Original quoted text.</blockquote>',
     freshMarkers: ['Hallo Jane,', 'das passt mir gut.'],
   },
+  '#451 collision (ordinary prose matching the attribution regex)': {
+    html:
+      '<p>On the anniversary, my grandmother always wrote:</p>\n' +
+      '<div class="moz-cite-prefix">Hallo Jane,<br><br>das passt mir gut.<br><br>Am 20.09.26 um 14:12 schrieb ' +
+      '<a class="moz-txt-link-abbreviated" href="mailto:jane@example.test">jane@example.test</a>:<br></div>\n' +
+      '<blockquote type="cite">Original quoted text.</blockquote>',
+    freshMarkers: [
+      'On the anniversary, my grandmother always wrote:',
+      'Hallo Jane,',
+      'das passt mir gut.',
+    ],
+  },
+  '#451 Body A (genuine attribution grammar the sender wrote, ahead of an unrelated later citation)': {
+    html:
+      '<p>Am 19.09.26 um 09:00 schrieb Bob:</p>' +
+      '<div class="moz-cite-prefix">Hallo Jane,<br><br>das passt mir gut.<br><br>Am 20.09.26 um 14:12 schrieb ' +
+      '<a href="mailto:jane@example.test">jane@example.test</a>:<br></div>' +
+      '<blockquote type="cite">Original quoted text.</blockquote>',
+    freshMarkers: ['Am 19.09.26 um 09:00 schrieb Bob:', 'Hallo Jane,', 'das passt mir gut.'],
+  },
+  '#451 Body B (a real interleaved paragraph must not shield the quote it precedes)': {
+    html:
+      '<p>On Mon, 15 Sep 2026, Alice wrote:</p>' +
+      '<p>Prose of my own in between.</p>' +
+      '<blockquote type="cite"><p>What Alice wrote above her own quote.</p>' +
+      '<div class="moz-cite-prefix">Am 14.09.26 um 08:00 schrieb bob@example.test:<br></div>' +
+      '<blockquote type="cite">The oldest message.</blockquote></blockquote>',
+    freshMarkers: ['On Mon, 15 Sep 2026, Alice wrote:', 'Prose of my own in between.'],
+  },
 };
 
 describe('re #448 third follow-up: every #448 fixture wrapped in an unrelated LEADING paragraph', () => {
@@ -168,6 +197,55 @@ describe('re #448 third follow-up: every #448 fixture wrapped in unrelated LEADI
       const body = bodyOf(sanitizeNew(wrapped, { loadImages: false }));
       expect(body).toContain('Unrelated leading paragraph.');
       expect(body).toContain('Unrelated trailing paragraph.');
+    });
+  }
+});
+
+describe('re #451: every fixture nested one level deeper inside an extra wrapping <div>', () => {
+  // The ancestor-chain walk (`isBeneathACitation`) climbs past every
+  // wrapper looking for a preceding sibling that introduces the level it
+  // just left. Wrapping each fixture's ENTIRE body in one more containing
+  // <div> pushes every candidate one ancestor level deeper without
+  // changing any node's immediate siblings, so this is a regression guard
+  // on the walk itself continuing to find (or correctly not find) the
+  // same introducer once an extra level of ancestry sits between it and
+  // the candidate.
+  for (const [name, { html, freshMarkers }] of Object.entries(bodies)) {
+    it(`${name}: unaffected by one extra wrapping <div>`, () => {
+      const wrapped = `<div class="extra-wrap">${html}</div>`;
+      const body = bodyOf(sanitizeNew(wrapped, { loadImages: false }));
+      const detailsStart = body.indexOf('<details class="herold-quoted">');
+      for (const marker of freshMarkers) {
+        const pos = body.indexOf(marker);
+        expect(pos, `expected "${marker}" to appear in the output`).toBeGreaterThan(-1);
+        if (detailsStart >= 0) {
+          expect(pos, `expected "${marker}" to render outside the fold`).toBeLessThan(detailsStart);
+        }
+      }
+    });
+  }
+});
+
+describe('re #451: every fixture wrapped in a LEADING paragraph AND an extra wrapping <div>', () => {
+  // Combines both stress dimensions: the unrelated leading paragraph from
+  // the #448 third-follow-up corpus, plus the extra ancestor level above.
+  for (const [name, { html, freshMarkers }] of Object.entries(bodies)) {
+    it(`${name}: unaffected by leading paragraph plus one extra wrapping <div>`, () => {
+      const wrapped = `<div class="extra-wrap">${LEAD}${html}</div>`;
+      const body = bodyOf(sanitizeNew(wrapped, { loadImages: false }));
+      const detailsStart = body.indexOf('<details class="herold-quoted">');
+      const leadPos = body.indexOf('Unrelated leading paragraph.');
+      expect(leadPos).toBeGreaterThan(-1);
+      if (detailsStart >= 0) {
+        expect(leadPos).toBeLessThan(detailsStart);
+      }
+      for (const marker of freshMarkers) {
+        const pos = body.indexOf(marker);
+        expect(pos, `expected "${marker}" to appear in the output`).toBeGreaterThan(-1);
+        if (detailsStart >= 0) {
+          expect(pos, `expected "${marker}" to render outside the fold`).toBeLessThan(detailsStart);
+        }
+      }
     });
   }
 });
