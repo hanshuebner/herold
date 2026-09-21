@@ -33,6 +33,7 @@
     parseMailtoUri,
     type ListAction,
   } from './list-headers';
+  import { computeListPopoverPosition } from './list-chip-popover-position';
 
   interface Props {
     email: Email;
@@ -105,15 +106,25 @@
   let popoverEl = $state<HTMLDivElement | null>(null);
   let position = $state<{ top: number; left: number }>({ top: 0, left: 0 });
 
+  /*
+   * The placement math itself lives in `computeListPopoverPosition`
+   * (list-chip-popover-position.ts), a pure function tested directly
+   * against fixture rectangles for the bottom edge, the top edge, the
+   * right edge, and a viewport shorter than the popover. This wrapper
+   * only does the DOM measurement a real layout engine provides and
+   * that a pure-function test fixes instead.
+   */
   function layoutPopover(): void {
     if (!buttonEl) return;
     const rect = buttonEl.getBoundingClientRect();
     const width = popoverEl?.offsetWidth ?? 180;
-    const left = Math.max(
-      VIEWPORT_MARGIN,
-      Math.min(window.innerWidth - width - VIEWPORT_MARGIN, rect.left),
+    const height = popoverEl?.offsetHeight ?? 120;
+    position = computeListPopoverPosition(
+      { top: rect.top, bottom: rect.bottom, left: rect.left },
+      { width, height },
+      { width: window.innerWidth, height: window.innerHeight },
+      { gap: POPOVER_GAP, margin: VIEWPORT_MARGIN },
     );
-    position = { top: rect.bottom + POPOVER_GAP, left };
   }
 
   $effect(() => {
