@@ -124,6 +124,10 @@ type Dispatcher struct {
 
 	rl *rateLimiter
 
+	// dismiss tracks Inbox-presence for the mail-dismiss classifier
+	// (re #481, REQ-PUSH-84). See DismissTracker's doc comment.
+	dismiss *DismissTracker
+
 	cursor atomic.Uint64
 
 	// retryMu guards the in-flight retry map. attemptState tracks the
@@ -248,6 +252,7 @@ func New(opts Options) (*Dispatcher, error) {
 		cursorKey:      cursorKey,
 		rl: newRateLimiter(opts.Clock,
 			opts.RateLimitPerMinute, opts.RateLimitPerDay, opts.CooldownDuration),
+		dismiss:  NewDismissTracker(),
 		attempt:  make(map[store.PushSubscriptionID]*subAttempt),
 		coalesce: make(map[store.PushSubscriptionID]map[string]*coalesceState),
 		kickCh:   make(chan struct{}, 1),
@@ -396,9 +401,6 @@ func (d *Dispatcher) processChange(ctx context.Context, ch store.FTSChange) {
 	}
 	d.subsActive.Store(int64(len(subs)))
 
-	if len(subs) == 0 {
-		return
-	}
 	// Promote the StateChange into the typed shape BuildPayload
 	// consumes. (We feed FTSChange's id-set here; the two structs
 	// are byte-compatible on the relevant fields.)
@@ -411,15 +413,46 @@ func (d *Dispatcher) processChange(ctx context.Context, ch store.FTSChange) {
 		Op:             ch.Op,
 		ProducedAt:     ch.ProducedAt,
 	}
-	payload, err := BuildPayload(ctx, d.store, ev)
-	if err != nil {
-		if errors.Is(err, errUnsupportedKind) {
-			return
+
+	// Mail-dismiss classification (re #481, REQ-PUSH-84) runs
+	// independently of whether the principal currently has any
+	// subscriptions: a Created row's only effect here is recording
+	// Inbox-arrival in d.dismiss for a later departure to compare
+	// against, and that bookkeeping must happen even when nobody is
+	// subscribed yet at arrival time.
+	dismissReason, dismissEligible := ClassifyDismiss(ctx, d.store, d.dismiss, ev)
+
+	if len(subs) == 0 {
+		return
+	}
+
+	var payload buildPayloadResult
+	haveArrival := false
+	if p, err := BuildPayload(ctx, d.store, ev); err != nil {
+		if !errors.Is(err, errUnsupportedKind) {
+			d.logger.LogAttrs(ctx, slog.LevelWarn, "webpush: build payload",
+				slog.Uint64("principal", uint64(ch.PrincipalID)),
+				slog.String("kind", string(ch.Kind)),
+				slog.String("err", err.Error()))
 		}
-		d.logger.LogAttrs(ctx, slog.LevelWarn, "webpush: build payload",
-			slog.Uint64("principal", uint64(ch.PrincipalID)),
-			slog.String("kind", string(ch.Kind)),
-			slog.String("err", err.Error()))
+	} else {
+		payload = p
+		haveArrival = true
+	}
+
+	var dismissPayload buildPayloadResult
+	if dismissEligible {
+		if p, err := buildEmailDismissPayload(ctx, d.store, ev, dismissReason); err != nil {
+			d.logger.LogAttrs(ctx, slog.LevelWarn, "webpush: build dismiss payload",
+				slog.Uint64("principal", uint64(ch.PrincipalID)),
+				slog.String("err", err.Error()))
+			dismissEligible = false
+		} else {
+			dismissPayload = p
+		}
+	}
+
+	if !haveArrival && !dismissEligible {
 		return
 	}
 
@@ -456,47 +489,69 @@ func (d *Dispatcher) processChange(ctx context.Context, ch store.FTSChange) {
 				slog.Uint64("subscription", uint64(sub.ID)),
 				slog.Any("keys", rules.WarnUnknownEventTypes))
 		}
-		decision := Evaluate(ctx, rules, d.store, ev, d.clock.Now())
-		if !decision.Allow {
-			// dropped_not_arrival / dropped_not_inbox (re #346) get their
-			// own outcome label so the metrics explain a mail-push
-			// silence; every other rule-denial reason still lumps under
-			// the generic dropped_by_rule outcome.
-			outcome := "dropped_by_rule"
-			switch decision.Reason {
-			case ReasonDroppedNotArrival:
-				outcome = "dropped_not_arrival"
-			case ReasonDroppedNotInbox:
-				outcome = "dropped_not_inbox"
+
+		if haveArrival {
+			decision := Evaluate(ctx, rules, d.store, ev, d.clock.Now())
+			if !decision.Allow {
+				// dropped_not_arrival / dropped_not_inbox (re #346) get their
+				// own outcome label so the metrics explain a mail-push
+				// silence; every other rule-denial reason still lumps under
+				// the generic dropped_by_rule outcome.
+				outcome := "dropped_by_rule"
+				switch decision.Reason {
+				case ReasonDroppedNotArrival:
+					outcome = "dropped_not_arrival"
+				case ReasonDroppedNotInbox:
+					outcome = "dropped_not_inbox"
+				}
+				observe.WebPushDeliveriesTotal.WithLabelValues(outcome, string(sub.Transport.Normalized())).Inc()
+				d.logger.LogAttrs(ctx, slog.LevelDebug,
+					"webpush: dropped by rule",
+					slog.Uint64("subscription", uint64(sub.ID)),
+					slog.String("reason", decision.Reason),
+					slog.String("event_type", decision.EventType),
+				)
+			} else if vapidStale(vapidPub, sub) {
+				// VAPID rotation filter (REQ-PROTO-122 / 3.8c spec
+				// resolution): when the subscription's recorded VAPID
+				// public key does not match the dispatcher's current
+				// key, the browser would refuse the push (it was
+				// registered against a different applicationServerKey).
+				// Skip + warn-log; the suite SPAs reconcile via the
+				// next JMAP session response. Do NOT auto-prune the row.
+				observe.WebPushDeliveriesTotal.WithLabelValues("dropped_no_match_vapid", string(sub.Transport.Normalized())).Inc()
+				d.logger.LogAttrs(ctx, slog.LevelWarn,
+					"webpush: subscription stale; client must re-register",
+					slog.Uint64("subscription", uint64(sub.ID)),
+					slog.String("registered_vapid_b64url", sub.VAPIDKeyAtRegistration),
+				)
+			} else {
+				d.sendOne(ctx, sub, payload, ch.Kind)
 			}
-			observe.WebPushDeliveriesTotal.WithLabelValues(outcome, string(sub.Transport.Normalized())).Inc()
-			d.logger.LogAttrs(ctx, slog.LevelDebug,
-				"webpush: dropped by rule",
-				slog.Uint64("subscription", uint64(sub.ID)),
-				slog.String("reason", decision.Reason),
-				slog.String("event_type", decision.EventType),
-			)
-			continue
 		}
-		// VAPID rotation filter (REQ-PROTO-122 / 3.8c spec
-		// resolution): when the subscription's recorded VAPID public
-		// key does not match the dispatcher's current key, the
-		// browser would refuse the push (it was registered against a
-		// different applicationServerKey). Skip + warn-log; the suite
-		// SPAs reconcile via the next JMAP session response. Do NOT
-		// auto-prune the row.
-		if vapidPub != "" && sub.VAPIDKeyAtRegistration != "" &&
-			sub.VAPIDKeyAtRegistration != vapidPub {
-			observe.WebPushDeliveriesTotal.WithLabelValues("dropped_no_match_vapid", string(sub.Transport.Normalized())).Inc()
-			d.logger.LogAttrs(ctx, slog.LevelWarn,
-				"webpush: subscription stale; client must re-register",
-				slog.Uint64("subscription", uint64(sub.ID)),
-				slog.String("registered_vapid_b64url", sub.VAPIDKeyAtRegistration),
-			)
-			continue
+
+		if dismissEligible {
+			// REQ-PUSH-84: a dismiss is exempt from the per-event-type
+			// mute map, category filtering, and quiet hours (Evaluate's
+			// full reason chain never runs for it) — only the master
+			// switch and the same VAPID-staleness check every other
+			// push respects apply.
+			if !rules.Master {
+				observe.WebPushDeliveriesTotal.WithLabelValues("dismiss_muted_master", string(sub.Transport.Normalized())).Inc()
+			} else if vapidStale(vapidPub, sub) {
+				observe.WebPushDeliveriesTotal.WithLabelValues("dropped_no_match_vapid", string(sub.Transport.Normalized())).Inc()
+			} else {
+				d.sendDismiss(ctx, sub, dismissPayload)
+			}
 		}
-		d.sendOne(ctx, sub, payload, ch.Kind)
 	}
+}
+
+// vapidStale reports whether sub was registered against a VAPID public
+// key that no longer matches the dispatcher's current key (REQ-PROTO-122).
+func vapidStale(currentPub string, sub store.PushSubscription) bool {
+	return currentPub != "" && sub.VAPIDKeyAtRegistration != "" &&
+		sub.VAPIDKeyAtRegistration != currentPub
 }
 
 // subscriptionMatchesKind returns true when sub.Types is empty (subscribe
@@ -555,15 +610,7 @@ func (d *Dispatcher) sendOne(
 	payload buildPayloadResult,
 	kind store.EntityKind,
 ) {
-	// Honour pending retry deadlines: if we recently logged a 5xx
-	// for this subscription and the backoff window hasn't elapsed,
-	// skip this fan-out. The retry-on-elapse path is driven by the
-	// next Run tick, so a busy feed automatically retries when the
-	// timer expires.
-	d.retryMu.Lock()
-	at := d.attempt[sub.ID]
-	d.retryMu.Unlock()
-	if at != nil && d.clock.Now().Before(at.nextAttempt) {
+	if d.retryBackoffActive(sub.ID) {
 		return
 	}
 
@@ -588,7 +635,44 @@ func (d *Dispatcher) sendOne(
 		return
 	}
 
-	urgency := urgencyForKind(kind)
+	d.sendPayload(ctx, sub, payload, urgencyForKind(kind))
+}
+
+// sendDismiss delivers a mail-dismiss payload (re #481, REQ-PUSH-84).
+//
+// It bypasses the per-subscription rate limiter deliberately: the
+// limiter exists to cap sustained arrival volume (REQ-PROTO-126), and
+// counting a dismissal against the same bucket would let a burst of
+// arrivals starve the very dismissal that tells the device an earlier
+// notification is stale. The retry-backoff check still applies —
+// backing off from an endpoint that is currently failing protects the
+// gateway regardless of push kind — and delivery still goes through
+// the shared per-email coalescing window so several qualifying
+// transitions on the same message collapse to one push.
+func (d *Dispatcher) sendDismiss(ctx context.Context, sub store.PushSubscription, payload buildPayloadResult) {
+	if d.retryBackoffActive(sub.ID) {
+		return
+	}
+	d.sendPayload(ctx, sub, payload, urgencyForKind(store.EntityKindEmail))
+}
+
+// retryBackoffActive reports whether id is inside a pending retry
+// backoff window (a recent 5xx or bounded 4xx failure): if we recently
+// logged a failure for this subscription and the backoff window
+// hasn't elapsed, the caller should skip this fan-out. The retry-on-
+// elapse path is driven by the next Run tick, so a busy feed
+// automatically retries when the timer expires.
+func (d *Dispatcher) retryBackoffActive(id store.PushSubscriptionID) bool {
+	d.retryMu.Lock()
+	at := d.attempt[id]
+	d.retryMu.Unlock()
+	return at != nil && d.clock.Now().Before(at.nextAttempt)
+}
+
+// sendPayload runs the shared coalesce-or-deliver tail once a caller
+// has cleared its own pre-send gates (rate limit for an arrival,
+// nothing further for a dismiss).
+func (d *Dispatcher) sendPayload(ctx context.Context, sub store.PushSubscription, payload buildPayloadResult, urgency string) {
 	if payload.CoalesceTag == "" {
 		// No tag => no coalescing window applies. Push immediately.
 		d.dispatchDeliver(ctx, sub, payload.JSON, payload.CoalesceTag, urgency)
