@@ -1,6 +1,6 @@
 package webpush
 
-// dismiss.go implements the mail-dismiss push (REQ-PUSH-84, re #481):
+// dismiss.go implements the mail-dismiss push (REQ-PUSH-100..104, re #481):
 // telling a device that a notification it already posted for a
 // message is now stale because the message was read, archived, or
 // destroyed on another client or session.
@@ -22,7 +22,7 @@ import (
 )
 
 // Dismiss reason tokens carried in the wire payload's "reason" field
-// (REQ-PUSH-84). Closed set; a client that receives an unrecognised
+// (REQ-PUSH-101). Closed set; a client that receives an unrecognised
 // value still resolves the emailId/threadId as a no-op dismissal.
 const (
 	DismissReasonSeen      = "seen"
@@ -55,7 +55,7 @@ type dismissState struct {
 // messages the dispatcher has most recently observed holding an
 // Inbox-role mailbox membership, plus whether a "seen" dismissal has
 // already fired for the message's current read state (re #481,
-// REQ-PUSH-84).
+// REQ-PUSH-101).
 //
 // It exists because a mailbox move's change-feed row names the
 // destination mailbox in ParentEntityID, not the vacated membership
@@ -135,7 +135,7 @@ func (t *DismissTracker) setLocked(id store.MessageID, s dismissState) {
 }
 
 // ClassifyDismiss reports whether ev is a mail-dismiss-eligible Email
-// transition and, when it is, the wire reason (REQ-PUSH-84 / re #481).
+// transition and, when it is, the wire reason (REQ-PUSH-101 / re #481).
 // tracker supplies the Inbox-presence memory a mailbox move's
 // ParentEntityID (the destination, not the vacated membership) cannot
 // provide on its own; see DismissTracker's doc comment.
@@ -197,7 +197,7 @@ func ClassifyDismiss(ctx context.Context, st store.Store, tracker *DismissTracke
 	}
 }
 
-// emailDismissPayload is the REQ-PUSH-84 wire shape: kind and type are
+// emailDismissPayload is the REQ-PUSH-100 wire shape: kind and type are
 // both "mail-dismiss" so a client dispatches on either field the same
 // way it already does for the "mail" arrival payload, followed by the
 // shared stateChangeBase envelope and the three dismiss-specific
@@ -249,7 +249,7 @@ func buildEmailDismissPayload(ctx context.Context, st store.Store, ev store.Stat
 	if err != nil {
 		return buildPayloadResult{}, fmt.Errorf("webpush: marshal email dismiss payload: %w", err)
 	}
-	// Per-email coalescing (REQ-PUSH-84): the tag is keyed by message,
+	// Per-email coalescing (REQ-PUSH-103): the tag is keyed by message,
 	// not by thread like the arrival tag ("email/<threadID>"), so
 	// several qualifying transitions on the same email within the
 	// dispatcher's coalescing window collapse to one push without

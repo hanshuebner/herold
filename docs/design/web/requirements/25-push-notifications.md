@@ -49,6 +49,16 @@ This doc covers the user-facing behaviour, the JMAP wire shape, and the service 
 | REQ-PUSH-46 | Coalescing: notifications with the same `tag` replace prior notifications atomically. Used for: thread updates (multiple new messages on same thread), reactions to same message, repeated chat messages in same conversation. The body of the replacement notification reflects the latest state ("3 new messages from Alice on Re: Project X"). |
 | REQ-PUSH-47 | Privacy: notification content is encrypted on the wire to the push gateway (Apple, Google, Mozilla, self-hosted). The push service sees only the encrypted blob and the VAPID claim identifying the suite's server. The user's content is not visible to the push provider. |
 
+## Dismissal
+
+| ID | Requirement |
+|----|-------------|
+| REQ-PUSH-100 | herold emits a push of kind/type `mail-dismiss` to tell a device that a message it already notified about is no longer unread, no longer in the Inbox, or no longer exists. The payload carries the shared `StateChange` envelope plus `emailId`, `threadId`, and `reason`; Web Push, FCM, and UnifiedPush carry identical JSON. |
+| REQ-PUSH-101 | A dismissal is emitted for an Email change-feed row about a message that sits, or sat, in an Inbox-role mailbox: a keyword update that sets `$seen` (`reason: "seen"`); a mailbox update that leaves the message with no remaining Inbox-role membership (`reason: "left-inbox"`, e.g. archiving); or a destroy of the Inbox-role membership (`reason: "destroyed"`). A message that never held an Inbox-role membership never dismisses. |
+| REQ-PUSH-102 | A dismissal bypasses the per-event-type mute map, the mail-category allowlist (REQ-PUSH-81), and quiet hours (REQ-PUSH-82) — only the master switch (REQ-PUSH-80) gates it. It is also exempt from the per-subscription rate limit, so a burst of arrivals cannot suppress the dismissal that clears them. |
+| REQ-PUSH-103 | Dismissals for the same email arriving within the coalescing window (REQ-PUSH-46) collapse to one push, keyed independently of the arrival notification's per-thread coalescing tag. |
+| REQ-PUSH-104 | A client resolves a `mail-dismiss` push by closing/withdrawing the notification it holds for the named `emailId` and, once no unread notified message remains for the thread, the thread-level summary notification too. A `mail-dismiss` naming a notification the client is not currently showing is a no-op. |
+
 ## Actions on notifications
 
 The service worker handles action buttons without opening the app. The user gets one-tap mail / chat operations from their lock screen.

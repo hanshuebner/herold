@@ -1,6 +1,6 @@
 package webpush
 
-// dismiss_test.go covers the mail-dismiss push (re #481, REQ-PUSH-84):
+// dismiss_test.go covers the mail-dismiss push (re #481, REQ-PUSH-100..104):
 // a message read, archived, or destroyed on another session must
 // dismiss the notification an earlier arrival push caused, on every
 // transport, exactly once per qualifying transition. Per the project's
@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -263,7 +264,7 @@ func (f *dismissFixture) destroy(t *testing.T, msgID store.MessageID, mailboxID 
 // setQuietHoursCoveringNow configures the web subscription's rules
 // with a quiet-hours window that covers every hour of the day in the
 // fixture's fake-clock timezone (UTC), so any arrival push would be
-// suppressed while a dismiss (REQ-PUSH-84: exempt from quiet hours)
+// suppressed while a dismiss (REQ-PUSH-102: exempt from quiet hours)
 // must still go through.
 func (f *dismissFixture) setQuietHoursCoveringNow(t *testing.T) {
 	t.Helper()
@@ -279,7 +280,7 @@ func (f *dismissFixture) setQuietHoursCoveringNow(t *testing.T) {
 }
 
 // setMaster sets the web subscription's master switch, the only gate
-// a dismiss respects (REQ-PUSH-84).
+// a dismiss respects (REQ-PUSH-102).
 func (f *dismissFixture) setMaster(t *testing.T, on bool) {
 	t.Helper()
 	ctx := context.Background()
@@ -399,6 +400,16 @@ func TestDispatcher_MailDismiss_MasterOffSuppresses(t *testing.T) {
 	testDismissMasterOff(t, nil)
 }
 
+func TestDispatcher_MailDismiss_BypassesRateLimiter(t *testing.T) {
+	t.Parallel()
+	testDismissBypassesRateLimiter(t, nil)
+}
+
+func TestDispatcher_MailDismiss_WithheldDuringRetryBackoff(t *testing.T) {
+	t.Parallel()
+	testDismissWithheldDuringRetryBackoff(t, nil)
+}
+
 // -- Postgres entry points -------------------------------------------
 //
 // Each opens its own connection against HEROLD_PG_DSN and skips when
@@ -435,6 +446,14 @@ func TestDispatcher_MailDismiss_Destroy_Postgres(t *testing.T) {
 
 func TestDispatcher_MailDismiss_NonInboxMessage_NoDismiss_Postgres(t *testing.T) {
 	testDismissNonInbox(t, openPostgresForDismissTest(t))
+}
+
+func TestDispatcher_MailDismiss_BypassesRateLimiter_Postgres(t *testing.T) {
+	testDismissBypassesRateLimiter(t, openPostgresForDismissTest(t))
+}
+
+func TestDispatcher_MailDismiss_WithheldDuringRetryBackoff_Postgres(t *testing.T) {
+	testDismissWithheldDuringRetryBackoff(t, openPostgresForDismissTest(t))
 }
 
 // -- shared scenario bodies -------------------------------------------
@@ -518,7 +537,7 @@ func testDismissNonInbox(t *testing.T, st store.Store) {
 	}
 }
 
-// testDismissCoalesces proves per-email coalescing (REQ-PUSH-84): a
+// testDismissCoalesces proves per-email coalescing (REQ-PUSH-103): a
 // "seen" dismiss and a "destroyed" dismiss for the SAME message
 // arriving within the dispatcher's coalescing window share a tag and
 // collapse to one push at the moment of the second transition; the
@@ -582,7 +601,7 @@ func testDismissRepeatedSeenFiresOnce(t *testing.T, st store.Store) {
 	}
 }
 
-// testDismissQuietHours proves REQ-PUSH-84's exemption: a dismiss
+// testDismissQuietHours proves REQ-PUSH-102's exemption: a dismiss
 // still reaches the subscription while its rules configure quiet
 // hours covering the whole day.
 func testDismissQuietHours(t *testing.T, st store.Store) {
@@ -607,5 +626,116 @@ func testDismissMasterOff(t *testing.T, st store.Store) {
 
 	if got := len(f.webGW.Calls()) - base; got != 0 {
 		t.Fatalf("master-off subscription received %d POSTs, want 0", got)
+	}
+}
+
+// testDismissBypassesRateLimiter proves REQ-PUSH-102: a dismiss is
+// exempt from the per-subscription rate limiter that gates arrivals.
+// A single-token bucket is exhausted by one arrival (a second arrival
+// immediately after is confirmed rate-limited), and the dismiss for
+// the first message still reaches the subscription.
+func testDismissBypassesRateLimiter(t *testing.T, st store.Store) {
+	f := newDismissFixture(t, st, func(o *Options) { o.RateLimitPerMinute = 1 })
+	base := len(f.webGW.Calls())
+
+	msgID := f.insertMessage(t, f.inboxID, "first")
+	if got := len(f.webGW.Calls()) - base; got != 1 {
+		t.Fatalf("expected 1 POST for the first arrival (consumes the only token), got %d", got)
+	}
+
+	// The bucket is now empty and the fake clock has not advanced, so
+	// a second arrival is rate-limited: confirms the limiter is
+	// actually exhausted at this point.
+	f.insertMessage(t, f.inboxID, "second")
+	if got := len(f.webGW.Calls()) - base; got != 1 {
+		t.Fatalf("second arrival should have been rate-limited; got %d POSTs (delta), want 1", got)
+	}
+
+	// A dismiss for the first message still goes out despite the
+	// exhausted bucket.
+	f.markSeen(t, msgID, f.inboxID)
+	if got := len(f.webGW.Calls()) - base; got != 2 {
+		t.Fatalf("dismiss was starved by the exhausted rate limiter; got %d POSTs (delta), want 2", got)
+	}
+	assertDismiss(t, f.lastWebDismiss(t), fmt.Sprintf("%d", msgID), DismissReasonSeen)
+}
+
+// testDismissWithheldDuringRetryBackoff proves a dismiss does not
+// bypass the per-subscription retry-backoff window a recent delivery
+// failure opened: an endpoint currently failing must not be hammered
+// by a dismiss any more than by an arrival. Once the endpoint recovers
+// and the backoff window elapses, the next qualifying transition
+// reaches it normally.
+func testDismissWithheldDuringRetryBackoff(t *testing.T, st store.Store) {
+	f := newDismissFixture(t, st)
+	var failing atomic.Bool
+	failing.Store(true)
+	f.webGW.respond = func(r *http.Request) (int, []byte) {
+		if failing.Load() {
+			return http.StatusServiceUnavailable, nil
+		}
+		return http.StatusCreated, nil
+	}
+	base := len(f.webGW.Calls())
+
+	msgID := f.insertMessage(t, f.inboxID, "hello")
+	// The arrival's 5xx attempt opened a retry-backoff window for the
+	// subscription.
+	if got := len(f.webGW.Calls()) - base; got != 1 {
+		t.Fatalf("expected 1 (failed) POST attempt for the arrival, got %d", got)
+	}
+
+	// A dismiss while backoff is active is withheld.
+	f.markSeen(t, msgID, f.inboxID)
+	if got := len(f.webGW.Calls()) - base; got != 1 {
+		t.Fatalf("dismiss reached the subscription during retry backoff; got %d POSTs (delta), want 1 (withheld)", got)
+	}
+
+	// The endpoint recovers and the backoff window elapses; the next
+	// qualifying transition (archiving) reaches it.
+	failing.Store(false)
+	f.clk.Advance(2 * time.Second)
+	f.archive(t, msgID)
+	if got := len(f.webGW.Calls()) - base; got != 2 {
+		t.Fatalf("expected the post-backoff dismiss to go out; got %d POSTs (delta), want 2", got)
+	}
+	assertDismiss(t, f.lastWebDismiss(t), fmt.Sprintf("%d", msgID), DismissReasonLeftInbox)
+}
+
+// TestDismissTracker_EvictsAtCapacity proves DismissTracker's memory
+// bound: filling it past dismissMaxTracked never grows the underlying
+// map beyond the cap, and a message tracked after an eviction round
+// still classifies its transition correctly (eviction does not corrupt
+// the tracker's own bookkeeping for entries it keeps). This is a pure
+// in-memory property of DismissTracker with no store dependency, so it
+// runs once rather than per backend.
+func TestDismissTracker_EvictsAtCapacity(t *testing.T) {
+	t.Parallel()
+	tr := NewDismissTracker()
+	for i := 0; i < dismissMaxTracked+1000; i++ {
+		tr.markInInbox(store.MessageID(i + 1))
+	}
+	tr.mu.Lock()
+	size := len(tr.state)
+	tr.mu.Unlock()
+	if size > dismissMaxTracked {
+		t.Fatalf("tracker grew to %d entries, want <= %d (dismissMaxTracked)", size, dismissMaxTracked)
+	}
+
+	// A message tracked after the fill-past-capacity round above still
+	// classifies its "left the Inbox" transition correctly: markInInbox
+	// records presence, and a subsequent update() reporting no Inbox
+	// membership fires left-inbox and drops the entry.
+	fresh := store.MessageID(999_999_999)
+	tr.markInInbox(fresh)
+	if fireSeen, fireLeftInbox := tr.update(fresh, false, false); fireSeen || !fireLeftInbox {
+		t.Fatalf("update(fresh, hasInbox=false) = (fireSeen=%v, fireLeftInbox=%v), want (false, true)", fireSeen, fireLeftInbox)
+	}
+
+	// The same message no longer classifies as a departure a second
+	// time (its tracked state was consumed by the fire above), mirroring
+	// testDismissRepeatedSeenFiresOnce's dedup for the "seen" reason.
+	if fireSeen, fireLeftInbox := tr.update(fresh, false, false); fireSeen || fireLeftInbox {
+		t.Fatalf("update(fresh, hasInbox=false) fired again after consumption: (%v, %v)", fireSeen, fireLeftInbox)
 	}
 }

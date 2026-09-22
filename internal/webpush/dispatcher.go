@@ -125,7 +125,7 @@ type Dispatcher struct {
 	rl *rateLimiter
 
 	// dismiss tracks Inbox-presence for the mail-dismiss classifier
-	// (re #481, REQ-PUSH-84). See DismissTracker's doc comment.
+	// (re #481, REQ-PUSH-101). See DismissTracker's doc comment.
 	dismiss *DismissTracker
 
 	cursor atomic.Uint64
@@ -414,7 +414,7 @@ func (d *Dispatcher) processChange(ctx context.Context, ch store.FTSChange) {
 		ProducedAt:     ch.ProducedAt,
 	}
 
-	// Mail-dismiss classification (re #481, REQ-PUSH-84) runs
+	// Mail-dismiss classification (re #481, REQ-PUSH-101) runs
 	// independently of whether the principal currently has any
 	// subscriptions: a Created row's only effect here is recording
 	// Inbox-arrival in d.dismiss for a later departure to compare
@@ -531,7 +531,7 @@ func (d *Dispatcher) processChange(ctx context.Context, ch store.FTSChange) {
 		}
 
 		if dismissEligible {
-			// REQ-PUSH-84: a dismiss is exempt from the per-event-type
+			// REQ-PUSH-102: a dismiss is exempt from the per-event-type
 			// mute map, category filtering, and quiet hours (Evaluate's
 			// full reason chain never runs for it) — only the master
 			// switch and the same VAPID-staleness check every other
@@ -638,7 +638,7 @@ func (d *Dispatcher) sendOne(
 	d.sendPayload(ctx, sub, payload, urgencyForKind(kind))
 }
 
-// sendDismiss delivers a mail-dismiss payload (re #481, REQ-PUSH-84).
+// sendDismiss delivers a mail-dismiss payload (re #481, REQ-PUSH-102).
 //
 // It bypasses the per-subscription rate limiter deliberately: the
 // limiter exists to cap sustained arrival volume (REQ-PROTO-126), and
