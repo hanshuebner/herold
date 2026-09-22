@@ -5390,6 +5390,19 @@ export function buildAllMailFilter(
  * `applyTrashJunkExclusion` directly, via `buildAllMailFilter` for `all`
  * and by splicing into their own `hasKeyword` base condition for the
  * other two -- they have no single `mailboxId` to scope this helper to.
+ *
+ * Also excludes any message carrying the `$snoozed` keyword (re #468):
+ * the server sets `$snoozed` on a mailbox membership alongside
+ * `snoozedUntil` when a reminder is set, and until that reminder falls
+ * due the message belongs only in the Snoozed virtual folder (whose own
+ * filter selects `$snoozed` positively), not in the folder it would
+ * otherwise sort into. `notKeyword` is added as a sibling key on the
+ * same flat `FilterCondition` as `inMailbox`, not wrapped in an `AND`
+ * operator, so the request stays on the fast SQL-pushable path
+ * (`internal/protojmap/mail/email/fastquery.go:mergeFlatFilterIntoOpts`
+ * translates `notKeyword` straight to `EmailQueryFastOpts.NotKeyword`).
+ * Junk and Trash views are unaffected -- they return before this
+ * exclusion is built, same as the existing Junk/Trash exclusion.
  */
 export function buildFolderViewFilter(
   mailboxId: string,
@@ -5399,7 +5412,7 @@ export function buildFolderViewFilter(
   if (mailbox?.role === 'junk' || mailbox?.role === 'trash') {
     return { inMailbox: mailboxId };
   }
-  return applyTrashJunkExclusion({ inMailbox: mailboxId }, mailboxes);
+  return applyTrashJunkExclusion({ inMailbox: mailboxId, notKeyword: '$snoozed' }, mailboxes);
 }
 
 /**

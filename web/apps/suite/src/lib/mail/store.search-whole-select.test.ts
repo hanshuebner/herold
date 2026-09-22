@@ -260,6 +260,6 @@ describe('search whole-result-set selection (issue #207)', () => {
         return { ref: () => ({}) };
       },
     });
-    expect(sentFilter).toEqual({ inMailbox: 'mbx-inbox' });
+    expect(sentFilter).toEqual({ inMailbox: 'mbx-inbox', notKeyword: '$snoozed' });
   });
 });

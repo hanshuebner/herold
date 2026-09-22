@@ -7,6 +7,12 @@
  * apply the same exclusion via buildAllMailFilter and applyTrashJunkExclusion
  * directly in loadFolder/#refreshFolderInPlace/#buildCurrentFolderFilter
  * (re #426; see build-all-mail-filter.test.ts).
+ *
+ * Issue #468: every ordinary folder/label view also excludes a message
+ * carrying the `$snoozed` keyword, so a snoozed conversation leaves the
+ * Inbox (and any other non-Junk/Trash folder) until its reminder falls
+ * due. The Snoozed virtual folder keeps its own positive `hasKeyword:
+ * '$snoozed'` selection (see build-all-mail-filter.test.ts).
  */
 
 import { describe, it, expect } from 'vitest';
@@ -40,18 +46,29 @@ describe('buildFolderViewFilter (issue #310)', () => {
     expect(filter).not.toHaveProperty('operator');
     expect(filter).toEqual({
       inMailbox: 'mb-label',
+      notKeyword: '$snoozed',
       inMailboxOtherThan: expect.arrayContaining(['mb-trash', 'mb-junk']),
     });
   });
 
-  it('returns a plain inMailbox filter for a label view when neither special mailbox exists', () => {
+  it('returns a plain inMailbox + notKeyword filter for a label view when neither special mailbox exists', () => {
     const mailboxes = new Map<string, Mailbox>();
     mailboxes.set('mb-inbox', mb('mb-inbox', 'Inbox', 'inbox'));
     mailboxes.set('mb-label', mb('mb-label', 'Project X', null));
 
     const filter = buildFolderViewFilter('mb-label', mailboxes);
 
-    expect(filter).toEqual({ inMailbox: 'mb-label' });
+    expect(filter).toEqual({ inMailbox: 'mb-label', notKeyword: '$snoozed' });
+  });
+
+  it('excludes $snoozed from the Inbox view (re #468)', () => {
+    const mailboxes = new Map<string, Mailbox>();
+    mailboxes.set('mb-inbox', mb('mb-inbox', 'Inbox', 'inbox'));
+
+    const filter = buildFolderViewFilter('mb-inbox', mailboxes);
+
+    expect(filter).not.toHaveProperty('operator');
+    expect(filter).toEqual({ inMailbox: 'mb-inbox', notKeyword: '$snoozed' });
   });
 
   it('leaves the Junk view unfiltered even when Trash also exists', () => {

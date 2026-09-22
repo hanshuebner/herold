@@ -92,6 +92,7 @@ describe('buildHiddenJunkTrashCountFilters (re #384)', () => {
     // condition, single row per candidate, correctly evaluable.
     expect(visible).toEqual({
       inMailbox: 'mb-label',
+      notKeyword: '$snoozed',
       inMailboxOtherThan: expect.arrayContaining(['mb-trash', 'mb-junk']),
     });
     // `raw` is the label's plain membership, no exclusion.

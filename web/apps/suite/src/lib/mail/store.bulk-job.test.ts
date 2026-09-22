@@ -201,8 +201,9 @@ describe('whole-mailbox async bulk job (issue #149/#161)', () => {
       accountId: 'acct-1',
       // Issue #310: the folder filter for a non-Junk/Trash mailbox excludes
       // Trash (and Junk, when present) so a whole-mailbox bulk action never
-      // touches junked or trashed mail.
-      filter: { inMailbox: INBOX_ID, inMailboxOtherThan: [TRASH_ID] },
+      // touches junked or trashed mail. Issue #468: it also excludes any
+      // message still carrying the $snoozed keyword.
+      filter: { inMailbox: INBOX_ID, notKeyword: '$snoozed', inMailboxOtherThan: [TRASH_ID] },
       patch: {
         [`mailboxIds/${INBOX_ID}`]: null,
         [`mailboxIds/${ARCHIVE_ID}`]: true,
@@ -383,7 +384,8 @@ describe('whole-mailbox async bulk job (issue #149/#161)', () => {
     expect(calls[0]?.[1]).toEqual({
       accountId: 'acct-1',
       // Issue #310: same Trash/Junk exclusion as the archive case above.
-      filter: { inMailbox: INBOX_ID, inMailboxOtherThan: [TRASH_ID] },
+      // Issue #468: same $snoozed exclusion as the archive case above.
+      filter: { inMailbox: INBOX_ID, notKeyword: '$snoozed', inMailboxOtherThan: [TRASH_ID] },
       destroy: true,
     });
     expect(mail.listWholeMailboxSelected).toBe(false);
