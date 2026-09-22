@@ -100,6 +100,10 @@ func Run(t *testing.T, f Factory) {
 		{"SubAccountMigration_RunIsCrashSafe", testSubAccountMigration_RunIsCrashSafe},
 		{"SubAccountMigration_RemoveKeep", testSubAccountMigration_RemoveKeep},
 		{"SubAccountMigration_RemovePurge", testSubAccountMigration_RemovePurge},
+		// ReparentMessage wake-destination remap (issue #274, 2026-09-22
+		// reminder-ending rule follow-up).
+		{"ReparentMessage_WakeMailboxRemap", testReparentMessage_WakeMailboxRemap},
+		{"ReparentMessage_WakeMailboxDroppedWhenOutsideReparent", testReparentMessage_WakeMailboxDroppedWhenOutsideReparent},
 		// Alias retargeting on separation/removal (issue #312, REQ-SUBACCT-07).
 		{"SubAccountMigration_SeparateRetargetsAlias_NoAliasRow", testSubAccountMigration_SeparateRetargetsAlias_NoAliasRow},
 		{"SubAccountMigration_SeparateRetargetsAlias_TwoDomains", testSubAccountMigration_SeparateRetargetsAlias_TwoDomains},

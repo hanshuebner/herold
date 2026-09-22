@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/hanshuebner/herold/internal/store"
 )
@@ -1152,4 +1153,120 @@ func testSubAccountMigration_AliasTargetFollowsLifecycle(t *testing.T, s store.S
 			t.Fatalf("ResolveAlias after purge = (%d, %v), want (%d, nil) -- parent (row survives the cascade)", got, err, f.parent.ID)
 		}
 	})
+}
+
+// -- ReparentMessage wake-destination remap (issue #274, 2026-09-22 --
+// reminder-ending rule follow-up) -------------------------------------
+//
+// ReparentMessage moves every membership named in mailboxMoves from the
+// old principal to the new one. A membership carrying an active snooze
+// stores its wake destination as a mailbox id under the OLD principal;
+// ReparentMessage must either remap that id through the same
+// mailboxMoves map (when the wake mailbox is itself part of the
+// reparent) or drop it to NULL (when it is not, so the row never ends
+// up naming a mailbox under a different principal).
+
+// testReparentMessage_WakeMailboxRemap covers the case where the wake
+// destination is itself one of the mailboxes being reparented: the
+// remapped membership's WakeMailboxID must point at the NEW principal's
+// copy of that mailbox, not the old one.
+func testReparentMessage_WakeMailboxRemap(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	oldP := mustInsertPrincipal(t, s, "reparent-wake-remap-old@example.com")
+	newP := mustInsertPrincipal(t, s, "reparent-wake-remap-new@example.com")
+	oldSent := mustInsertMailbox(t, s, oldP.ID, "Sent")
+	oldInbox := mustInsertMailbox(t, s, oldP.ID, "INBOX")
+	newSent := mustInsertMailbox(t, s, newP.ID, "Sent")
+	newInbox := mustInsertMailbox(t, s, newP.ID, "INBOX")
+
+	ref := putBlob(t, s, "reparent-wake-remap-body")
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{PrincipalID: oldP.ID, Blob: ref, Size: ref.Size},
+		[]store.MessageMailbox{{MailboxID: oldSent.ID}}); err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+	id := firstMessageIDFromFeed(t, s, oldP.ID)
+	due := time.Date(2030, 4, 5, 6, 7, 8, 0, time.UTC)
+	if _, err := s.Meta().SetSnooze(ctx, id, oldSent.ID, &due, &oldInbox.ID); err != nil {
+		t.Fatalf("SetSnooze: %v", err)
+	}
+
+	// Both the origin (Sent) and the wake destination (Inbox) move as
+	// part of this reparent, so the stored wake destination must be
+	// remapped to the new principal's Inbox.
+	moves := map[store.MailboxID]store.MailboxID{
+		oldSent.ID:  newSent.ID,
+		oldInbox.ID: newInbox.ID,
+	}
+	if err := s.Meta().ReparentMessage(ctx, id, newP.ID, moves); err != nil {
+		t.Fatalf("ReparentMessage: %v", err)
+	}
+
+	got, err := s.Meta().GetMessage(ctx, id)
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	if got.PrincipalID != newP.ID {
+		t.Fatalf("PrincipalID = %d, want %d", got.PrincipalID, newP.ID)
+	}
+	if got.SnoozedUntil == nil || !got.SnoozedUntil.Equal(due) {
+		t.Fatalf("SnoozedUntil = %v, want %v", got.SnoozedUntil, due)
+	}
+	wake := wakeMailboxIDIn(got, newSent.ID)
+	if wake == nil {
+		t.Fatalf("WakeMailboxID = nil, want %d (remapped new Inbox)", newInbox.ID)
+	}
+	if *wake != newInbox.ID {
+		t.Fatalf("WakeMailboxID = %d, want %d (remapped new Inbox, not %d the old one)", *wake, newInbox.ID, oldInbox.ID)
+	}
+}
+
+// testReparentMessage_WakeMailboxDroppedWhenOutsideReparent covers the
+// case where the wake destination is NOT part of the reparent's
+// mailboxMoves: carrying the old id forward unchanged would leave the
+// new principal's membership naming a mailbox owned by someone else, so
+// the destination must be dropped to NULL instead (which the wake
+// worker already tolerates by resolving the Inbox at wake time).
+func testReparentMessage_WakeMailboxDroppedWhenOutsideReparent(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	oldP := mustInsertPrincipal(t, s, "reparent-wake-drop-old@example.com")
+	newP := mustInsertPrincipal(t, s, "reparent-wake-drop-new@example.com")
+	oldSent := mustInsertMailbox(t, s, oldP.ID, "Sent")
+	oldArchive := mustInsertMailbox(t, s, oldP.ID, "Archive")
+	newSent := mustInsertMailbox(t, s, newP.ID, "Sent")
+
+	ref := putBlob(t, s, "reparent-wake-drop-body")
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{PrincipalID: oldP.ID, Blob: ref, Size: ref.Size},
+		[]store.MessageMailbox{{MailboxID: oldSent.ID}}); err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+	id := firstMessageIDFromFeed(t, s, oldP.ID)
+	due := time.Date(2030, 4, 5, 6, 7, 8, 0, time.UTC)
+	// Wake destination is Archive, which stays behind under the old
+	// principal -- this reparent moves only Sent.
+	if _, err := s.Meta().SetSnooze(ctx, id, oldSent.ID, &due, &oldArchive.ID); err != nil {
+		t.Fatalf("SetSnooze: %v", err)
+	}
+
+	moves := map[store.MailboxID]store.MailboxID{
+		oldSent.ID: newSent.ID,
+	}
+	if err := s.Meta().ReparentMessage(ctx, id, newP.ID, moves); err != nil {
+		t.Fatalf("ReparentMessage: %v", err)
+	}
+
+	got, err := s.Meta().GetMessage(ctx, id)
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	if got.PrincipalID != newP.ID {
+		t.Fatalf("PrincipalID = %d, want %d", got.PrincipalID, newP.ID)
+	}
+	// The deadline itself still carries over -- only the destination is
+	// affected by leaving its scope.
+	if got.SnoozedUntil == nil || !got.SnoozedUntil.Equal(due) {
+		t.Fatalf("SnoozedUntil = %v, want %v", got.SnoozedUntil, due)
+	}
+	if wake := wakeMailboxIDIn(got, newSent.ID); wake != nil {
+		t.Fatalf("WakeMailboxID = %d, want nil (Archive was outside the reparent, under the old principal)", *wake)
+	}
 }
