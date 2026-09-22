@@ -469,11 +469,25 @@ func seedFidelityRows(t *testing.T, db *sql.DB) {
 		"ident-2", 2, "bob-alias@example.test", 0)
 
 	// jmap_email_submissions
+	// sub-1: local-queue row, NULL hold_deadline_us, every hold/relay flag
+	// at its zero value -- the (b) nullable/zero-column case.
 	exec(`INSERT INTO jmap_email_submissions (id, envelope_id, principal_id, identity_id,
 	        email_id, thread_id, send_at_us, created_at_us, undo_status, properties)
 	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		"sub-1", "env-001", 1, "ident-1", 1, "thread-1",
 		int64(1000000), int64(2000000), "final", binaryBlob)
+	// sub-2: an in-flight external submission still inside its undo-send
+	// window (re #478) -- the (a) all-columns-populated case. Exercises
+	// external, held_for_reauth, hold_deadline_us and relay_held together
+	// so a backup/restore that silently drops any of them (the bug this
+	// row was added to catch) fails the byte-for-byte dump comparison.
+	exec(`INSERT INTO jmap_email_submissions (id, envelope_id, principal_id, identity_id,
+	        email_id, thread_id, send_at_us, created_at_us, undo_status, properties,
+	        external, held_for_reauth, hold_deadline_us, relay_held)
+	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"sub-2", "ext:env-002", 1, "ident-1", 2, "thread-2",
+		int64(3000000), int64(3000000), "pending", binaryBlob,
+		1, 1, int64(9000000), 1)
 
 	// tlsrpt_failures
 	exec(`INSERT INTO tlsrpt_failures (id, recorded_at_us, policy_domain, receiving_mta_hostname, failure_type, failure_code, failure_detail_json)
@@ -1145,6 +1159,90 @@ func TestFidelity_GapTables(t *testing.T) {
 	}
 	if !bytes.Equal(gotCred, sealedCred) {
 		t.Errorf("sealed cred mismatch: got %x, want %x", gotCred, sealedCred)
+	}
+}
+
+// TestFidelity_EmailSubmission_RelayHeldSurvivesBackupRestore is a
+// regression test (re #478) for the bug where jmap_email_submissions.
+// external, held_for_reauth, hold_deadline_us and relay_held were live
+// schema columns but absent from JMAPEmailSubmissionRow: a backup/restore
+// silently dropped all four, so a submission mid-undo-window came back
+// RelayHeld=false and External=false -- invisible to ListDueExternalRelays
+// (it would never be relayed) and answering cannotUnsend on destroy for a
+// message that was in fact never sent.
+func TestFidelity_EmailSubmission_RelayHeldSurvivesBackupRestore(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	srcSt, _ := openStore(t)
+	p, err := srcSt.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind: store.PrincipalKindUser, CanonicalEmail: "relay-hold-backup@example.test",
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal: %v", err)
+	}
+	holdDeadline := int64(9000000)
+	row := store.EmailSubmissionRow{
+		ID:             "ext:relay-hold-1",
+		EnvelopeID:     store.EnvelopeID("ext:relay-hold-1"),
+		PrincipalID:    p.ID,
+		IdentityID:     "ident-relay",
+		EmailID:        store.MessageID(1),
+		ThreadID:       "thread-relay",
+		SendAtUs:       int64(3000000),
+		CreatedAtUs:    int64(1000000),
+		UndoStatus:     "pending",
+		Properties:     []byte(`{"rcptTo":["a@b.com"],"mailFrom":"from@example.com"}`),
+		External:       true,
+		HeldForReauth:  true,
+		HoldDeadlineUs: holdDeadline,
+		RelayHeld:      true,
+	}
+	if err := srcSt.Meta().InsertEmailSubmission(ctx, row); err != nil {
+		t.Fatalf("InsertEmailSubmission: %v", err)
+	}
+
+	dstSt, _ := openStore(t)
+	dstBE, _ := backup.BackendFor(dstSt)
+	srcBE, _ := backup.BackendFor(srcSt)
+	snap, err := srcBE.Snapshot(ctx)
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	defer snap.Close()
+	sink, err := dstBE.Restore(ctx)
+	if err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	defer sink.Rollback(ctx)
+
+	// principals is a FK dependency of jmap_email_submissions.
+	for _, tbl := range []string{"principals", "jmap_email_submissions"} {
+		if err := snap.EnumerateRows(ctx, tbl, func(r any) error {
+			return sink.Insert(ctx, tbl, r)
+		}); err != nil {
+			t.Fatalf("migrate %s: %v", tbl, err)
+		}
+	}
+	if err := sink.Commit(ctx); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	got, err := dstSt.Meta().GetEmailSubmission(ctx, "ext:relay-hold-1")
+	if err != nil {
+		t.Fatalf("GetEmailSubmission (restored): %v", err)
+	}
+	if !got.External {
+		t.Error("External = false after restore, want true")
+	}
+	if !got.HeldForReauth {
+		t.Error("HeldForReauth = false after restore, want true")
+	}
+	if got.HoldDeadlineUs != holdDeadline {
+		t.Errorf("HoldDeadlineUs = %d after restore, want %d", got.HoldDeadlineUs, holdDeadline)
+	}
+	if !got.RelayHeld {
+		t.Error("RelayHeld = false after restore, want true -- the undo-send hold was dropped by backup/restore")
 	}
 }
 

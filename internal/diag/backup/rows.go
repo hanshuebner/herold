@@ -594,6 +594,24 @@ type JMAPEmailSubmissionRow struct {
 	CreatedAtUs int64  `json:"created_at_us"`
 	UndoStatus  string `json:"undo_status"`
 	Properties  []byte `json:"properties,omitempty"`
+	// External is true when the row was routed through an external SMTP
+	// endpoint rather than herold's outbound queue (REQ-AUTH-EXT-SUBMIT-05,
+	// migration 0069).
+	External bool `json:"external,omitempty"`
+	// HeldForReauth is true while an External row is parked waiting for the
+	// identity's auth to recover (re #70, migration 0069).
+	HeldForReauth bool `json:"held_for_reauth,omitempty"`
+	// HoldDeadlineUs is the unix-micros expiry of the HeldForReauth park
+	// window; NULL when the row is not held (migration 0069).
+	HoldDeadlineUs *int64 `json:"hold_deadline_us,omitempty"`
+	// RelayHeld is true while an External row is scheduled for its
+	// undo-send / sendAt window but has not yet been claimed for relay
+	// dispatch (re #478, migration 0114). A backup/restore that drops this
+	// flag would surface as a message that silently never sends: the row
+	// would never be found by ListDueExternalRelays and destroy would
+	// answer cannotUnsend for a submission that was never handed to the
+	// relay.
+	RelayHeld bool `json:"relay_held,omitempty"`
 }
 
 type JMAPIdentityRow struct {
