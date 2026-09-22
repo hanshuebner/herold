@@ -13,6 +13,16 @@ interface ReachabilityObserver {
     /** A request reached the server, whatever the server then said. */
     fun reached()
 
+    /**
+     * A request confirmed the server: a status the transport answered
+     * with a body that decoded as the descriptor or a method response,
+     * not merely a socket round trip that completed (issue #479). A
+     * captive portal's login page completes a round trip too, so what
+     * tells the platform the network is validated needs this rather
+     * than [reached]. Implies [reached].
+     */
+    fun confirmedReached()
+
     /** A request never got there. */
     fun unreachable()
 }

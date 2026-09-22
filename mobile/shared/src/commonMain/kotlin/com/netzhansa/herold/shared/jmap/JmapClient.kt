@@ -91,7 +91,11 @@ class JmapClient(
         val response = authorizedGet("${baseUrl.trimEnd('/')}/.well-known/jmap")
         val text = response.bodyAsText()
         requireSuccess(response, text, "JMAP session")
-        return wireJson.decodeFromString(JmapSession.serializer(), text)
+        val descriptor = wireJson.decodeFromString(JmapSession.serializer(), text)
+        // The body decoded as the descriptor, not a captive portal's
+        // login page answering the same status (issue #479).
+        reachability?.confirmedReached()
+        return descriptor
     }
 
     override suspend fun mailboxGet(accountId: String, ids: List<String>?): GetResult<WireMailbox> {
@@ -867,6 +871,11 @@ class JmapClient(
                 id = entry.getOrNull(2)?.jsonPrimitive?.content.orEmpty(),
             )
         }
+        // The body decoded as a method-response batch, not a captive
+        // portal's login page answering the same status (issue #479).
+        // A method-level "error" entry still means this: the server
+        // shaped the response, whatever it then said about the call.
+        reachability?.confirmedReached()
         parsed.firstOrNull { it.name == "error" }?.let { errorResponse ->
             val type = errorResponse.args["type"]?.jsonPrimitive?.content ?: "unknownMethod"
             throw JmapException(

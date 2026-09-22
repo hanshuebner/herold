@@ -28,13 +28,30 @@ class Reachability : ReachabilityObserver {
     /** False once a request failed on the wire, until one gets through. */
     val reachable: StateFlow<Boolean> = _reachable.asStateFlow()
 
+    /**
+     * False once a request failed, until one is confirmed - a status
+     * the transport answered with a body that decoded as the
+     * descriptor or a method response (issue #479). A captive portal's
+     * login page moves [reachable] without moving this: reporting a
+     * network validated to the platform needs the stronger evidence.
+     */
+    private val _confirmed = MutableStateFlow(true)
+    val confirmed: StateFlow<Boolean> = _confirmed.asStateFlow()
+
     /** A request reached the server, whatever the server then said. */
     override fun reached() {
         _reachable.value = true
     }
 
+    /** A request's body decoded as the descriptor or a method response. */
+    override fun confirmedReached() {
+        _reachable.value = true
+        _confirmed.value = true
+    }
+
     /** A request never got there. */
     override fun unreachable() {
         _reachable.value = false
+        _confirmed.value = false
     }
 }

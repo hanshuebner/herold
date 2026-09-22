@@ -55,11 +55,19 @@ class AndroidConnectivityMonitor(
     }
 
     /**
-     * The client's own traffic just reached the server (issue #479): a
-     * reading the platform delivered before this is overruled by
+     * The client's own traffic just confirmed the server (issue #479):
+     * a reading the platform delivered before this is overruled by
      * stronger evidence, and the platform is told the network it
      * reported is working so a validation that has gone stale is
      * corrected rather than left for a callback that may not come.
+     *
+     * [ReachabilityCoordinator] calls this from a `StateFlow` that only
+     * emits on a change of direction, so one confirmed run reports
+     * once here, not once per request in it; [manager]'s own call has
+     * no visible effect for a network already reported the same way.
+     * `activeNetwork` answers null between networks - a captive-portal
+     * sign-out, a SIM swap - and the report is skipped rather than
+     * made against nothing.
      */
     override fun noteReachable() {
         _online.value = true
@@ -70,7 +78,8 @@ class AndroidConnectivityMonitor(
      * A run of the client's own requests could not reach the server on
      * a network the platform still calls validated (issue #479): asked
      * to check again, rather than left to a callback nothing here
-     * prompts.
+     * prompts. The same once-per-run and null-`activeNetwork` handling
+     * as [noteReachable] applies.
      */
     override fun noteUnreachable() {
         manager.activeNetwork?.let { manager.reportNetworkConnectivity(it, false) }
