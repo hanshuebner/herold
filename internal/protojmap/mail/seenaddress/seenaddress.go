@@ -250,8 +250,18 @@ func (c changesHandler) Execute(ctx context.Context, args json.RawMessage) (any,
 		return nil, protojmap.NewMethodError("cannotCalculateChanges",
 			"sinceState is in the future")
 	}
-	createdIDs, updatedIDs, destroyedIDs, ferr := walkChangeFeed(
-		ctx, c.h.store.Meta(), pid, store.EntityKindSeenAddress, since)
+	maxChanges := 0
+	if req.MaxChanges != nil && *req.MaxChanges > 0 {
+		maxChanges = *req.MaxChanges
+	}
+	// ReadChangeFeedAll: include background-cause rows
+	// (REQ-EXTIMG-BG-INTERNAL-14). The walker filters on EntityKind, so
+	// background rows produced by the extimg internalize-worker on the
+	// Email kind are skipped naturally; the explicit opt-in keeps this
+	// consumer aligned with the architecture table even if a future
+	// producer were to write background rows for the SeenAddress kind.
+	createdIDs, updatedIDs, destroyedIDs, cutoff, hasMore, ferr := protojmap.WalkChangesByOrdinal(
+		ctx, c.h.store.Meta(), pid, store.EntityKindSeenAddress, since, maxChanges, true)
 	if ferr != nil {
 		return nil, serverFail(ferr)
 	}
@@ -264,82 +274,11 @@ func (c changesHandler) Execute(ctx context.Context, args json.RawMessage) (any,
 	for id := range destroyedIDs {
 		resp.Destroyed = append(resp.Destroyed, seenAddrID(store.SeenAddressID(id)))
 	}
-	if req.MaxChanges != nil && *req.MaxChanges > 0 {
-		total := len(resp.Created) + len(resp.Updated) + len(resp.Destroyed)
-		if total > *req.MaxChanges {
-			resp.HasMoreChanges = true
-			resp.NewState = req.SinceState
-		}
+	if hasMore {
+		resp.HasMoreChanges = true
+		resp.NewState = strconv.FormatInt(cutoff, 10)
 	}
 	return resp, nil
-}
-
-// walkChangeFeed reads the principal's change feed for SeenAddress entries,
-// returning the disjoint created/updated/destroyed sets produced by entries
-// with op-count > since.
-func walkChangeFeed(
-	ctx context.Context,
-	meta store.Metadata,
-	pid store.PrincipalID,
-	kind store.EntityKind,
-	since int64,
-) (created, updated, destroyed map[uint64]struct{}, err error) {
-	created = map[uint64]struct{}{}
-	updated = map[uint64]struct{}{}
-	destroyed = map[uint64]struct{}{}
-	const page = 1000
-	var cursor store.ChangeSeq
-	opsAfter := int64(0)
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil, nil, nil, err
-		}
-		// ReadChangeFeedAll: include background-cause rows
-		// (REQ-EXTIMG-BG-INTERNAL-14). The walker filters on
-		// EntityKind below, so background rows produced by the extimg
-		// internalize-worker on the Email kind are skipped naturally;
-		// the explicit opt-in keeps this consumer aligned with the
-		// architecture table even if a future producer were to write
-		// background rows for the SeenAddress kind.
-		batch, ferr := meta.ReadChangeFeedAll(ctx, pid, cursor, page)
-		if ferr != nil {
-			return nil, nil, nil, ferr
-		}
-		for _, entry := range batch {
-			cursor = entry.Seq
-			if entry.Kind != kind {
-				continue
-			}
-			opsAfter++
-			if opsAfter <= since {
-				continue
-			}
-			id := entry.EntityID
-			switch entry.Op {
-			case store.ChangeOpCreated:
-				delete(destroyed, id)
-				created[id] = struct{}{}
-			case store.ChangeOpUpdated:
-				if _, isCreated := created[id]; isCreated {
-					continue
-				}
-				if _, gone := destroyed[id]; gone {
-					continue
-				}
-				updated[id] = struct{}{}
-			case store.ChangeOpDestroyed:
-				if _, isCreated := created[id]; isCreated {
-					delete(created, id)
-					continue
-				}
-				delete(updated, id)
-				destroyed[id] = struct{}{}
-			}
-		}
-		if len(batch) < page {
-			return created, updated, destroyed, nil
-		}
-	}
 }
 
 func parseStateString(s string) (int64, bool) {

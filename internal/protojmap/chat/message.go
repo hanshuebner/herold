@@ -231,7 +231,12 @@ func (h *msgChangesHandler) Execute(ctx context.Context, args json.RawMessage) (
 	if since > current {
 		return nil, protojmap.NewMethodError("cannotCalculateChanges", "sinceState is in the future")
 	}
-	created, updated, destroyed, ferr := walkChatChangeFeed(ctx, h.h.store.Meta(), pid, store.EntityKindChatMessage, since)
+	maxChanges := 0
+	if req.MaxChanges != nil && *req.MaxChanges > 0 {
+		maxChanges = *req.MaxChanges
+	}
+	created, updated, destroyed, cutoff, hasMore, ferr := protojmap.WalkChangesBySeq(
+		ctx, h.h.store.Meta(), pid, store.EntityKindChatMessage, store.ChangeSeq(since), maxChanges)
 	if ferr != nil {
 		return nil, serverFail(ferr)
 	}
@@ -244,12 +249,9 @@ func (h *msgChangesHandler) Execute(ctx context.Context, args json.RawMessage) (
 	for id := range destroyed {
 		resp.Destroyed = append(resp.Destroyed, jmapIDFromMessage(store.ChatMessageID(id)))
 	}
-	if req.MaxChanges != nil && *req.MaxChanges > 0 {
-		total := len(resp.Created) + len(resp.Updated) + len(resp.Destroyed)
-		if total > *req.MaxChanges {
-			resp.HasMoreChanges = true
-			resp.NewState = req.SinceState
-		}
+	if hasMore {
+		resp.HasMoreChanges = true
+		resp.NewState = stateFromCounter(int64(cutoff))
 	}
 	return resp, nil
 }

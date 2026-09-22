@@ -1348,6 +1348,87 @@ func TestEmail_Changes_FromState(t *testing.T) {
 	}
 }
 
+// TestEmail_Changes_Paged_ReachesCurrentState folds a maxChanges-capped
+// Email/changes loop over a change set larger than the cap (re #475): a
+// trimmed answer must advance newState past sinceState so the next call
+// makes progress, and the loop must see every created id exactly once
+// before hasMoreChanges goes false.
+func TestEmail_Changes_Paged_ReachesCurrentState(t *testing.T) {
+	testEmail_Changes_Paged_ReachesCurrentState(t, setupFixture(t))
+}
+
+func TestEmail_Changes_Paged_ReachesCurrentState_Postgres(t *testing.T) {
+	testEmail_Changes_Paged_ReachesCurrentState(t, setupFixturePostgres(t))
+}
+
+func testEmail_Changes_Paged_ReachesCurrentState(t *testing.T, f *fixture) {
+	t.Helper()
+	_, raw := f.invoke(t, "Email/get", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"ids":       []string{},
+	})
+	var ge struct {
+		State string `json:"state"`
+	}
+	if err := json.Unmarshal(raw, &ge); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	state := ge.State
+
+	const n = 7
+	want := map[string]bool{}
+	for i := 0; i < n; i++ {
+		body := fmt.Sprintf("From: a@example.test\r\nTo: b@example.test\r\nSubject: p%d\r\n\r\nbody %d", i, i)
+		msg := f.insertMessage(t, body, fmt.Sprintf("p%d", i), "a@example.test", "b@example.test", nil, "")
+		want[strconv.FormatUint(uint64(msg.ID), 10)] = true
+	}
+
+	const maxChanges = 2
+	seen := map[string]bool{}
+	for calls := 0; ; calls++ {
+		if calls > n+2 {
+			t.Fatalf("did not converge after %d calls; seen=%d of %d", calls, len(seen), n)
+		}
+		_, raw := f.invoke(t, "Email/changes", map[string]any{
+			"accountId":  protojmap.AccountIDForPrincipal(f.pid),
+			"sinceState": state,
+			"maxChanges": maxChanges,
+		})
+		var resp struct {
+			NewState       string   `json:"newState"`
+			HasMoreChanges bool     `json:"hasMoreChanges"`
+			Created        []string `json:"created"`
+		}
+		if err := json.Unmarshal(raw, &resp); err != nil {
+			t.Fatalf("unmarshal: %v: %s", err, raw)
+		}
+		if len(resp.Created) > maxChanges {
+			t.Fatalf("created=%v exceeds maxChanges=%d", resp.Created, maxChanges)
+		}
+		if resp.HasMoreChanges && resp.NewState == state {
+			t.Fatalf("newState %q == sinceState with hasMoreChanges=true; the loop cannot progress", state)
+		}
+		for _, c := range resp.Created {
+			if seen[c] {
+				t.Fatalf("id %s reported twice across the fold", c)
+			}
+			seen[c] = true
+		}
+		state = resp.NewState
+		if !resp.HasMoreChanges {
+			break
+		}
+	}
+	if len(seen) != n {
+		t.Fatalf("saw %d ids across the fold, want %d: %v", len(seen), n, seen)
+	}
+	for id := range want {
+		if !seen[id] {
+			t.Fatalf("id %s never reported by any Email/changes page", id)
+		}
+	}
+}
+
 func TestEmail_Import_FromUploadedBlob(t *testing.T) {
 	f := setupFixture(t)
 	body := "From: a@example.test\r\nTo: b@example.test\r\nSubject: import-me\r\n\r\nimport body"

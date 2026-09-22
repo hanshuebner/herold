@@ -255,7 +255,12 @@ func (h *convChangesHandler) Execute(ctx context.Context, args json.RawMessage) 
 	if since > current {
 		return nil, protojmap.NewMethodError("cannotCalculateChanges", "sinceState is in the future")
 	}
-	created, updated, destroyed, ferr := walkChatChangeFeed(ctx, h.h.store.Meta(), pid, store.EntityKindConversation, since)
+	maxChanges := 0
+	if req.MaxChanges != nil && *req.MaxChanges > 0 {
+		maxChanges = *req.MaxChanges
+	}
+	created, updated, destroyed, cutoff, hasMore, ferr := protojmap.WalkChangesBySeq(
+		ctx, h.h.store.Meta(), pid, store.EntityKindConversation, store.ChangeSeq(since), maxChanges)
 	if ferr != nil {
 		return nil, serverFail(ferr)
 	}
@@ -268,83 +273,11 @@ func (h *convChangesHandler) Execute(ctx context.Context, args json.RawMessage) 
 	for id := range destroyed {
 		resp.Destroyed = append(resp.Destroyed, jmapIDFromConversation(store.ConversationID(id)))
 	}
-	if req.MaxChanges != nil && *req.MaxChanges > 0 {
-		total := len(resp.Created) + len(resp.Updated) + len(resp.Destroyed)
-		if total > *req.MaxChanges {
-			resp.HasMoreChanges = true
-			resp.NewState = req.SinceState
-		}
+	if hasMore {
+		resp.HasMoreChanges = true
+		resp.NewState = stateFromCounter(int64(cutoff))
 	}
 	return resp, nil
-}
-
-// walkChatChangeFeed reads the principal's change feed and classifies
-// entries by kind. The walker mirrors the email package (see
-// internal/protojmap/mail/email/changes.go): chat state is the
-// change_feed.seq for the principal+kind, so the walker seeds the
-// cursor at the caller-supplied `since` and ReadChangeFeed yields
-// only entries with seq > since.
-//
-// An earlier implementation copied the contacts helper which compares
-// `since` against an op-count (opsAfter). Contacts' state is the
-// per-datatype counter in jmap_states, so its op-count compare is
-// correct there; for chat the state is the seq, and the op-count
-// compare silently dropped every entry until 127 ops had accumulated.
-// Bug surfaced as Conversation/Message/Membership /changes returning
-// `created: []` for the very principal that triggered the change,
-// even though the state advanced — the EventSource fired but the UI
-// never received the new ids (see issue #47).
-func walkChatChangeFeed(
-	ctx context.Context,
-	meta store.Metadata,
-	pid store.PrincipalID,
-	kind store.EntityKind,
-	since int64,
-) (created, updated, destroyed map[uint64]struct{}, err error) {
-	created = map[uint64]struct{}{}
-	updated = map[uint64]struct{}{}
-	destroyed = map[uint64]struct{}{}
-	const page = 1000
-	cursor := store.ChangeSeq(since)
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil, nil, nil, err
-		}
-		batch, ferr := meta.ReadChangeFeed(ctx, pid, cursor, page)
-		if ferr != nil {
-			return nil, nil, nil, ferr
-		}
-		for _, entry := range batch {
-			cursor = entry.Seq
-			if entry.Kind != kind {
-				continue
-			}
-			id := entry.EntityID
-			switch entry.Op {
-			case store.ChangeOpCreated:
-				delete(destroyed, id)
-				created[id] = struct{}{}
-			case store.ChangeOpUpdated:
-				if _, isCreated := created[id]; isCreated {
-					continue
-				}
-				if _, gone := destroyed[id]; gone {
-					continue
-				}
-				updated[id] = struct{}{}
-			case store.ChangeOpDestroyed:
-				if _, isCreated := created[id]; isCreated {
-					delete(created, id)
-					continue
-				}
-				delete(updated, id)
-				destroyed[id] = struct{}{}
-			}
-		}
-		if len(batch) < page {
-			return created, updated, destroyed, nil
-		}
-	}
 }
 
 // -- Conversation/set -------------------------------------------------

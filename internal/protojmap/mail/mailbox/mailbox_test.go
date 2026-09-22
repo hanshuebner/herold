@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/protojmap/mail/mailbox"
 	"github.com/hanshuebner/herold/internal/store"
+	"github.com/hanshuebner/herold/internal/storepg"
 	"github.com/hanshuebner/herold/internal/testharness"
 )
 
@@ -423,6 +425,98 @@ func TestMailbox_Changes_FromState(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("created %v does not contain %q (raw=%s)", resp.Created, createdID, raw)
+	}
+}
+
+// TestMailbox_Changes_Paged_ReachesCurrentState folds a maxChanges-capped
+// Mailbox/changes loop over a change set larger than the cap (re #475):
+// a trimmed answer must advance newState past sinceState so the next
+// call makes progress, and the loop must see every created id exactly
+// once before hasMoreChanges goes false.
+func TestMailbox_Changes_Paged_ReachesCurrentState(t *testing.T) {
+	testMailbox_Changes_Paged_ReachesCurrentState(t, setupFixture(t))
+}
+
+// TestMailbox_Changes_Paged_ReachesCurrentState_Postgres is the same
+// scenario against a Postgres-backed store, skipping when HEROLD_PG_DSN
+// is unset or unreachable.
+func TestMailbox_Changes_Paged_ReachesCurrentState_Postgres(t *testing.T) {
+	dsn := os.Getenv("HEROLD_PG_DSN")
+	if dsn == "" {
+		t.Skip("HEROLD_PG_DSN not set; skipping Postgres leg")
+	}
+	st, err := storepg.Open(context.Background(), dsn, t.TempDir(), nil, nil)
+	if err != nil {
+		t.Skipf("storepg.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	testMailbox_Changes_Paged_ReachesCurrentState(t, setupFixtureWithStore(t, st))
+}
+
+func testMailbox_Changes_Paged_ReachesCurrentState(t *testing.T, f *fixture) {
+	t.Helper()
+	_, getRaw := f.invoke(t, "Mailbox/get", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"ids":       []string{},
+	})
+	var getResp struct {
+		State string `json:"state"`
+	}
+	if err := json.Unmarshal(getRaw, &getResp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, getRaw)
+	}
+	state := getResp.State
+
+	const n = 7
+	want := map[string]bool{}
+	for i := 0; i < n; i++ {
+		mb := mustInsertMailbox(t, f, fmt.Sprintf("Box%d", i), 0)
+		want[fmt.Sprintf("%d", mb.ID)] = true
+	}
+
+	const maxChanges = 2
+	seen := map[string]bool{}
+	for calls := 0; ; calls++ {
+		if calls > n+2 {
+			t.Fatalf("did not converge after %d calls; seen=%d of %d", calls, len(seen), n)
+		}
+		_, raw := f.invoke(t, "Mailbox/changes", map[string]any{
+			"accountId":  protojmap.AccountIDForPrincipal(f.pid),
+			"sinceState": state,
+			"maxChanges": maxChanges,
+		})
+		var resp struct {
+			NewState       string   `json:"newState"`
+			HasMoreChanges bool     `json:"hasMoreChanges"`
+			Created        []string `json:"created"`
+		}
+		if err := json.Unmarshal(raw, &resp); err != nil {
+			t.Fatalf("unmarshal: %v: %s", err, raw)
+		}
+		if len(resp.Created) > maxChanges {
+			t.Fatalf("created=%v exceeds maxChanges=%d", resp.Created, maxChanges)
+		}
+		if resp.HasMoreChanges && resp.NewState == state {
+			t.Fatalf("newState %q == sinceState with hasMoreChanges=true; the loop cannot progress", state)
+		}
+		for _, c := range resp.Created {
+			if seen[c] {
+				t.Fatalf("id %s reported twice across the fold", c)
+			}
+			seen[c] = true
+		}
+		state = resp.NewState
+		if !resp.HasMoreChanges {
+			break
+		}
+	}
+	if len(seen) != n {
+		t.Fatalf("saw %d ids across the fold, want %d: %v", len(seen), n, seen)
+	}
+	for id := range want {
+		if !seen[id] {
+			t.Fatalf("id %s never reported by any Mailbox/changes page", id)
+		}
 	}
 }
 

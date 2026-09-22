@@ -78,49 +78,30 @@ func (c *changesHandler) Execute(ctx context.Context, args json.RawMessage) (any
 		return nil, protojmap.NewMethodError("cannotCalculateChanges", "sinceState is in the future")
 	}
 
-	const page = 1000
-	var cursor store.ChangeSeq = since
-	created := map[store.MessageID]struct{}{}
-	updated := map[store.MessageID]struct{}{}
-	destroyed := map[store.MessageID]struct{}{}
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil, serverFail(err)
-		}
-		batch, ferr := c.h.store.Meta().ReadChangeFeed(ctx, ownerPID, cursor, page)
-		if ferr != nil {
-			return nil, serverFail(ferr)
-		}
-		for _, entry := range batch {
-			cursor = entry.Seq
-			if entry.Kind != store.EntityKindEmail {
-				continue
-			}
-			id := store.MessageID(entry.EntityID)
-			switch entry.Op {
-			case store.ChangeOpCreated:
-				delete(destroyed, id)
-				created[id] = struct{}{}
-			case store.ChangeOpUpdated:
-				if _, isCreated := created[id]; isCreated {
-					continue
-				}
-				if _, gone := destroyed[id]; gone {
-					continue
-				}
-				updated[id] = struct{}{}
-			case store.ChangeOpDestroyed:
-				if _, isCreated := created[id]; isCreated {
-					delete(created, id)
-					continue
-				}
-				delete(updated, id)
-				destroyed[id] = struct{}{}
-			}
-		}
-		if len(batch) < page {
-			break
-		}
+	maxChanges := 0
+	if req.MaxChanges != nil && *req.MaxChanges > 0 {
+		maxChanges = *req.MaxChanges
+	}
+	createdRaw, updatedRaw, destroyedRaw, cutoff, hasMore, ferr := protojmap.WalkChangesBySeq(
+		ctx, c.h.store.Meta(), ownerPID, store.EntityKindEmail, since, maxChanges)
+	if ferr != nil {
+		return nil, serverFail(ferr)
+	}
+	created := make(map[store.MessageID]struct{}, len(createdRaw))
+	for id := range createdRaw {
+		created[store.MessageID(id)] = struct{}{}
+	}
+	updated := make(map[store.MessageID]struct{}, len(updatedRaw))
+	for id := range updatedRaw {
+		updated[store.MessageID(id)] = struct{}{}
+	}
+	destroyed := make(map[store.MessageID]struct{}, len(destroyedRaw))
+	for id := range destroyedRaw {
+		destroyed[store.MessageID(id)] = struct{}{}
+	}
+	if hasMore {
+		resp.HasMoreChanges = true
+		resp.NewState = stateFromSeq(cutoff)
 	}
 
 	// Cross-account: filter Created/Updated to messages currently
@@ -155,27 +136,5 @@ func (c *changesHandler) Execute(ctx context.Context, args json.RawMessage) (any
 		resp.Destroyed = append(resp.Destroyed, jmapIDFromMessage(id))
 	}
 
-	if req.MaxChanges != nil && *req.MaxChanges > 0 {
-		total := len(resp.Created) + len(resp.Updated) + len(resp.Destroyed)
-		if total > *req.MaxChanges {
-			resp.HasMoreChanges = true
-			resp.NewState = req.SinceState
-			over := total - *req.MaxChanges
-			over, resp.Updated = trimIDs(over, resp.Updated)
-			over, resp.Destroyed = trimIDs(over, resp.Destroyed)
-			_, resp.Created = trimIDs(over, resp.Created)
-		}
-	}
-
 	return resp, nil
-}
-
-func trimIDs(over int, xs []jmapID) (int, []jmapID) {
-	if over <= 0 || len(xs) == 0 {
-		return over, xs
-	}
-	if over >= len(xs) {
-		return over - len(xs), xs[:0]
-	}
-	return 0, xs[:len(xs)-over]
 }

@@ -202,7 +202,12 @@ func (h *evChangesHandler) Execute(ctx context.Context, args json.RawMessage) (a
 	if since > st.CalendarEvent {
 		return nil, protojmap.NewMethodError("cannotCalculateChanges", "sinceState is in the future")
 	}
-	created, updated, destroyed, ferr := walkChangeFeed(ctx, h.h.store.Meta(), pid, store.EntityKindCalendarEvent, since)
+	maxChanges := 0
+	if req.MaxChanges != nil && *req.MaxChanges > 0 {
+		maxChanges = *req.MaxChanges
+	}
+	created, updated, destroyed, cutoff, hasMore, ferr := protojmap.WalkChangesByOrdinal(
+		ctx, h.h.store.Meta(), pid, store.EntityKindCalendarEvent, since, maxChanges, false)
 	if ferr != nil {
 		return nil, serverFail(ferr)
 	}
@@ -215,12 +220,9 @@ func (h *evChangesHandler) Execute(ctx context.Context, args json.RawMessage) (a
 	for id := range destroyed {
 		resp.Destroyed = append(resp.Destroyed, jmapIDFromEvent(store.CalendarEventID(id)))
 	}
-	if req.MaxChanges != nil && *req.MaxChanges > 0 {
-		total := len(resp.Created) + len(resp.Updated) + len(resp.Destroyed)
-		if total > *req.MaxChanges {
-			resp.HasMoreChanges = true
-			resp.NewState = req.SinceState
-		}
+	if hasMore {
+		resp.HasMoreChanges = true
+		resp.NewState = stateFromCounter(cutoff)
 	}
 	return resp, nil
 }
