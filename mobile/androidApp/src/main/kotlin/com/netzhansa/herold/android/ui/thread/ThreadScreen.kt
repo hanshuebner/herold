@@ -272,12 +272,14 @@ fun ThreadScreen(
     }
 
     // A thread reached from search or a notification can be outside the
-    // synced set; the store is still the source of truth, so the sync
-    // engine fetches it into the store and the screen renders from there
-    // (issue #339, REQ-AND-SYNC-01).
+    // synced set, and a thread the fill partly covered can be missing a
+    // member that lives in a mailbox the device does not sync (issue
+    // #339, #461, REQ-AND-SYNC-01); the store is still the source of
+    // truth, so the sync engine completes it there and the screen renders
+    // from there. The spinner is reserved for the case nothing is cached
+    // yet - a thread already showing something completes quietly.
     LaunchedEffect(accountId, threadId) {
-        if (container.store.threadEmailList(accountId, threadId).isNotEmpty()) return@LaunchedEffect
-        fetching = true
+        fetching = container.store.threadEmailList(accountId, threadId).isEmpty()
         val held = session.syncEngine.ensureThread(accountId, threadId)
         fetching = false
         unavailable = !held

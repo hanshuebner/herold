@@ -423,24 +423,35 @@ class SyncEngine(
     }
 
     /**
-     * Brings a thread the store does not hold into it - a search result
-     * outside the synced set, or a notification for a conversation the
-     * fill never covered (issue #339). The store's own reconciliation is
-     * untouched: the rows land through the same mapping a sync pass uses
-     * and the per-type state strings are left alone, so the next
-     * `Email/changes` still asks for exactly what it would have asked for.
+     * Completes a thread against the server: a search result or a
+     * notification for a conversation the fill never covered (issue #339),
+     * or a conversation the fill partly covered because one of its
+     * messages sits in a mailbox the device does not sync (issue #461). A
+     * thread the store already holds every member of costs no
+     * `Email/get`, since the id set from `Thread/get` matches what is
+     * already cached; only the members missing locally are fetched. The
+     * store's own reconciliation is untouched: the rows land through the
+     * same mapping a sync pass uses and the per-type state strings are
+     * left alone, so the next `Email/changes` still asks for exactly what
+     * it would have asked for.
      *
      * Returns true when the thread's messages are in the store afterwards.
+     * A server that cannot be reached leaves the local cache as it stands,
+     * so an already-complete thread still opens offline.
      */
     suspend fun ensureThread(accountId: String, threadId: String): Boolean {
-        if (store.threadEmailList(accountId, threadId).isNotEmpty()) return true
         val thread = runCatching { api.threadGet(accountId, listOf(threadId)) }
-            .getOrNull()?.list?.firstOrNull() ?: return false
+            .getOrNull()?.list?.firstOrNull()
+            ?: return store.threadEmailList(accountId, threadId).isNotEmpty()
         store.upsertThreads(listOf(thread.toDomain(accountId)))
         val ids = thread.emailIds.filter { it.isNotBlank() }
         if (ids.isEmpty()) return false
-        val fetched = runCatching { api.emailGet(accountId, ids) }.getOrNull() ?: return false
-        store.upsertEmails(fetched.list.map { it.toDomain(accountId) })
+        val held = store.threadEmailList(accountId, threadId).map { it.id }.toSet()
+        val missing = ids.filterNot { it in held }
+        if (missing.isNotEmpty()) {
+            val fetched = runCatching { api.emailGet(accountId, missing) }.getOrNull()
+            if (fetched != null) store.upsertEmails(fetched.list.map { it.toDomain(accountId) })
+        }
         return store.threadEmailList(accountId, threadId).isNotEmpty()
     }
 

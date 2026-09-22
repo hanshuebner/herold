@@ -148,6 +148,40 @@ class SyncEngineTest {
     }
 
     @Test
+    fun ensureThreadCompletesAThreadTheFillOnlyPartlyCovered() = runTest {
+        // The reply landed through an incremental sync that fetched only
+        // the touched message, not its thread; the message it answers sat
+        // in Trash and was never synced (issue #461). A non-empty local
+        // list is not a complete one: opening the thread must still ask
+        // the server for what it is missing.
+        val api = api()
+        api.threads = listOf(WireThread(id = "t-1", emailIds = listOf("e-orig", "e-reply")))
+        api.emails = mapOf(
+            "e-orig" to wireEmail("e-orig", threadId = "t-1", mailboxIds = mapOf("trash-1" to true)),
+            "e-reply" to wireEmail("e-reply", threadId = "t-1"),
+        )
+        val store = FakeLocalStore()
+        store.upsertEmails(listOf(wireEmail("e-reply", threadId = "t-1").toStoreRow("acct-a")))
+        val engine = SyncEngine(api, store)
+
+        assertEquals(listOf("e-reply"), store.threadEmailList("acct-a", "t-1").map { it.id })
+
+        assertTrue(engine.ensureThread("acct-a", "t-1"))
+
+        assertEquals(
+            setOf("e-orig", "e-reply"),
+            store.threadEmailList("acct-a", "t-1").map { it.id }.toSet(),
+        )
+        // Only the message the store did not already hold is fetched.
+        assertEquals(listOf(listOf("e-orig")), api.emailGetCalls)
+
+        // A thread already complete costs no further fetch.
+        val before = api.emailGetCalls.size
+        assertTrue(engine.ensureThread("acct-a", "t-1"))
+        assertEquals(before, api.emailGetCalls.size)
+    }
+
+    @Test
     fun ensureThreadReportsAThreadItCannotFetch() = runTest {
         val api = api()
         api.inboxIds = emptyList()
