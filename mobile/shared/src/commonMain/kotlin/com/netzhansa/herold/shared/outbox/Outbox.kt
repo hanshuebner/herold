@@ -211,6 +211,7 @@ class Outbox(
         val entry = store.outboxEntry(id) ?: return null
         if (entry.state != OutboxState.QUEUED) return null
         store.deleteOutbox(id)
+        releaseMembershipHold(entry)
         return entry
     }
 
@@ -238,7 +239,11 @@ class Outbox(
     suspend fun writtenDraftId(entryId: Long): String? = writtenMutex.withLock { written[entryId] }
 
     /** Drops an entry outright, whatever its state; the outbox screen's discard. */
-    suspend fun remove(id: Long) = store.deleteOutbox(id)
+    suspend fun remove(id: Long) {
+        val entry = store.outboxEntry(id)
+        store.deleteOutbox(id)
+        entry?.let { releaseMembershipHold(it) }
+    }
 
     /**
      * Puts a failed entry back in the queue for the next drain
@@ -282,8 +287,27 @@ class Outbox(
                 it.state == OutboxState.QUEUED &&
                 it.entityIds.any { id -> id in touched }
         }
-        superseded.forEach { store.deleteOutbox(it.id) }
+        superseded.forEach {
+            store.deleteOutbox(it.id)
+            releaseMembershipHold(it)
+        }
         return superseded
+    }
+
+    /**
+     * Releases the membership hold an [OutboxKind.ACTION] entry's
+     * optimistic write placed (issue #473), wherever the entry leaves the
+     * outbox - drained, cancelled before it drained, or superseded by
+     * server truth arriving first. This is the only place an entry is
+     * ever taken out of the outbox table, so it is the only place a hold
+     * is ever released: a state change that leaves the entry listed
+     * (a refusal, a server the client has outrun) does not release one,
+     * since the row it protects may still need protecting until the
+     * entry is finally retried away or discarded. Every other kind
+     * touches no such hold.
+     */
+    private suspend fun releaseMembershipHold(entry: OutboxEntry) {
+        if (entry.kind == OutboxKind.ACTION) store.releaseMembershipHold(entry.accountId, entry.entityIds)
     }
 }
 

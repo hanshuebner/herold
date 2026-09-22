@@ -46,6 +46,14 @@ kotlin {
             implementation(libs.androidx.security.crypto)
             implementation(libs.kotlinx.coroutines.android)
         }
+        getByName("androidUnitTest") {
+            dependencies {
+                // Runs SqlDelightLocalStore - the store that ships - over an
+                // in-memory host-JVM database, rather than only through the
+                // FakeLocalStore mirror commonTest otherwise drives (issue #473).
+                implementation(libs.sqldelight.sqlite.driver)
+            }
+        }
     }
 }
 

@@ -188,7 +188,6 @@ class OutboxDrainer(
 
                     is StepResult.Rejected -> {
                         reachability.reached()
-                        releaseMembershipHold(entry)
                         revert(entry)
                         store.updateOutboxState(
                             id = entry.id,
@@ -212,7 +211,6 @@ class OutboxDrainer(
                             // for its own defect - so it stays listed
                             // with what became of it, and the user
                             // hears about it (issue #420).
-                            releaseMembershipHold(entry)
                             revert(entry)
                             val message = gaveUpMessage(result.message, attempts)
                             store.updateOutboxState(
@@ -258,14 +256,16 @@ class OutboxDrainer(
                         // An entry that has spent its attempts is as
                         // done for as a refused one: the user hears
                         // about it rather than the queue holding it
-                        // silently (issue #371).
+                        // silently (issue #371). The optimistic rows are
+                        // left as they are - what the user asked for,
+                        // retried manually from the outbox screen - and
+                        // the entry's membership hold stays with them
+                        // until that retry drains or the entry is
+                        // discarded (issue #473): releasing it here would
+                        // let a later fetch quietly put the row back to
+                        // its pre-action state while the outbox screen
+                        // still shows the action as pending.
                         if (exhausted) {
-                            // The optimistic rows are left as they are -
-                            // what the user asked for, retried manually
-                            // from the outbox screen - but a change that
-                            // never reached the server no longer needs
-                            // guarding against a later fetch (issue #473).
-                            releaseMembershipHold(entry)
                             _failures.tryEmit(
                                 OutboxFailure(entry.id, entry.kind, entry.label, result.message),
                             )
@@ -472,15 +472,6 @@ class OutboxDrainer(
         takeServerVersion(accountId, ids)
     }
 
-    /**
-     * Releases the membership hold an [OutboxKind.ACTION] entry's optimistic
-     * write placed (issue #473), once the entry is done with the queue -
-     * sent, refused, or given up on. Every other kind touches no such hold.
-     */
-    private suspend fun releaseMembershipHold(entry: OutboxEntry) {
-        if (entry.kind == OutboxKind.ACTION) store.releaseMembershipHold(entry.accountId, entry.entityIds)
-    }
-
     private suspend fun submitAction(entry: OutboxEntry): StepResult {
         val payload = runCatching {
             outboxJson.decodeFromString<ActionPayload>(entry.payload)
@@ -494,9 +485,14 @@ class OutboxDrainer(
         if (outcome.notUpdated.isNotEmpty()) {
             return StepResult.Rejected(outcome.notUpdated.values.first())
         }
-        // The action reached the server; a response for these ids already
-        // in flight can no longer undo what it did (issue #473).
-        releaseMembershipHold(entry)
+        // Taken out of the outbox - which releases its membership hold,
+        // the only place that ever happens (issue #473) - before its own
+        // post-action fetch, so that fetch takes the server's full answer
+        // rather than freezing to the optimistic value against itself; an
+        // incidental extra change the same write caused server-side (a
+        // Sieve rule, say) lands with it. discard() below removes the
+        // entry again for its spool cleanup, a safe no-op on the row.
+        outbox.remove(entry.id)
         takeServerVersion(entry.accountId, payload.patches.keys)
         return StepResult.Done
     }

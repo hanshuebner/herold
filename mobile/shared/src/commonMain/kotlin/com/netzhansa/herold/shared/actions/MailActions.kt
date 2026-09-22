@@ -179,7 +179,12 @@ class MailActions(
     suspend fun undo(pending: PendingAction) {
         val cancelled = pending.entryIds.count { outbox.cancelIfQueued(it) != null }
         if (cancelled > 0 && cancelled == pending.entryIds.size) {
-            pending.snapshot.emails.forEach { write(it) }
+            // cancelIfQueued only drops an entry still QUEUED, so none of
+            // these ids ever reached the server: whatever response is
+            // still in flight for them was built before the action and
+            // already agrees with the snapshot this restores. Nothing
+            // needs holding against it (issue #473).
+            pending.snapshot.emails.forEach { writeUnguarded(it) }
             return
         }
         restore(pending.snapshot)
@@ -314,6 +319,11 @@ class MailActions(
         // Held until the outbox entry this write is queued behind drains,
         // so a response already in flight cannot undo it (issue #473).
         store.holdMembership(email.accountId, listOf(email.id))
+        writeUnguarded(email)
+    }
+
+    /** [write] without a hold, for a restore nothing queues (issue #473). */
+    private suspend fun writeUnguarded(email: Email) {
         store.updateMembership(
             accountId = email.accountId,
             id = email.id,

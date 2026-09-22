@@ -176,8 +176,16 @@ class MembershipHoldAcceptanceTest {
         assertEquals(setOf("archive-1", "label-1"), h.store.email("acct-a", "e1")!!.mailboxIds)
     }
 
+    /**
+     * A rejection reverts the row at once, but the entry itself stays
+     * listed as failed rather than being removed - it is what a manual
+     * retry from the outbox screen acts on. The hold stays with it, since
+     * the only place a hold is ever released is an entry actually leaving
+     * the outbox (issue #473): [Outbox.remove], [Outbox.cancelIfQueued]
+     * and [Outbox.discardSupersededBy].
+     */
     @Test
-    fun aRejectedActionReleasesTheHoldAfterItRestoresTheRow() = runTest {
+    fun aRejectedActionsHoldPersistsUntilTheEntryIsDiscarded() = runTest {
         val h = harness()
         h.api.setRejections = mapOf("e1" to "mailbox is read-only")
         val before = h.store.email("acct-a", "e1")!!
@@ -188,8 +196,66 @@ class MembershipHoldAcceptanceTest {
 
         h.store.upsertEmails(listOf(before.copy(keywords = setOf(Keywords.SEEN))))
         assertTrue(
+            !h.store.email("acct-a", "e1")!!.keywords.contains(Keywords.SEEN),
+            "the hold must still guard the reverted row while the failed entry is listed",
+        )
+
+        h.outbox.remove(h.outbox.list().single().id)
+        h.store.upsertEmails(listOf(before.copy(keywords = setOf(Keywords.SEEN))))
+        assertTrue(
             h.store.email("acct-a", "e1")!!.keywords.contains(Keywords.SEEN),
-            "the hold must no longer block a later fetch once the entry has failed",
+            "discarding the failed entry must release the hold",
+        )
+    }
+
+    /**
+     * An undo taken before the drain reaches the entry drops it with
+     * [Outbox.cancelIfQueued] rather than [OutboxDrainer] ever seeing it,
+     * so that is where its hold has to be released too (issue #473). The
+     * entry never reached the server, so nothing was ever in flight that
+     * could still carry anything but what the restored snapshot agrees
+     * with; the restoring write needs no hold of its own.
+     */
+    @Test
+    fun anUndoBeforeTheDrainLeavesNoHold() = runTest {
+        val h = harness()
+        val before = h.store.email("acct-a", "e1")!!
+
+        val pending = h.actions.archiveLocally(listOf(before), mailboxes)
+        h.actions.commit(pending)
+        h.actions.undo(pending)
+        assertTrue(h.outbox.list().isEmpty(), "the cancelled entry must be gone")
+
+        // A genuinely newer server state now lands normally.
+        h.store.upsertEmails(listOf(before.copy(mailboxIds = setOf("inbox-1", "label-1"))))
+        assertEquals(
+            setOf("inbox-1", "label-1"),
+            h.store.email("acct-a", "e1")!!.mailboxIds,
+            "an undone action must leave no hold behind",
+        )
+    }
+
+    /**
+     * [Outbox.discardSupersededBy] drops a queued entry when a sync pass's
+     * `Email/changes` already names the id (REQ-AND-SYNC-24), with no
+     * [OutboxDrainer] involved either - the second path that has to
+     * release the hold itself (issue #473).
+     */
+    @Test
+    fun aSupersedingSyncLeavesNoHold() = runTest {
+        val h = harness()
+        val before = h.store.email("acct-a", "e1")!!
+
+        val pending = h.actions.archiveLocally(listOf(before), mailboxes)
+        h.actions.commit(pending)
+        h.outbox.discardSupersededBy("acct-a", listOf("e1"))
+        assertTrue(h.outbox.list().isEmpty(), "the superseded entry must be gone")
+
+        h.store.upsertEmails(listOf(before.copy(mailboxIds = setOf("inbox-1", "label-1"))))
+        assertEquals(
+            setOf("inbox-1", "label-1"),
+            h.store.email("acct-a", "e1")!!.mailboxIds,
+            "a superseded action must leave no hold behind",
         )
     }
 }
