@@ -33,6 +33,7 @@ import com.netzhansa.herold.shared.diag.BugReportSender
 import com.netzhansa.herold.shared.jmap.EventSourceClient
 import com.netzhansa.herold.shared.jmap.ImageProxyClient
 import com.netzhansa.herold.android.push.PushController
+import com.netzhansa.herold.android.push.ShadeNotifications
 import com.netzhansa.herold.android.work.OutboxWorker
 import com.netzhansa.herold.shared.jmap.JmapClient
 import com.netzhansa.herold.shared.links.ComposePrefill
@@ -637,6 +638,10 @@ class AppContainer(context: Context) {
             outbox = outbox,
             drainer = drainer,
             reachability = reachability,
+            // A message read, filed away or deleted on another client
+            // reaches the device as a fold, which is where its
+            // notification is withdrawn (issue #481).
+            notifications = ShadeNotifications(appContext),
             now = { System.currentTimeMillis() },
             log = { message -> DiagLog.i(SYNC_TAG, message) },
         )

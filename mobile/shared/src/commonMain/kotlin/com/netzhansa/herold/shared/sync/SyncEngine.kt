@@ -9,6 +9,8 @@ import com.netzhansa.herold.shared.jmap.WireEmail
 import com.netzhansa.herold.shared.outbox.DrainOutcome
 import com.netzhansa.herold.shared.outbox.Outbox
 import com.netzhansa.herold.shared.outbox.OutboxDrainer
+import com.netzhansa.herold.shared.push.NotificationReconciler
+import com.netzhansa.herold.shared.push.PostedNotifications
 import com.netzhansa.herold.shared.store.LocalStore
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -60,11 +62,20 @@ class SyncEngine(
     /** What the engine's own traffic says about reaching the server (issue #370). */
     private val reachability: Reachability = Reachability(),
     private val inboxFetchLimit: Int = DEFAULT_INBOX_FETCH,
+    /**
+     * The notifications the shade shows, withdrawn as the fold finds
+     * their messages read, filed away or gone (issue #481). Null in a
+     * host that posts none.
+     */
+    notifications: PostedNotifications? = null,
     private val now: () -> Long = { 0L },
     /** What a pass did and how long it took; the app's diagnostic ring. */
     private val log: (String) -> Unit = {},
 ) {
     private val mutex = Mutex()
+
+    /** What withdraws a notification the fold has made stale. */
+    private val notificationReconciler = notifications?.let { NotificationReconciler(store, it) }
 
     /** The mailboxes an on-demand fill has already covered this run. */
     private val filledMailboxes = mutableSetOf<Pair<String, String>>()
@@ -248,6 +259,7 @@ class SyncEngine(
                     return
                 }
                 if (outcome.destroyed.isNotEmpty()) store.deleteEmails(accountId, outcome.destroyed)
+                val gone = outcome.destroyed.toMutableList()
                 val touched = (outcome.created + outcome.updated).distinct()
                 if (touched.isNotEmpty()) {
                     // Server truth for a message with a queued optimistic
@@ -256,9 +268,17 @@ class SyncEngine(
                     outbox.discardSupersededBy(accountId, touched)
                     val fetched = api.emailGet(accountId, touched)
                     store.upsertEmails(fetched.list.map { it.toDomain(accountId) })
-                    if (fetched.notFound.isNotEmpty()) store.deleteEmails(accountId, fetched.notFound)
+                    if (fetched.notFound.isNotEmpty()) {
+                        store.deleteEmails(accountId, fetched.notFound)
+                        gone += fetched.notFound
+                    }
                 }
                 store.setSyncState(accountId, SyncTypes.EMAIL, outcome.newState)
+                // The fold has just written what every client did to
+                // these messages, so it is where a notification for one
+                // that is now read, filed away or gone is withdrawn
+                // (issue #481).
+                notificationReconciler?.reconcile(accountId, gone)
                 if (outcome.hasMoreChanges) syncEmails(accountId, round + 1)
             }
         }
@@ -297,6 +317,9 @@ class SyncEngine(
             }
         }
         if (fetched.state.isNotBlank()) store.setSyncState(accountId, SyncTypes.EMAIL, fetched.state)
+        // A fill rewrites the account's mail, so a notification is
+        // measured against what it wrote (issue #481).
+        notificationReconciler?.reconcile(accountId)
     }
 
     private suspend fun syncThreads(accountId: String, round: Int = 0) {

@@ -115,10 +115,11 @@ class PushPayloadTest {
     }
 
     @Test
-    fun everyKindHasItsOwnChannel() {
-        val channels = PushKind.entries.map { it.channelId() }
+    fun everyKindThatPostsHasItsOwnChannel() {
+        val channels = PushKind.entries.mapNotNull { it.channelId() }
         assertEquals(channels.size, channels.toSet().size)
         assertTrue(PushChannels.ALL.containsAll(channels))
+        assertNull(PushKind.MAIL_DISMISS.channelId(), "a dismissal posts nothing")
     }
 
     @Test
@@ -141,6 +142,49 @@ class PushPayloadTest {
     }
 
     @Test
+    fun aDismissPayloadResolvesToTheWithdrawalItNamesAndRendersNothing() {
+        val envelope = PushEnvelope.parse(DISMISS_PAYLOAD)!!
+
+        assertEquals(PushKind.MAIL_DISMISS, envelope.kind)
+        assertNull(envelope.mailNotification(), "a dismissal never shows a notification")
+
+        val dismissal = envelope.mailDismissal()!!
+        assertEquals("a2", dismissal.accountId)
+        assertEquals("t17", dismissal.threadId)
+        assertEquals("41", dismissal.emailId)
+        assertEquals(DismissReason.SEEN, dismissal.reason)
+    }
+
+    @Test
+    fun theOtherTwoDismissReasonsAreCarriedThroughAsTheServerSendsThem() {
+        assertEquals(
+            DismissReason.LEFT_INBOX,
+            PushEnvelope.parse(DISMISS_PAYLOAD.replace("\"seen\"", "\"left-inbox\""))!!
+                .mailDismissal()!!.reason,
+        )
+        assertEquals(
+            DismissReason.DESTROYED,
+            PushEnvelope.parse(DISMISS_PAYLOAD.replace("\"seen\"", "\"destroyed\""))!!
+                .mailDismissal()!!.reason,
+        )
+    }
+
+    /** The withdrawal happens whatever the reason says. */
+    @Test
+    fun aReasonThisClientDoesNotKnowStillWithdrawsTheNotification() {
+        val dismissal = PushEnvelope.parse(DISMISS_PAYLOAD.replace("\"seen\"", "\"muted\""))!!
+            .mailDismissal()!!
+
+        assertEquals("t17", dismissal.threadId)
+        assertNull(dismissal.reason)
+    }
+
+    @Test
+    fun anArrivalIsNotADismissal() {
+        assertNull(PushEnvelope.parse(MAIL_PAYLOAD)!!.mailDismissal())
+    }
+
+    @Test
     fun garbageIsDroppedRatherThanThrown() {
         assertNull(PushEnvelope.parse("not json"))
         assertNull(PushEnvelope.fromData(emptyMap()))
@@ -157,5 +201,13 @@ class PushPayloadTest {
             "body":"Lunch on Friday","subject":"Lunch on Friday",
             "preview":"Are you free at noon? The place on the corner","mailbox":"Inbox",
             "emailId":"41","msgid":"41","threadId":"t17","inboxMailboxId":"3"}"""
+
+        /**
+         * The withdrawal the dispatcher sends when a notified message is
+         * read, filed away or deleted on any client (issue #481).
+         */
+        const val DISMISS_PAYLOAD = """{"@type":"StateChange","changed":{"a2":{"Email":"129"}},
+            "kind":"mail-dismiss","type":"mail-dismiss",
+            "emailId":"41","threadId":"t17","reason":"seen"}"""
     }
 }

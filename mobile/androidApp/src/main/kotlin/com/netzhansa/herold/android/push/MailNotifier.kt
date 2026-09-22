@@ -63,6 +63,14 @@ object MailNotifier {
             SUMMARY_ID,
             buildSummary(context, notification, presentation),
         )
+        // The shade now shows this message, which is what the sync fold
+        // and a `mail-dismiss` push measure against (REQ-AND-PUSH-14).
+        PostedMailNotifications.record(
+            context,
+            notification.accountId,
+            notification.threadId,
+            notification.emailId,
+        )
     }
 
     /**
@@ -73,6 +81,7 @@ object MailNotifier {
     fun cancel(context: Context, tag: String) {
         val manager = NotificationManagerCompat.from(context)
         manager.cancel(tag, CHILD_ID)
+        PostedMailNotifications.forget(context, tag)
         val system = context.getSystemService(NotificationManager::class.java) ?: return
         val childrenLeft = system.activeNotifications.any {
             it.id == CHILD_ID && it.tag != tag

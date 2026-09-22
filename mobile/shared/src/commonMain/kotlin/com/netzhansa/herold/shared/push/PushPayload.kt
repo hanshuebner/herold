@@ -14,6 +14,13 @@ private val payloadJson = Json { ignoreUnknownKeys = true }
  */
 enum class PushKind(val wire: String) {
     MAIL("mail"),
+
+    /**
+     * A message the device was notified about is read, out of the inbox
+     * or gone; the payload withdraws that notification and shows nothing
+     * (issue #481).
+     */
+    MAIL_DISMISS("mail-dismiss"),
     CHAT("chat"),
     CALENDAR_INVITE("calendar-invite"),
     CALL("call"),
@@ -53,6 +60,8 @@ data class PushEnvelope(
     val threadId: String? = null,
     val inboxMailboxId: String? = null,
     val conversationId: String? = null,
+    /** Why a `mail-dismiss` withdraws its notification: `seen`, `left-inbox` or `destroyed`. */
+    val reason: String? = null,
 ) {
     companion object {
         /**
@@ -80,6 +89,7 @@ data class PushEnvelope(
                 threadId = root.string("threadId"),
                 inboxMailboxId = root.string("inboxMailboxId"),
                 conversationId = root.string("conversationId"),
+                reason = root.string("reason"),
             )
         }
 

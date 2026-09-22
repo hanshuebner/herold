@@ -7,9 +7,11 @@ import com.netzhansa.herold.android.HeroldApplication
 import com.netzhansa.herold.android.SessionScope
 import com.netzhansa.herold.android.media.ImageScaling
 import com.netzhansa.herold.shared.domain.Attachment
+import com.netzhansa.herold.shared.push.MailDismissal
 import com.netzhansa.herold.shared.push.MailNotification
 import com.netzhansa.herold.shared.push.PushEnvelope
 import com.netzhansa.herold.shared.push.PushVerification
+import com.netzhansa.herold.shared.push.mailDismissal
 import com.netzhansa.herold.shared.push.mailNotification
 import com.netzhansa.herold.android.work.OutboxWorker
 import com.netzhansa.herold.shared.sync.SyncTypes
@@ -52,6 +54,16 @@ class PushDelivery(private val context: Context) {
         // The wake is also the queue's chance to go out with the app
         // closed (REQ-AND-SYNC-31).
         if (session != null) OutboxWorker.schedule(context)
+
+        // A dismissal withdraws what the shade already shows and posts
+        // nothing of its own; one for a notification this device never
+        // showed changes nothing (issue #481).
+        dismissalOf(data)?.let { dismissal ->
+            DiagLog.i(TAG, "withdrawing ${dismissal.emailId ?: dismissal.threadId}: ${dismissal.reason?.wire}")
+            session?.syncScheduler?.requestSync()
+            ShadeNotifications(context).withdraw(dismissal)
+            return null
+        }
 
         val envelope = PushEnvelope.fromData(data) ?: return null
         val notification = envelope.mailNotification()
@@ -130,13 +142,22 @@ class PushDelivery(private val context: Context) {
         return AttachmentChip(attachment.name, ImageScaling.decodeSampled(bytes, CHIP_THUMBNAIL_PX))
     }
 
-    private companion object {
-        const val TAG = "herold.push"
+    companion object {
+
+        /**
+         * The withdrawal a push's data map carries, or null when it
+         * carries none. It is the whole of what a `mail-dismiss`
+         * resolves to, so the routing is a host-JVM test.
+         */
+        fun dismissalOf(data: Map<String, String>): MailDismissal? =
+            PushEnvelope.fromData(data)?.mailDismissal()
+
+        private const val TAG = "herold.push"
 
         /** The window a woken service reliably has for network work. */
-        const val RECONCILE_BUDGET_MS = 15_000L
+        private const val RECONCILE_BUDGET_MS = 15_000L
 
         /** A chip's thumbnail is 20 dp on screen; this covers it on any density. */
-        const val CHIP_THUMBNAIL_PX = 96
+        private const val CHIP_THUMBNAIL_PX = 96
     }
 }

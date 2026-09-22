@@ -72,9 +72,32 @@ fun PushEnvelope.mailNotification(): MailNotification? {
     )
 }
 
-/** The channel a payload's kind posts to (REQ-AND-PUSH-10). */
-fun PushKind.channelId(): String = when (this) {
+/**
+ * The withdrawal a `mail-dismiss` payload carries, or null when the
+ * payload is not one or names no account (issue #481). The reason is
+ * carried through as the server sent it; a reason this client does not
+ * know still withdraws the notification.
+ */
+fun PushEnvelope.mailDismissal(): MailDismissal? {
+    if (kind != PushKind.MAIL_DISMISS) return null
+    val account = accountId ?: return null
+    if (threadId == null && emailId == null) return null
+    return MailDismissal(
+        accountId = account,
+        threadId = threadId,
+        emailId = emailId,
+        reason = DismissReason.fromWire(reason),
+    )
+}
+
+/**
+ * The channel a payload's kind posts to (REQ-AND-PUSH-10), or null for a
+ * kind that posts nothing.
+ */
+fun PushKind.channelId(): String? = when (this) {
     PushKind.MAIL -> PushChannels.MAIL
+    // A dismissal takes a notification out of the shade.
+    PushKind.MAIL_DISMISS -> null
     PushKind.CHAT -> PushChannels.CHAT
     PushKind.CALL -> PushChannels.CALLS
     PushKind.CALENDAR_INVITE -> PushChannels.CALENDAR
