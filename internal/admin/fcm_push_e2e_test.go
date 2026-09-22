@@ -239,7 +239,10 @@ metrics_bind = ""
 	}
 
 	// re #346: archiving the message (moving it out of the Inbox-role
-	// mailbox) must not resurrect as a "new mail" push.
+	// mailbox) must not resurrect as a "new mail" push. re #481: it
+	// does now produce exactly one "mail-dismiss" push (reason
+	// "left-inbox") for the archived email, so the assertion checks
+	// kinds rather than a raw send count.
 	archiveID := jmapFindMailboxByRole(t, publicAddr, apiKeyPlain, accountID, "archive")
 	before := len(fake.Messages())
 	jmapCall(t, publicAddr, apiKeyPlain, "Email/set", map[string]any{
@@ -251,7 +254,7 @@ metrics_bind = ""
 			},
 		},
 	})
-	assertNoNewFCMPayload(t, fake, before, "archiving a message")
+	assertArchiveYieldsOnlyDismiss(t, fake, before, payload.EmailID)
 
 	// re #346: a message created directly in Sent (a submission's sent
 	// copy) must not push either -- it never sat in the Inbox-role
@@ -495,6 +498,56 @@ func assertNoNewFCMPayload(t *testing.T, fake *fakefcm.Server, before int, what 
 	time.Sleep(3 * time.Second)
 	if got := len(fake.Messages()); got != before {
 		t.Fatalf("%s produced %d new fake FCM messages:send call(s); want 0 (re #346)", what, got-before)
+	}
+}
+
+// fcmPayloadKindReasonEmailID decodes the fields common to every
+// webpush payload shape that matter here: "kind" (e.g. "mail",
+// "mail-dismiss"), "reason" (mail-dismiss only), and "emailId".
+func fcmPayloadKindReasonEmailID(t *testing.T, m fakefcm.Message) (kind, reason, emailID string) {
+	t.Helper()
+	var p struct {
+		Kind    string `json:"kind"`
+		Reason  string `json:"reason"`
+		EmailID string `json:"emailId"`
+	}
+	if err := json.Unmarshal([]byte(m.Data["payload"]), &p); err != nil {
+		t.Fatalf("decode fake FCM payload: %v: %s", err, m.Data["payload"])
+	}
+	return p.Kind, p.Reason, p.EmailID
+}
+
+// assertArchiveYieldsOnlyDismiss waits briefly (long enough for the 1s
+// dispatcher poll interval configured by runFCMPushE2E to run several
+// ticks) and inspects every fake FCM messages:send call recorded since
+// before: none may carry kind "mail" (re #346: a self-caused archive
+// must not resurrect as a new-mail push), and exactly one must carry
+// kind "mail-dismiss" with reason "left-inbox" for wantEmailID (re
+// #481: an archive now dismisses the notification the earlier arrival
+// caused).
+func assertArchiveYieldsOnlyDismiss(t *testing.T, fake *fakefcm.Server, before int, wantEmailID string) {
+	t.Helper()
+	time.Sleep(3 * time.Second)
+	all := fake.Messages()
+	var dismissCount int
+	for _, m := range all[before:] {
+		kind, reason, emailID := fcmPayloadKindReasonEmailID(t, m)
+		if kind == "mail" {
+			t.Fatalf("archiving a message produced a new-mail push (re #346): %s", m.Data["payload"])
+		}
+		if kind != "mail-dismiss" {
+			continue
+		}
+		dismissCount++
+		if reason != "left-inbox" {
+			t.Errorf("archive dismiss reason = %q, want %q (re #481)", reason, "left-inbox")
+		}
+		if emailID != wantEmailID {
+			t.Errorf("archive dismiss emailId = %q, want %q (re #481)", emailID, wantEmailID)
+		}
+	}
+	if dismissCount != 1 {
+		t.Fatalf("archiving a message produced %d mail-dismiss push(es); want exactly 1 (re #481)", dismissCount)
 	}
 }
 
