@@ -13,6 +13,12 @@
  *      suffix and assert that the `.message` rule in the `<style>` block
  *      does not clip -- no `white-space: nowrap` / `text-overflow:
  *      ellipsis` -- so a future edit cannot silently reintroduce clipping.
+ *
+ * A second defect (re #480 follow-up) let the toast collapse to its
+ * longest unbreakable word instead of growing toward the toast's
+ * max-width: `.message` had no flex-basis/min-width, so the flex layout
+ * sized it to min-content. `.message` must carry `flex: 1 1 auto` and
+ * `min-width: 0` so it grows to fill the toast before wrapping.
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
@@ -69,5 +75,11 @@ describe('ToastHost message wrapping (re #480)', () => {
     const css = extractRuleBody(toastHostStyles(), '.message');
     expect(css).not.toMatch(/white-space\s*:\s*nowrap/);
     expect(css).not.toMatch(/text-overflow\s*:\s*ellipsis/);
+  });
+
+  it('lets .message grow to the toast width instead of collapsing to its longest word', () => {
+    const css = extractRuleBody(toastHostStyles(), '.message');
+    expect(css).toMatch(/flex\s*:\s*1\s+1\s+auto/);
+    expect(css).toMatch(/min-width\s*:\s*0/);
   });
 });

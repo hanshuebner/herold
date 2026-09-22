@@ -47,8 +47,10 @@
   .toast {
     position: fixed;
     bottom: calc(24px + var(--spacing-06));
-    left: 50%;
-    transform: translateX(-50%);
+    left: var(--spacing-05);
+    right: var(--spacing-05);
+    width: fit-content;
+    margin-inline: auto;
     display: inline-flex;
     align-items: center;
     gap: var(--spacing-04);
@@ -72,6 +74,8 @@
   }
 
   .message {
+    flex: 1 1 auto;
+    min-width: 0;
     white-space: normal;
     overflow-wrap: break-word;
   }
@@ -108,11 +112,11 @@
 
   @keyframes rise {
     from {
-      transform: translate(-50%, 16px);
+      transform: translateY(16px);
       opacity: 0;
     }
     to {
-      transform: translate(-50%, 0);
+      transform: translateY(0);
       opacity: 1;
     }
   }
