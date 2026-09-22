@@ -1760,10 +1760,6 @@
     font-weight: 700;
     line-height: 1;
   }
-  .tab:not(.tab-active) .tab-badge {
-    background: var(--layer-03);
-    color: var(--text-primary);
-  }
 
   .thread-frame {
     display: flex;
