@@ -197,10 +197,36 @@ print_ci_status() {
     echo "ci run:     #$(printf '%s' "$run_json" | jq -r '.index_in_repo') $(printf '%s' "$run_json" | jq -r '.status') ($(printf '%s' "$run_json" | jq -r '.html_url'))"
 }
 
+# summarize_ci_failure <jobs_json> prints the failure summary for a
+# non-success run: one "failed job" line per job that genuinely failed,
+# then one "did not run" line per job left blocked or cancelled as a
+# consequence of that failure. Skipped jobs are dropped entirely -- on a
+# train run, artefact-publishing jobs (docker, binaries, release) are
+# skipped by design because that job's own guard condition gates them to
+# main, and a skip carries no information about what went wrong. Mixing
+# all three into one "failed job" list (the pre-#466 behaviour) buried
+# the one real failure among five or six jobs that were behaving exactly
+# as designed (see #466, run 2530: one `failure` job surrounded by four
+# `skipped` and one `cancelled`, all printed as "failed job").
+summarize_ci_failure() {
+    local jobs_json=$1 failed blocked
+    failed=$(printf '%s' "$jobs_json" | jq -r '.[] | select(.status == "failure") | "  failed job: " + .name')
+    blocked=$(printf '%s' "$jobs_json" | jq -r '.[] | select(.status != "success" and .status != "failure" and .status != "skipped") | "  did not run (" + .status + "), a consequence of the failure above: " + .name')
+    if [ -n "$failed" ]; then
+        printf '%s\n' "$failed"
+    else
+        echo "  (no job reported status \"failure\"; inspect the run status itself)"
+    fi
+    if [ -n "$blocked" ]; then
+        printf '%s\n' "$blocked"
+    fi
+}
+
 # wait_for_ci_run <sha> polls the ci.yml run for commit <sha> until it
 # reaches a terminal status, printing job-level progress each poll. On
 # success it records <sha> in the stamp file; on any other terminal
-# status it prints the failed job names and a cilog hint, then exits 1.
+# status it prints the failure summary (summarize_ci_failure) and a
+# cilog hint, then exits 1.
 wait_for_ci_run() {
     local sha=$1 run_id run_json status jobs_json run_number
     forgejo_token >/dev/null 2>&1 || die "no Forgejo API token: set \$FORGEJO_TOKEN or ~/.config/cilog/token"
@@ -223,7 +249,7 @@ wait_for_ci_run() {
         echo "train: CI run #$run_number succeeded for $(git rev-parse --short "$sha"); run 'train.sh ship'"
     else
         echo "train: CI run #$run_number ended with status $status" >&2
-        printf '%s' "$jobs_json" | jq -r '.[] | select(.status != "success") | "  failed job: " + .name' >&2
+        summarize_ci_failure "$jobs_json" >&2
         echo "train: inspect with: cilog herold/herold $run_number" >&2
         exit 1
     fi
