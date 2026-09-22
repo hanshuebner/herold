@@ -907,7 +907,16 @@ const CurrentBackupVersion = 1
 //	X-Original-To headers of imported mail, NULL until the learning
 //	pass has run once), and addresses_learned_at (NULL until then).
 //	No new table; IMAPImportAccountRow gains the three fields.
-const CurrentSchemaVersion = 113
+//
+// 114 — 0114_ext_submission_relay_hold.sql (issue #478). Adds
+//
+//	jmap_email_submissions.relay_held (bool, not null, default false):
+//	true while an External=true row is scheduled for a future sendAt
+//	but has not yet been claimed for relay dispatch, so the relay
+//	scheduler and EmailSubmission/set destroy can race a single atomic
+//	compare-and-set to decide whether the row is relayed or canceled.
+//	No new table; EmailSubmissionRow gains the one field.
+const CurrentSchemaVersion = 114
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

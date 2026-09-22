@@ -1720,10 +1720,11 @@ func scanEmailSubmissionPG(row pgx.Row) (store.EmailSubmissionRow, error) {
 		external                                    bool
 		heldForReauth                               bool
 		holdDeadlineUs                              *int64
+		relayHeld                                   bool
 	)
 	err := row.Scan(&id, &envID, &principalID, &identityID, &emailID,
 		&threadID, &sendAtUs, &createdAtUs, &undoStatus, &props, &external,
-		&heldForReauth, &holdDeadlineUs)
+		&heldForReauth, &holdDeadlineUs, &relayHeld)
 	if err != nil {
 		return store.EmailSubmissionRow{}, mapErr(err)
 	}
@@ -1740,6 +1741,7 @@ func scanEmailSubmissionPG(row pgx.Row) (store.EmailSubmissionRow, error) {
 		Properties:    props,
 		External:      external,
 		HeldForReauth: heldForReauth,
+		RelayHeld:     relayHeld,
 	}
 	if holdDeadlineUs != nil {
 		r.HoldDeadlineUs = *holdDeadlineUs
@@ -1750,7 +1752,7 @@ func scanEmailSubmissionPG(row pgx.Row) (store.EmailSubmissionRow, error) {
 const emailSubmissionSelectColumnsPG = `
 	id, envelope_id, principal_id, identity_id, email_id, thread_id,
 	send_at_us, created_at_us, undo_status, properties, external,
-	held_for_reauth, hold_deadline_us`
+	held_for_reauth, hold_deadline_us, relay_held`
 
 func (m *metadata) InsertEmailSubmission(ctx context.Context, row store.EmailSubmissionRow) error {
 	if row.ID == "" {
@@ -1777,12 +1779,12 @@ func (m *metadata) InsertEmailSubmission(ctx context.Context, row store.EmailSub
 			INSERT INTO jmap_email_submissions
 			  (id, envelope_id, principal_id, identity_id, email_id, thread_id,
 			   send_at_us, created_at_us, undo_status, properties, external,
-			   held_for_reauth, hold_deadline_us)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+			   held_for_reauth, hold_deadline_us, relay_held)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
 			row.ID, string(row.EnvelopeID), int64(row.PrincipalID),
 			row.IdentityID, int64(row.EmailID), row.ThreadID,
 			row.SendAtUs, row.CreatedAtUs, row.UndoStatus, props, row.External,
-			row.HeldForReauth, holdDeadlineArg)
+			row.HeldForReauth, holdDeadlineArg, row.RelayHeld)
 		if err != nil {
 			var pgErr *pgconn.PgError
 			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -1944,6 +1946,62 @@ func (m *metadata) UpdateEmailSubmissionHeld(ctx context.Context, id string, hel
 		}
 		return nil
 	})
+}
+
+func (m *metadata) ListDueExternalRelays(ctx context.Context, before time.Time) ([]store.EmailSubmissionRow, error) {
+	rows, err := m.s.pool.Query(ctx, `
+		SELECT `+emailSubmissionSelectColumnsPG+`
+		  FROM jmap_email_submissions
+		 WHERE external AND relay_held AND send_at_us <= $1
+		 ORDER BY send_at_us ASC, id ASC`,
+		before.UnixMicro())
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	var out []store.EmailSubmissionRow
+	for rows.Next() {
+		r, err := scanEmailSubmissionPG(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (m *metadata) ClaimExternalRelay(ctx context.Context, id string) (bool, error) {
+	var ok bool
+	err := m.runTx(ctx, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `
+			UPDATE jmap_email_submissions
+			   SET relay_held = FALSE
+			 WHERE id = $1 AND relay_held`,
+			id)
+		if err != nil {
+			return mapErr(err)
+		}
+		ok = tag.RowsAffected() > 0
+		return nil
+	})
+	return ok, err
+}
+
+func (m *metadata) CancelExternalRelay(ctx context.Context, id string) (bool, error) {
+	var ok bool
+	err := m.runTx(ctx, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `
+			UPDATE jmap_email_submissions
+			   SET relay_held = FALSE, undo_status = 'canceled'
+			 WHERE id = $1 AND relay_held`,
+			id)
+		if err != nil {
+			return mapErr(err)
+		}
+		ok = tag.RowsAffected() > 0
+		return nil
+	})
+	return ok, err
 }
 
 // -- JMAP Identity overlay -------------------------------------------

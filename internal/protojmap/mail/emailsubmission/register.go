@@ -20,6 +20,12 @@ const capabilitySubmission protojmap.CapabilityID = "urn:ietf:params:jmap:submis
 // a *queue.Queue from the boot path; tests inject a fake.
 // extSub and extRouter are optional: pass non-nil to enable external
 // SMTP submission routing (REQ-AUTH-EXT-SUBMIT-05).
+//
+// The returned *RelayScheduler is non-nil exactly when extSub and extRouter
+// are both non-nil; the caller polls its DispatchDue method on a fixed
+// interval so a scheduled external submission reaches the relay once its
+// undo-send / sendAt window elapses (re #478). A nil scheduler's DispatchDue
+// is a no-op, so callers may poll unconditionally.
 func Register(
 	reg *protojmap.CapabilityRegistry,
 	st store.Store,
@@ -29,13 +35,13 @@ func Register(
 	extRouter ExternalRouter,
 	logger *slog.Logger,
 	clk clock.Clock,
-) {
+) *RelayScheduler {
 	_ = logger // EmailSubmission handlers do not log today; parameter kept
 	// for signature parity with sibling Register entry points.
 	if clk == nil {
 		clk = clock.NewReal()
 	}
-	registerWith(reg, st, queueAsSubmitter{q: q}, identityAdapter{store: idStore}, extSub, extRouter, clk)
+	return registerWith(reg, st, queueAsSubmitter{q: q}, identityAdapter{store: idStore}, extSub, extRouter, clk)
 }
 
 // RegisterWith is the test-friendly variant that accepts injected
@@ -50,7 +56,7 @@ func RegisterWith(
 	registerWith(reg, st, sub, idr, nil, nil, clk)
 }
 
-func registerWith(reg *protojmap.CapabilityRegistry, st store.Store, sub Submitter, idr IdentityResolver, extSub ExternalSubmitter, extRouter ExternalRouter, clk clock.Clock) {
+func registerWith(reg *protojmap.CapabilityRegistry, st store.Store, sub Submitter, idr IdentityResolver, extSub ExternalSubmitter, extRouter ExternalRouter, clk clock.Clock) *RelayScheduler {
 	if clk == nil {
 		clk = clock.NewReal()
 	}
@@ -67,6 +73,10 @@ func registerWith(reg *protojmap.CapabilityRegistry, st store.Store, sub Submitt
 	reg.Register(capabilitySubmission, queryHandler{h: h})
 	reg.Register(capabilitySubmission, queryChangesHandler{h: h})
 	reg.Register(capabilitySubmission, setHandler{h: h})
+	if extSub == nil || extRouter == nil {
+		return nil
+	}
+	return &RelayScheduler{h: h}
 }
 
 // identityAdapter wraps the identity package's Store to fit the local

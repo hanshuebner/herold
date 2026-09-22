@@ -1086,6 +1086,13 @@ const holdWindowDefault = extsubmit.DefaultHoldWindow
 //   - unreachable → undoStatus=final, delivered=no; identity push state bumped
 //   - permanent   → undoStatus=final, delivered=no
 //   - transient   → undoStatus=final, delivered=no
+//
+// When sendAtUs is in the future (an undo-send window or an explicit
+// sendAt), the row is persisted with RelayHeld=true and the relay is NOT
+// launched here: EmailSubmission/set destroy can still cancel it, and the
+// relay scheduler (DispatchDueExternalRelays, polled from the server
+// lifecycle) claims and dispatches it once SendAtUs elapses (re #478). A
+// sendAtUs at or before now dispatches immediately as before.
 func (h *handlerSet) processCreateExternal(
 	ctx context.Context,
 	p store.Principal,
@@ -1126,6 +1133,13 @@ func (h *handlerSet) processCreateExternal(
 	}
 	initPropsJSON, _ := json.Marshal(initProps)
 
+	// scheduled is true when the caller asked for a future sendAt (the
+	// undo-send window or an explicit RFC 8621 sendAt): the relay must not
+	// see the message before that instant (re #478). sendAtUs == now.UnixMicro()
+	// for an immediate send (no sendAt in the request), which keeps the
+	// pre-#478 fast path unchanged.
+	scheduled := sendAtUs > now.UnixMicro()
+
 	// Persist the row immediately with undoStatus=pending so the method
 	// can return within the JMAP deadline. HoldDeadlineUs is set now so
 	// that if the submission ends up held for re-auth the Retryer sees
@@ -1144,6 +1158,7 @@ func (h *handlerSet) processCreateExternal(
 		External:       true,
 		HeldForReauth:  false,
 		HoldDeadlineUs: now.Add(holdWindowDefault).UnixMicro(),
+		RelayHeld:      scheduled,
 	}
 	if err := h.store.Meta().InsertEmailSubmission(ctx, row); err != nil {
 		return jmapEmailSubmission{}, &setError{Type: "serverFail",
@@ -1162,12 +1177,17 @@ func (h *handlerSet) processCreateExternal(
 		h.seedRecipientsOnSend(context.Background(), p, msg, recipients)
 	})
 
-	// Run the external relay in the background. context.Background()
-	// decouples the SMTP session from the JMAP method deadline (re #108).
-	// The row is updated with the final outcome by execExternalRelay.
-	h.goBackground(func() {
-		h.execExternalRelay(context.Background(), p, emailMsgID, cfg, mailFrom, recipients, submissionID)
-	})
+	if !scheduled {
+		// Run the external relay in the background. context.Background()
+		// decouples the SMTP session from the JMAP method deadline (re #108).
+		// The row is updated with the final outcome by execExternalRelay.
+		h.goBackground(func() {
+			h.execExternalRelay(context.Background(), p, emailMsgID, cfg, mailFrom, recipients, submissionID)
+		})
+	}
+	// When scheduled, the relay scheduler dispatches once SendAtUs elapses
+	// (or, after a restart, on its first poll after startup); destroy can
+	// cancel the row in the meantime via CancelExternalRelay.
 
 	return externalRowToJMAP(row), nil
 }
@@ -1192,22 +1212,7 @@ func (h *handlerSet) execExternalRelay(
 	// Called when a setup error prevents the relay from being attempted so
 	// the client sees a definite outcome rather than a permanent "queued".
 	failRow := func(diag string) {
-		props := externalSubmissionProperties{
-			RcptTo:   recipients,
-			MailFrom: mailFrom,
-			ExtState: string(extsubmit.OutcomePermanent),
-			ExtDiag:  diag,
-		}
-		propsJSON, _ := json.Marshal(props)
-		if err := h.store.Meta().UpdateEmailSubmissionHeld(ctx, submissionID, false, string(undoStatusFinal), propsJSON); err != nil {
-			slog.ErrorContext(ctx, "emailsubmission: ext relay: fail row",
-				"submission_id", submissionID, "err", err)
-			return
-		}
-		if _, err := h.store.Meta().IncrementJMAPState(ctx, p.ID, store.JMAPStateKindEmailSubmission); err != nil {
-			slog.WarnContext(ctx, "emailsubmission: ext relay: bump jmap state after fail",
-				"submission_id", submissionID, "err", err)
-		}
+		h.failExternalSubmission(ctx, p.ID, submissionID, mailFrom, recipients, diag)
 	}
 
 	// Re-open the message blob; the caller's blob reader was scoped to
@@ -1291,6 +1296,111 @@ func (h *handlerSet) execExternalRelay(
 	}
 }
 
+// failExternalSubmission transitions submissionID to a terminal permanent
+// failure with diag. Used both by execExternalRelay's own setup-error path
+// (message/blob unreadable, re #108) and by the relay scheduler when a
+// submission it claimed can no longer be relayed (e.g. the identity's
+// external submission config was removed during the hold window, re #478).
+func (h *handlerSet) failExternalSubmission(ctx context.Context, pid store.PrincipalID, submissionID, mailFrom string, recipients []string, diag string) {
+	props := externalSubmissionProperties{
+		RcptTo:   recipients,
+		MailFrom: mailFrom,
+		ExtState: string(extsubmit.OutcomePermanent),
+		ExtDiag:  diag,
+	}
+	propsJSON, _ := json.Marshal(props)
+	if err := h.store.Meta().UpdateEmailSubmissionHeld(ctx, submissionID, false, string(undoStatusFinal), propsJSON); err != nil {
+		slog.ErrorContext(ctx, "emailsubmission: ext relay: fail row",
+			"submission_id", submissionID, "err", err)
+		return
+	}
+	if _, err := h.store.Meta().IncrementJMAPState(ctx, pid, store.JMAPStateKindEmailSubmission); err != nil {
+		slog.WarnContext(ctx, "emailsubmission: ext relay: bump jmap state after fail",
+			"submission_id", submissionID, "err", err)
+	}
+}
+
+// DispatchDueExternalRelays claims and relays every External submission row
+// whose undo-send / sendAt hold window has elapsed by now (re #478). Called
+// on a fixed interval by the server lifecycle (via RelayScheduler) and
+// directly by tests. Restart-safe: the rows it acts on are the sole
+// row.RelayHeld=true rows in the store, not an in-memory schedule, so the
+// first call after a restart picks up anything a prior process scheduled but
+// never dispatched.
+//
+// Each row is claimed with ClaimExternalRelay before it is relayed; losing
+// the claim race (a concurrent EmailSubmission/set destroy canceled the row
+// first) is not an error, it is the expected outcome of the undo window
+// working. The relay itself runs in a background goroutine exactly like the
+// immediate-send path in processCreateExternal, tracked by h.bgWG so tests
+// and shutdown can drain it via h.Wait().
+func (h *handlerSet) DispatchDueExternalRelays(ctx context.Context, now time.Time) (dispatched int, err error) {
+	rows, err := h.store.Meta().ListDueExternalRelays(ctx, now)
+	if err != nil {
+		return 0, err
+	}
+	for _, row := range rows {
+		if h.dispatchDueExternalRelay(ctx, row) {
+			dispatched++
+		}
+	}
+	return dispatched, nil
+}
+
+// dispatchDueExternalRelay claims one due row and, on success, launches its
+// relay. Returns true iff this call won the claim.
+func (h *handlerSet) dispatchDueExternalRelay(ctx context.Context, row store.EmailSubmissionRow) bool {
+	claimed, err := h.store.Meta().ClaimExternalRelay(ctx, row.ID)
+	if err != nil {
+		slog.ErrorContext(ctx, "emailsubmission: claim scheduled ext relay",
+			"submission_id", row.ID, "err", err)
+		return false
+	}
+	if !claimed {
+		// Lost the race to a concurrent destroy (or another scheduler
+		// tick); the row is either canceled or already being relayed.
+		return false
+	}
+
+	var props externalSubmissionProperties
+	if len(row.Properties) > 0 {
+		_ = json.Unmarshal(row.Properties, &props)
+	}
+
+	cfg, cfgErr := h.externalRouter.SubmissionConfig(ctx, row.PrincipalID, row.IdentityID)
+	if cfgErr != nil {
+		h.failExternalSubmission(ctx, row.PrincipalID, row.ID, props.MailFrom, props.RcptTo,
+			fmt.Sprintf("internal error: identity submission config not available: %s", cfgErr))
+		return true
+	}
+
+	p := store.Principal{ID: row.PrincipalID}
+	h.goBackground(func() {
+		h.execExternalRelay(context.Background(), p, row.EmailID, cfg, props.MailFrom, props.RcptTo, row.ID)
+	})
+	return true
+}
+
+// RelayScheduler dispatches External submissions once their undo-send /
+// sendAt hold window elapses (re #478). Register returns a non-nil
+// RelayScheduler exactly when external submission is wired (extSub and
+// extRouter both non-nil); the server lifecycle polls DispatchDue on a
+// short fixed interval so a held submission reaches the relay soon after
+// its window closes without ever being dispatched before then, and so a
+// row left behind by a restart is picked up on the next poll.
+type RelayScheduler struct {
+	h *handlerSet
+}
+
+// DispatchDue claims and relays every due row as of now. A nil receiver
+// (external submission disabled) is a no-op.
+func (s *RelayScheduler) DispatchDue(ctx context.Context, now time.Time) (int, error) {
+	if s == nil || s.h == nil {
+		return 0, nil
+	}
+	return s.h.DispatchDueExternalRelays(ctx, now)
+}
+
 func (s setHandler) processUpdate(ctx context.Context, p store.Principal, id jmapID, raw json.RawMessage) *setError {
 	env, ok := parseSubmissionID(id)
 	if !ok {
@@ -1355,13 +1465,35 @@ func (s setHandler) processDestroy(ctx context.Context, p store.Principal, id jm
 		return &setError{Type: "notFound"}
 	}
 	// REQ-AUTH-EXT-SUBMIT-05: external rows carry External=true and have no
-	// queue rows. Destroy is not semantically "undo" — the wire transaction
-	// already completed — so we return cannotUnsend per the design decision.
-	// The client may still call destroy to remove the audit row; for v1 we
-	// surface cannotUnsend and leave the row in place so the delivery
-	// evidence is preserved.
+	// queue rows. While the row is still RelayHeld=true (inside its
+	// undo-send / sendAt window; re #478) the relay has not been dispatched
+	// and destroy cancels it: CancelExternalRelay is the sole arbiter, an
+	// atomic compare-and-set racing the relay scheduler's ClaimExternalRelay,
+	// so the relay is guaranteed to never see a message that destroy
+	// canceled inside the window. Once RelayHeld is false — the immediate-
+	// send fast path, or the window has already closed — the wire
+	// transaction has already started or completed, so destroy is not
+	// semantically "undo" and returns cannotUnsend, leaving the row in
+	// place so the delivery evidence is preserved.
 	subRow, subErr := s.h.store.Meta().GetEmailSubmission(ctx, id)
 	if subErr == nil && subRow.External {
+		if subRow.RelayHeld {
+			cancelled, cErr := s.h.store.Meta().CancelExternalRelay(ctx, id)
+			if cErr != nil {
+				return &setError{Type: "serverFail", Description: cErr.Error()}
+			}
+			if cancelled {
+				if dErr := s.h.store.Meta().DeleteEmailSubmission(ctx, id); dErr != nil &&
+					!errors.Is(dErr, store.ErrNotFound) {
+					return &setError{Type: "serverFail", Description: dErr.Error()}
+				}
+				return nil
+			}
+			// Lost the race to the relay scheduler: SendAtUs elapsed and
+			// the row was claimed for dispatch between our GetEmailSubmission
+			// read and the CancelExternalRelay attempt. Fall through to the
+			// same cannotUnsend a dispatched row returns.
+		}
 		return &setError{Type: "cannotUnsend",
 			Description: "external submission cannot be undone after the wire transaction completed"}
 	}

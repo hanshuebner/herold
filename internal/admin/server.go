@@ -1685,6 +1685,38 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		})
 	}
 
+	// External-submission relay scheduler (re #478). Dispatches External
+	// EmailSubmission rows whose undo-send / sendAt hold window has
+	// elapsed to the external relay. Polls on a short interval -- the
+	// undo window is at most 30s (web/apps/suite/src/lib/settings/
+	// settings.svelte.ts UNDO_WINDOW_MAX) -- so a message reaches the
+	// relay soon after the window closes without ever being handed off
+	// before then. Restart-safe: the scheduler's only state is the
+	// RelayHeld column on the row, so the first tick after a restart
+	// dispatches (or, if EmailSubmission/set destroy canceled it in the
+	// meantime, finds nothing to do for) anything a prior process
+	// scheduled but never reached.
+	if suiteSrvs.extRelayScheduler != nil {
+		relaySchedulerInterval := time.Second
+		g.Go(func() error {
+			t := clk.After(relaySchedulerInterval)
+			for {
+				select {
+				case <-gctx.Done():
+					return nil
+				case <-t:
+				}
+				if _, err := suiteSrvs.extRelayScheduler.DispatchDue(gctx, clk.Now()); err != nil &&
+					!errors.Is(err, context.Canceled) {
+					logger.LogAttrs(context.Background(), slog.LevelWarn,
+						"external relay scheduler: dispatch due",
+						slog.String("err", err.Error()))
+				}
+				t = clk.After(relaySchedulerInterval)
+			}
+		})
+	}
+
 	// ShortcutCoachStat GC tick (Phase 3 Wave 3.10 fixup, REQ-PROTO-110).
 	// Deletes coach_events rows older than jmapcoach.GCWindow (90 days) on
 	// a daily cadence with a 1-hour jitter to avoid thundering-herd on
@@ -2708,6 +2740,12 @@ type suiteServers struct {
 	// StartServer runs it under the lifecycle errgroup alongside the
 	// other per-principal sweep workers.
 	emailBulkJobWorker *jmapemail.BulkJobWorker
+	// extRelayScheduler dispatches External EmailSubmission rows once
+	// their undo-send / sendAt hold window elapses (re #478). Non-nil
+	// exactly when external submission is enabled and configured.
+	// StartServer polls its DispatchDue on a short fixed interval under
+	// the lifecycle errgroup alongside the held-submission retry loop.
+	extRelayScheduler *emailsubmission.RelayScheduler
 }
 
 // composedHandlers is the bundle of HTTP handlers the bind path installs on
@@ -3099,7 +3137,7 @@ func composeAdminAndUI(
 		logger.Info("external SMTP submission enabled",
 			slog.String("subsystem", "jmap-emailsubmission"))
 	}
-	emailsubmission.Register(jmapSrv.Registry(), st, outboundQ, jmapIdentityStore,
+	bundle.srvs.extRelayScheduler = emailsubmission.Register(jmapSrv.Registry(), st, outboundQ, jmapIdentityStore,
 		extSub, extRouter,
 		logger.With("subsystem", "jmap-emailsubmission"), clk)
 	// Directory autocomplete (compose-window address autocomplete). The

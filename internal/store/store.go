@@ -1759,6 +1759,32 @@ type Metadata interface {
 	// attempt. Returns ErrNotFound when the row is missing.
 	UpdateEmailSubmissionHeld(ctx context.Context, id string, heldForReauth bool, undoStatus string, properties []byte) error
 
+	// ListDueExternalRelays returns External=true rows still awaiting relay
+	// dispatch (relay_held = true) whose SendAtUs is <= before (re #478).
+	// The emailsubmission relay scheduler polls this to hand a scheduled
+	// external submission to the relay no earlier than its undo-send /
+	// sendAt window allows, including after a restart: the row's RelayHeld
+	// state is the only source of truth, not an in-memory timer.
+	ListDueExternalRelays(ctx context.Context, before time.Time) ([]EmailSubmissionRow, error)
+
+	// ClaimExternalRelay atomically transitions one External row from
+	// relay_held = true to false, returning ok = true iff this call made
+	// the transition. Used by the relay scheduler immediately before it
+	// calls the external relay for the row; the atomic compare-and-set
+	// against CancelExternalRelay guarantees a row is relayed or canceled,
+	// never both. Returns ok = false, nil error when the row was already
+	// claimed or canceled (lost the race, or does not exist).
+	ClaimExternalRelay(ctx context.Context, id string) (ok bool, err error)
+
+	// CancelExternalRelay atomically transitions one External row from
+	// relay_held = true to false and sets undo_status = "canceled",
+	// returning ok = true iff this call made the transition. Used by
+	// EmailSubmission/set destroy to cancel a still-scheduled external
+	// submission inside its undo window; races ClaimExternalRelay the same
+	// way. Returns ok = false, nil error when the row was already claimed
+	// for relay (the window has closed) or does not exist.
+	CancelExternalRelay(ctx context.Context, id string) (ok bool, err error)
+
 	// -- Phase 2 JMAP Identity overlay -------------------------------
 
 	// InsertJMAPIdentity persists a new identity overlay row. The

@@ -123,3 +123,115 @@ test('separated identity with external submission sends through the sink from it
     )
     .toBe(true);
 });
+
+/**
+ * Undo send from a separated external-identity sub-account (re #478): the
+ * relay must not see the message while the undo-send window is open, and
+ * clicking Undo cancels the send and reopens the composer with the draft
+ * restored. This is the same acceptance criterion processCreateExternal /
+ * processDestroy enforce server-side (internal/protojmap/mail/
+ * emailsubmission), driven here through the real undo-send UI flow.
+ *
+ * Runs after the send test above in file declaration order (this config
+ * sets fullyParallel: false, workers: 1, so ordering is deterministic) and
+ * reuses the identity that test already separated; if the identity is not
+ * yet separated (e.g. this spec was filtered to run alone) this test
+ * separates it itself so it does not depend on execution order to pass.
+ */
+test('undo send inside the window cancels the external relay and restores the draft', async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(60_000);
+  await login(page);
+
+  const base = new URL(page.url()).origin;
+  const cookieHeader = async () => {
+    const cookies = await page.context().cookies();
+    return cookies.map((c) => `${c.name}=${c.value}`).join('; ');
+  };
+  const discoverSubAccountId = async (): Promise<string> => {
+    const resp = await request.get(`${base}/.well-known/jmap`, {
+      headers: { cookie: await cookieHeader() },
+    });
+    const session = await resp.json();
+    const primary = new Set(Object.values(session.primaryAccounts) as string[]);
+    const ids = Object.keys(session.accounts).filter((id) => !primary.has(id));
+    return ids[0] ?? '';
+  };
+
+  let subAccountId = await discoverSubAccountId();
+  if (!subAccountId) {
+    // Not yet separated (this spec ran in isolation) -- separate it here.
+    await page.goto('/#/settings/identities/' + SEPARABLE_IDENTITY_ID);
+    await page.getByTestId('identity-edit-separate-btn').click();
+    await page.getByRole('button', { name: 'Separate identity' }).click();
+    await expect(page).toHaveURL(/#\/settings\/account/);
+    await expect
+      .poll(discoverSubAccountId, {
+        timeout: 15_000,
+        message: 'the new sub-account never appeared in the session descriptor',
+      })
+      .not.toBe('');
+    subAccountId = await discoverSubAccountId();
+  }
+
+  const countBefore = (
+    (await (await request.get(`http://${FAKESMTP_HTTP_ADDR}/count`)).json()) as { count: number }
+  ).count;
+
+  await page.goto(`/#/account/${subAccountId}`);
+  await page.getByTestId('scoped-account-title').waitFor({ timeout: 15_000 });
+  const recipient = `undo-dest-${Date.now()}@remote.test`;
+  const subject = `sub-account external submission undo e2e ${Date.now()}`;
+  await page.locator('button.compose-btn').click();
+  await page.locator('[placeholder="recipient@example.com"]').first().fill(recipient);
+  await page.locator('label:has-text("Subject") input').fill(subject);
+  await page.locator('.ProseMirror').fill('sub-account undo e2e body');
+  await expect(
+    page.locator('.recipient-field .chip-label', { hasText: recipient }),
+  ).toBeVisible();
+  await page.getByTestId('compose-send').click();
+
+  // Compose closes immediately (the send is optimistic; the undo-send hold
+  // happens server-side against the relay, not against the compose UI).
+  const composeDialog = page.locator('div.modal[role="dialog"]');
+  await expect(composeDialog).toHaveCount(0, { timeout: 10_000 });
+
+  // Click Undo on the "Message sent" toast before the undo window closes
+  // (default 5s -- see web/apps/suite/src/lib/settings/settings.svelte.ts
+  // DEFAULTS.undoWindowSec).
+  const toast = page.locator('.toast', { hasText: 'Message sent' });
+  await expect(toast).toBeVisible({ timeout: 5_000 });
+  await toast.getByRole('button', { name: 'Undo' }).click();
+
+  // The composer reopens with the draft restored.
+  await expect(composeDialog).toBeVisible({ timeout: 5_000 });
+  await expect(
+    composeDialog.locator('.recipient-field .chip-label', { hasText: recipient }),
+  ).toBeVisible();
+  await expect(composeDialog.locator('label:has-text("Subject") input')).toHaveValue(subject);
+
+  // No error toast: the undo must succeed, not surface "Could not cancel
+  // send" (the pre-#478 failure mode for external submissions).
+  await expect(page.locator('.toast.error', { hasText: 'Could not cancel send' })).toHaveCount(0);
+
+  // The relay must never have received the message: give any (buggy,
+  // undo-should-have-prevented-it) in-flight relay attempt time to land,
+  // then assert the sink's message count never moved and no message with
+  // this subject/recipient ever arrived.
+  await page.waitForTimeout(3_000);
+  const afterResp = await request.get(`http://${FAKESMTP_HTTP_ADDR}/messages`);
+  const afterMessages = (await afterResp.json()) as Array<{
+    mail_from: string;
+    rcpt_to: string[];
+  }>;
+  const leaked = afterMessages.some(
+    (m) => m.mail_from === SEPARABLE_IDENTITY_EMAIL && m.rcpt_to.includes(recipient),
+  );
+  expect(leaked, 'the undone message must never reach the external relay sink').toBe(false);
+  const countAfter = (
+    (await (await request.get(`http://${FAKESMTP_HTTP_ADDR}/count`)).json()) as { count: number }
+  ).count;
+  expect(countAfter, 'the sink must not have received any new message').toBe(countBefore);
+});

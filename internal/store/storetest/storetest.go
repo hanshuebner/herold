@@ -208,6 +208,8 @@ func Run(t *testing.T, f Factory) {
 		{"EmailSubmission_HeldForReauth_IdentityIsolation", testEmailSubmissionHeldForReauthIdentityIsolation},
 		// -- re #131: list identities with parked submissions for retry loop ---
 		{"EmailSubmission_ListIdentitiesWithHeldSubmissions", testEmailSubmission_ListIdentitiesWithHeldSubmissions},
+		// -- re #478: undo-send hold for external submissions ------------------
+		{"EmailSubmission_RelayHoldClaimAndCancel", testEmailSubmission_RelayHoldClaimAndCancel},
 		{"JMAPIdentity_InsertGet_Roundtrip", testJMAPIdentityInsertGetRoundtrip},
 		{"JMAPIdentity_List_ByPrincipal", testJMAPIdentityListByPrincipal},
 		{"JMAPIdentity_Update_RoundTrips", testJMAPIdentityUpdateRoundtrips},
@@ -7484,6 +7486,134 @@ func testEmailSubmission_ListIdentitiesWithHeldSubmissions(t *testing.T, s store
 	}
 	if len(ids) != 2 {
 		t.Errorf("len = %d, want 2 (X and Y); ids = %v", len(ids), ids)
+	}
+}
+
+// testEmailSubmission_RelayHoldClaimAndCancel verifies the undo-send hold
+// primitives external submission scheduling relies on (re #478):
+//   - ListDueExternalRelays returns only External rows with RelayHeld=true
+//     whose SendAtUs is <= the query instant; a row not yet due, a row that
+//     is not RelayHeld, and a non-External row are all excluded.
+//   - ClaimExternalRelay and CancelExternalRelay each make the relay_held ->
+//     false transition exactly once: the first call on a row succeeds, every
+//     subsequent call (by either method) on the same row fails (ok=false),
+//     which is the compare-and-set the relay scheduler and
+//     EmailSubmission/set destroy race to decide a row's outcome.
+func testEmailSubmission_RelayHoldClaimAndCancel(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "relay-hold@example.com")
+	now := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+
+	insert := func(id string, sendAt time.Time, relayHeld, external bool) {
+		t.Helper()
+		err := s.Meta().InsertEmailSubmission(ctx, store.EmailSubmissionRow{
+			ID:          id,
+			EnvelopeID:  store.EnvelopeID(id),
+			PrincipalID: p.ID,
+			IdentityID:  "ident-relay",
+			EmailID:     store.MessageID(400),
+			SendAtUs:    sendAt.UnixMicro(),
+			CreatedAtUs: now.UnixMicro(),
+			UndoStatus:  "pending",
+			External:    external,
+			RelayHeld:   relayHeld,
+			Properties:  []byte(`{"rcptTo":["a@b.com"],"mailFrom":"from@example.com"}`),
+		})
+		if err != nil {
+			t.Fatalf("InsertEmailSubmission %s: %v", id, err)
+		}
+	}
+
+	// Due: External, RelayHeld, SendAtUs in the past relative to "now".
+	insert("rh-due", now.Add(-time.Second), true, true)
+	// Not yet due: RelayHeld but SendAtUs is in the future.
+	insert("rh-future", now.Add(time.Hour), true, true)
+	// Not held: External but RelayHeld=false (already claimed or an
+	// immediate send).
+	insert("rh-notheld", now.Add(-time.Second), false, true)
+	// Not external: RelayHeld=true is meaningless for a local-queue row,
+	// but ListDueExternalRelays must still exclude it.
+	insert("rh-notexternal", now.Add(-time.Second), true, false)
+
+	due, err := s.Meta().ListDueExternalRelays(ctx, now)
+	if err != nil {
+		t.Fatalf("ListDueExternalRelays: %v", err)
+	}
+	if len(due) != 1 || due[0].ID != "rh-due" {
+		t.Fatalf("ListDueExternalRelays = %+v, want exactly [rh-due]", due)
+	}
+
+	// ClaimExternalRelay succeeds once, then fails (already claimed).
+	ok, err := s.Meta().ClaimExternalRelay(ctx, "rh-due")
+	if err != nil {
+		t.Fatalf("ClaimExternalRelay: %v", err)
+	}
+	if !ok {
+		t.Fatal("ClaimExternalRelay first call: ok=false, want true")
+	}
+	ok, err = s.Meta().ClaimExternalRelay(ctx, "rh-due")
+	if err != nil {
+		t.Fatalf("ClaimExternalRelay (second call): %v", err)
+	}
+	if ok {
+		t.Fatal("ClaimExternalRelay second call: ok=true, want false (already claimed)")
+	}
+	// CancelExternalRelay also fails now: the row is no longer RelayHeld.
+	ok, err = s.Meta().CancelExternalRelay(ctx, "rh-due")
+	if err != nil {
+		t.Fatalf("CancelExternalRelay after claim: %v", err)
+	}
+	if ok {
+		t.Fatal("CancelExternalRelay after claim: ok=true, want false (already claimed for relay)")
+	}
+	got, err := s.Meta().GetEmailSubmission(ctx, "rh-due")
+	if err != nil {
+		t.Fatalf("GetEmailSubmission: %v", err)
+	}
+	if got.RelayHeld {
+		t.Fatal("RelayHeld still true after a successful claim")
+	}
+
+	// CancelExternalRelay succeeds once on a still-held row, then fails.
+	ok, err = s.Meta().CancelExternalRelay(ctx, "rh-future")
+	if err != nil {
+		t.Fatalf("CancelExternalRelay: %v", err)
+	}
+	if !ok {
+		t.Fatal("CancelExternalRelay first call: ok=false, want true")
+	}
+	gotCanceled, err := s.Meta().GetEmailSubmission(ctx, "rh-future")
+	if err != nil {
+		t.Fatalf("GetEmailSubmission (rh-future): %v", err)
+	}
+	if gotCanceled.RelayHeld {
+		t.Fatal("RelayHeld still true after a successful cancel")
+	}
+	if gotCanceled.UndoStatus != "canceled" {
+		t.Fatalf("UndoStatus = %q, want canceled", gotCanceled.UndoStatus)
+	}
+	ok, err = s.Meta().ClaimExternalRelay(ctx, "rh-future")
+	if err != nil {
+		t.Fatalf("ClaimExternalRelay after cancel: %v", err)
+	}
+	if ok {
+		t.Fatal("ClaimExternalRelay after cancel: ok=true, want false (already canceled)")
+	}
+
+	// A row that was never RelayHeld cannot be claimed or canceled.
+	ok, err = s.Meta().ClaimExternalRelay(ctx, "rh-notheld")
+	if err != nil || ok {
+		t.Fatalf("ClaimExternalRelay(rh-notheld) = %v, %v; want false, nil", ok, err)
+	}
+	ok, err = s.Meta().CancelExternalRelay(ctx, "rh-notheld")
+	if err != nil || ok {
+		t.Fatalf("CancelExternalRelay(rh-notheld) = %v, %v; want false, nil", ok, err)
+	}
+
+	// An unknown id is a no-op, not an error.
+	ok, err = s.Meta().ClaimExternalRelay(ctx, "rh-nonexistent")
+	if err != nil || ok {
+		t.Fatalf("ClaimExternalRelay(nonexistent) = %v, %v; want false, nil", ok, err)
 	}
 }
 

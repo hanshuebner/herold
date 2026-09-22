@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -621,5 +622,344 @@ func TestEmailSubmission_External_RelayAsync(t *testing.T) {
 	}
 	if !subRow.External {
 		t.Fatal("expected External=true")
+	}
+}
+
+// TestEmailSubmission_External_ScheduledDoesNotRelayBeforeWindow verifies
+// that an external submission created with a future sendAt (the undo-send
+// window) is NOT handed to the relay when EmailSubmission/set create
+// returns: the row is persisted RelayHeld=true and the fake submitter sees
+// no Submit call until the relay scheduler dispatches it (re #478).
+func TestEmailSubmission_External_ScheduledDoesNotRelayBeforeWindow(t *testing.T) {
+	h, st, p, mid, extSub, _ := newExternalSetup(t, extsubmit.Outcome{
+		State:      extsubmit.OutcomeOK,
+		Diagnostic: "250 ok",
+	})
+	now := h.clk.Now()
+	sendAt := now.Add(10 * time.Second)
+	args, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
+		"create": map[string]any{
+			"k1": map[string]any{
+				"identityId": "default",
+				"emailId":    renderEmailID(mid),
+				"sendAt":     sendAt.Format(time.RFC3339),
+			},
+		},
+	})
+	resp, mErr := setHandler{h: h}.executeAs(p, args)
+	if mErr != nil {
+		t.Fatalf("EmailSubmission/set: %v", mErr)
+	}
+	sresp := resp.(setResponse)
+	var subID string
+	for _, v := range sresp.Created {
+		subID = v.ID
+	}
+	if subID == "" {
+		t.Fatal("no created submission id")
+	}
+
+	// Drain any (unrelated) background goroutines -- there must be no relay
+	// goroutine to wait for, which is exactly what this test proves: with
+	// the pre-fix code the relay goroutine is launched unconditionally and
+	// h.Wait() would race it to completion, making extSub.calls == 1.
+	h.Wait()
+
+	if len(extSub.calls) != 0 {
+		t.Fatalf("expected 0 Submit calls before the sendAt window elapses, got %d", len(extSub.calls))
+	}
+
+	subRow, err := st.Meta().GetEmailSubmission(context.Background(), subID)
+	if err != nil {
+		t.Fatalf("GetEmailSubmission: %v", err)
+	}
+	if !subRow.RelayHeld {
+		t.Fatal("expected RelayHeld=true for a submission scheduled inside its undo window")
+	}
+	if subRow.UndoStatus != string(undoStatusPending) {
+		t.Fatalf("undoStatus = %q, want pending", subRow.UndoStatus)
+	}
+}
+
+// TestEmailSubmission_External_DestroyWithinWindowCancelsBeforeRelay
+// verifies the undo-send contract end to end (re #478): destroy called
+// while RelayHeld is true cancels the submission, and the relay never sees
+// the message even after the scheduled sendAt has passed and the scheduler
+// runs.
+func TestEmailSubmission_External_DestroyWithinWindowCancelsBeforeRelay(t *testing.T) {
+	h, st, p, mid, extSub, _ := newExternalSetup(t, extsubmit.Outcome{
+		State: extsubmit.OutcomeOK,
+	})
+	now := h.clk.Now()
+	sendAt := now.Add(10 * time.Second)
+	createArgs, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
+		"create": map[string]any{
+			"k1": map[string]any{
+				"identityId": "default",
+				"emailId":    renderEmailID(mid),
+				"sendAt":     sendAt.Format(time.RFC3339),
+			},
+		},
+	})
+	resp, mErr := setHandler{h: h}.executeAs(p, createArgs)
+	if mErr != nil {
+		t.Fatalf("set create: %v", mErr)
+	}
+	sresp := resp.(setResponse)
+	var subID string
+	for _, v := range sresp.Created {
+		subID = v.ID
+	}
+	if subID == "" {
+		t.Fatal("no created submission id")
+	}
+
+	// Destroy inside the window: must succeed (no notDestroyed entry).
+	destroyArgs, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
+		"destroy":   []string{subID},
+	})
+	dresp, mErr := setHandler{h: h}.executeAs(p, destroyArgs)
+	if mErr != nil {
+		t.Fatalf("set destroy: %v", mErr)
+	}
+	djs, _ := json.Marshal(dresp)
+	if strings.Contains(string(djs), `"notDestroyed"`) {
+		t.Fatalf("expected the row to be destroyed (undo succeeded), got: %s", djs)
+	}
+	if !strings.Contains(string(djs), `"destroyed"`) {
+		t.Fatalf("expected a destroyed entry: %s", djs)
+	}
+
+	if _, err := st.Meta().GetEmailSubmission(context.Background(), subID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expected the row to be gone after a successful undo, got err=%v", err)
+	}
+
+	// Advance past the scheduled sendAt and run the scheduler: the relay
+	// must never see the message.
+	dispatched, dErr := h.DispatchDueExternalRelays(context.Background(), sendAt.Add(time.Second))
+	if dErr != nil {
+		t.Fatalf("DispatchDueExternalRelays: %v", dErr)
+	}
+	if dispatched != 0 {
+		t.Fatalf("expected 0 rows dispatched (the row was canceled), got %d", dispatched)
+	}
+	h.Wait()
+	if len(extSub.calls) != 0 {
+		t.Fatalf("expected 0 Submit calls -- the relay must never see a message undone inside the window, got %d", len(extSub.calls))
+	}
+}
+
+// TestEmailSubmission_External_SchedulerDispatchesAfterWindow verifies that
+// the relay scheduler claims and relays a scheduled row once its sendAt has
+// elapsed, and that destroy after that point answers cannotUnsend exactly
+// as it does for an immediately-dispatched external submission (re #478).
+func TestEmailSubmission_External_SchedulerDispatchesAfterWindow(t *testing.T) {
+	h, st, p, mid, extSub, _ := newExternalSetup(t, extsubmit.Outcome{
+		State:      extsubmit.OutcomeOK,
+		Diagnostic: "250 ok",
+	})
+	now := h.clk.Now()
+	sendAt := now.Add(10 * time.Second)
+	createArgs, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
+		"create": map[string]any{
+			"k1": map[string]any{
+				"identityId": "default",
+				"emailId":    renderEmailID(mid),
+				"sendAt":     sendAt.Format(time.RFC3339),
+			},
+		},
+	})
+	resp, mErr := setHandler{h: h}.executeAs(p, createArgs)
+	if mErr != nil {
+		t.Fatalf("set create: %v", mErr)
+	}
+	sresp := resp.(setResponse)
+	var subID string
+	for _, v := range sresp.Created {
+		subID = v.ID
+	}
+	if subID == "" {
+		t.Fatal("no created submission id")
+	}
+
+	// The window has not elapsed yet: the scheduler finds nothing due.
+	if n, dErr := h.DispatchDueExternalRelays(context.Background(), now.Add(5*time.Second)); dErr != nil || n != 0 {
+		t.Fatalf("DispatchDueExternalRelays before sendAt: n=%d err=%v, want n=0", n, dErr)
+	}
+	h.Wait()
+	if len(extSub.calls) != 0 {
+		t.Fatalf("expected 0 Submit calls before sendAt, got %d", len(extSub.calls))
+	}
+
+	// The window has elapsed: the scheduler claims and relays the row.
+	n, dErr := h.DispatchDueExternalRelays(context.Background(), sendAt.Add(time.Second))
+	if dErr != nil {
+		t.Fatalf("DispatchDueExternalRelays after sendAt: %v", dErr)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 row dispatched, got %d", n)
+	}
+	h.Wait()
+	if len(extSub.calls) != 1 {
+		t.Fatalf("expected 1 Submit call after sendAt elapsed, got %d", len(extSub.calls))
+	}
+
+	subRow, err := st.Meta().GetEmailSubmission(context.Background(), subID)
+	if err != nil {
+		t.Fatalf("GetEmailSubmission: %v", err)
+	}
+	if subRow.RelayHeld {
+		t.Fatal("expected RelayHeld=false once the scheduler has claimed the row")
+	}
+	if subRow.UndoStatus != string(undoStatusFinal) {
+		t.Fatalf("undoStatus = %q, want final", subRow.UndoStatus)
+	}
+
+	// Destroy after the window closed answers cannotUnsend, same as today's
+	// behaviour for a dispatched external submission.
+	destroyArgs, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
+		"destroy":   []string{subID},
+	})
+	dresp, mErr := setHandler{h: h}.executeAs(p, destroyArgs)
+	if mErr != nil {
+		t.Fatalf("set destroy: %v", mErr)
+	}
+	djs, _ := json.Marshal(dresp)
+	if !strings.Contains(string(djs), `"cannotUnsend"`) {
+		t.Fatalf("expected cannotUnsend after the window closed: %s", djs)
+	}
+}
+
+// TestEmailSubmission_External_ScheduledSurvivesRestart verifies that a
+// scheduled external submission is not lost or double-sent across a server
+// restart (re #478): the row is created and left RelayHeld=true by one
+// handlerSet backed by a sqlite file, the store is closed and reopened by a
+// second, independent handlerSet (simulating a process restart), and the
+// second handlerSet's scheduler -- with no knowledge of the first's
+// in-memory state -- finds and relays the row exactly once.
+func TestEmailSubmission_External_ScheduledSurvivesRestart(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "store.db")
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	stA, err := storesqlite.Open(context.Background(), dbPath, nil, clock.NewFake(start))
+	if err != nil {
+		t.Fatalf("storesqlite.Open (A): %v", err)
+	}
+	ctx := context.Background()
+	if err := stA.Meta().InsertDomain(ctx, store.Domain{Name: "example.test", IsLocal: true}); err != nil {
+		t.Fatalf("InsertDomain: %v", err)
+	}
+	p, _ := stA.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind: store.PrincipalKindUser, CanonicalEmail: "alice@example.test",
+	})
+	mb, _ := stA.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: p.ID, Name: "Drafts", Attributes: store.MailboxAttrDrafts,
+	})
+	body := "From: alice@example.test\r\nTo: bob@remote.test\r\nSubject: hi\r\n\r\nbody.\r\n"
+	ref, _ := stA.Blobs().Put(ctx, bytes.NewReader([]byte(body)))
+	uid, _, _ := stA.Meta().InsertMessage(ctx, store.Message{
+		Blob: ref,
+		Size: int64(len(body)),
+		Envelope: store.Envelope{
+			Subject: "hi",
+			From:    "alice@example.test",
+			To:      "bob@remote.test",
+		},
+	}, []store.MessageMailbox{{MailboxID: mb.ID}})
+	msgs, _ := stA.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 100, WithEnvelope: true})
+	var mid store.MessageID
+	for _, m := range msgs {
+		if m.UID == uid {
+			mid = m.ID
+		}
+	}
+
+	extSubA := &fakeExternalSubmitter{outcome: extsubmit.Outcome{State: extsubmit.OutcomeOK, Diagnostic: "250 ok"}}
+	hA := &handlerSet{
+		store:          stA,
+		queue:          &fakeSubmitter{store: stA},
+		clk:            clock.NewFake(start),
+		identity:       stubResolver{email: "alice@example.test"},
+		externalSubmit: extSubA,
+		externalRouter: &fakeExternalRouter{has: true},
+	}
+
+	sendAt := start.Add(10 * time.Second)
+	createArgs, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
+		"create": map[string]any{
+			"k1": map[string]any{
+				"identityId": "default",
+				"emailId":    renderEmailID(mid),
+				"sendAt":     sendAt.Format(time.RFC3339),
+			},
+		},
+	})
+	resp, mErr := setHandler{h: hA}.executeAs(p, createArgs)
+	if mErr != nil {
+		t.Fatalf("set create: %v", mErr)
+	}
+	sresp := resp.(setResponse)
+	var subID string
+	for _, v := range sresp.Created {
+		subID = v.ID
+	}
+	if subID == "" {
+		t.Fatal("no created submission id")
+	}
+	hA.Wait()
+	if len(extSubA.calls) != 0 {
+		t.Fatalf("expected 0 Submit calls before restart, got %d", len(extSubA.calls))
+	}
+
+	// Simulate a restart: close the first store handle and everything that
+	// held process A's in-memory state (there is no scheduled goroutine or
+	// timer to lose -- that is the point).
+	if err := stA.Close(); err != nil {
+		t.Fatalf("close store A: %v", err)
+	}
+
+	stB, err := storesqlite.Open(context.Background(), dbPath, nil, clock.NewFake(sendAt.Add(time.Second)))
+	if err != nil {
+		t.Fatalf("storesqlite.Open (B): %v", err)
+	}
+	t.Cleanup(func() { _ = stB.Close() })
+	extSubB := &fakeExternalSubmitter{outcome: extsubmit.Outcome{State: extsubmit.OutcomeOK, Diagnostic: "250 ok"}}
+	hB := &handlerSet{
+		store:          stB,
+		queue:          &fakeSubmitter{store: stB},
+		clk:            clock.NewFake(sendAt.Add(time.Second)),
+		identity:       stubResolver{email: "alice@example.test"},
+		externalSubmit: extSubB,
+		externalRouter: &fakeExternalRouter{has: true},
+	}
+	t.Cleanup(hB.Wait)
+
+	n, dErr := hB.DispatchDueExternalRelays(context.Background(), sendAt.Add(time.Second))
+	if dErr != nil {
+		t.Fatalf("DispatchDueExternalRelays (B): %v", dErr)
+	}
+	if n != 1 {
+		t.Fatalf("expected the restarted process to find and dispatch the 1 scheduled row, got %d", n)
+	}
+	hB.Wait()
+	if len(extSubB.calls) != 1 {
+		t.Fatalf("expected process B to relay the row exactly once, got %d calls", len(extSubB.calls))
+	}
+
+	subRow, err := stB.Meta().GetEmailSubmission(context.Background(), subID)
+	if err != nil {
+		t.Fatalf("GetEmailSubmission: %v", err)
+	}
+	if subRow.UndoStatus != string(undoStatusFinal) {
+		t.Fatalf("undoStatus = %q, want final", subRow.UndoStatus)
+	}
+	if subRow.RelayHeld {
+		t.Fatal("expected RelayHeld=false after dispatch")
 	}
 }

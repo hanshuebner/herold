@@ -1251,6 +1251,15 @@ type EmailSubmissionRow struct {
 	// abandons the parked submission and marks it final/delivered=no.
 	// Zero when HeldForReauth is false. Default hold window: 72 hours.
 	HoldDeadlineUs int64
+	// RelayHeld is true while an External submission is scheduled for its
+	// undo-send window (SendAtUs in the future at creation) but has not yet
+	// been claimed for relay dispatch (re #478). EmailSubmission/set destroy
+	// cancels the row while RelayHeld is true, atomically racing the relay
+	// scheduler's claim via ClaimExternalRelay/CancelExternalRelay so the
+	// relay never sees a message the user undid inside the window. False
+	// for every non-External row and for an External row created with no
+	// (or an already-elapsed) sendAt, which dispatches immediately as before.
+	RelayHeld bool
 }
 
 // EmailSubmissionFilter narrows a ListEmailSubmissions read per RFC 8621

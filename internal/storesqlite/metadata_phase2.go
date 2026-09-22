@@ -1821,10 +1821,11 @@ func scanEmailSubmission(row rowLike) (store.EmailSubmissionRow, error) {
 		external                                    int64
 		heldForReauth                               int64
 		holdDeadlineUs                              sql.NullInt64
+		relayHeld                                   int64
 	)
 	err := row.Scan(&id, &envID, &principalID, &identityID, &emailID,
 		&threadID, &sendAtUs, &createdAtUs, &undoStatus, &props, &external,
-		&heldForReauth, &holdDeadlineUs)
+		&heldForReauth, &holdDeadlineUs, &relayHeld)
 	if err != nil {
 		return store.EmailSubmissionRow{}, mapErr(err)
 	}
@@ -1841,6 +1842,7 @@ func scanEmailSubmission(row rowLike) (store.EmailSubmissionRow, error) {
 		Properties:    props,
 		External:      external != 0,
 		HeldForReauth: heldForReauth != 0,
+		RelayHeld:     relayHeld != 0,
 	}
 	if holdDeadlineUs.Valid {
 		r.HoldDeadlineUs = holdDeadlineUs.Int64
@@ -1851,7 +1853,7 @@ func scanEmailSubmission(row rowLike) (store.EmailSubmissionRow, error) {
 const emailSubmissionSelectColumns = `
 	id, envelope_id, principal_id, identity_id, email_id, thread_id,
 	send_at_us, created_at_us, undo_status, properties, external,
-	held_for_reauth, hold_deadline_us`
+	held_for_reauth, hold_deadline_us, relay_held`
 
 func (m *metadata) InsertEmailSubmission(ctx context.Context, row store.EmailSubmissionRow) error {
 	if row.ID == "" {
@@ -1890,16 +1892,20 @@ func (m *metadata) InsertEmailSubmission(ctx context.Context, row store.EmailSub
 		if row.HoldDeadlineUs != 0 {
 			holdDeadlineArg = row.HoldDeadlineUs
 		}
+		relayHeldVal := int64(0)
+		if row.RelayHeld {
+			relayHeldVal = 1
+		}
 		_, err = tx.ExecContext(ctx, `
 			INSERT INTO jmap_email_submissions
 			  (id, envelope_id, principal_id, identity_id, email_id, thread_id,
 			   send_at_us, created_at_us, undo_status, properties, external,
-			   held_for_reauth, hold_deadline_us)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			   held_for_reauth, hold_deadline_us, relay_held)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			row.ID, string(row.EnvelopeID), int64(row.PrincipalID),
 			row.IdentityID, int64(row.EmailID), row.ThreadID,
 			row.SendAtUs, row.CreatedAtUs, row.UndoStatus, props, extVal,
-			heldVal, holdDeadlineArg)
+			heldVal, holdDeadlineArg, relayHeldVal)
 		return mapErr(err)
 	})
 }
@@ -2062,6 +2068,70 @@ func (m *metadata) UpdateEmailSubmissionHeld(ctx context.Context, id string, hel
 		}
 		return nil
 	})
+}
+
+func (m *metadata) ListDueExternalRelays(ctx context.Context, before time.Time) ([]store.EmailSubmissionRow, error) {
+	rows, err := m.s.db.QueryContext(ctx, `
+		SELECT `+emailSubmissionSelectColumns+`
+		  FROM jmap_email_submissions
+		 WHERE external = 1 AND relay_held = 1 AND send_at_us <= ?
+		 ORDER BY send_at_us ASC, id ASC`,
+		usMicros(before))
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	var out []store.EmailSubmissionRow
+	for rows.Next() {
+		r, err := scanEmailSubmission(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (m *metadata) ClaimExternalRelay(ctx context.Context, id string) (bool, error) {
+	var ok bool
+	err := m.runTx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `
+			UPDATE jmap_email_submissions
+			   SET relay_held = 0
+			 WHERE id = ? AND relay_held = 1`,
+			id)
+		if err != nil {
+			return mapErr(err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("storesqlite: rows affected: %w", err)
+		}
+		ok = n > 0
+		return nil
+	})
+	return ok, err
+}
+
+func (m *metadata) CancelExternalRelay(ctx context.Context, id string) (bool, error) {
+	var ok bool
+	err := m.runTx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `
+			UPDATE jmap_email_submissions
+			   SET relay_held = 0, undo_status = 'canceled'
+			 WHERE id = ? AND relay_held = 1`,
+			id)
+		if err != nil {
+			return mapErr(err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("storesqlite: rows affected: %w", err)
+		}
+		ok = n > 0
+		return nil
+	})
+	return ok, err
 }
 
 // -- JMAP Identity overlay -------------------------------------------
