@@ -76,34 +76,36 @@ func seedFidelityRows(t *testing.T, db *sql.DB) {
 	exec(`INSERT INTO domains (name, is_local, created_at_us) VALUES (?, ?, ?)`,
 		"external.example", 0, int64(2000000))
 
-	// principals (id 1, 2, 3)
+	// principals (id 1, 2, 3). clientlog_telemetry_enabled (migration 0038)
+	// exercises all three states across the rows: explicit true, explicit
+	// false, and NULL ("use the system default").
 	exec(`INSERT INTO principals (id, kind, canonical_email, display_name, password_hash,
 	        totp_secret, quota_bytes, flags, seen_addresses_enabled,
 	        avatar_blob_hash, avatar_blob_size, xface_enabled,
-	        used_bytes, created_at_us, updated_at_us)
-	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	        used_bytes, created_at_us, updated_at_us, clientlog_telemetry_enabled)
+	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		1, 1, "alice@example.test", "Alice", "hash1",
 		binaryBlob, maxInt64, 0, 1,
 		"abc123blobhash", 1024, 1,
-		512, int64(1000000), int64(2000000))
+		512, int64(1000000), int64(2000000), 1)
 	exec(`INSERT INTO principals (id, kind, canonical_email, display_name, password_hash,
 	        totp_secret, quota_bytes, flags, seen_addresses_enabled,
 	        avatar_blob_hash, avatar_blob_size, xface_enabled,
-	        used_bytes, created_at_us, updated_at_us)
-	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	        used_bytes, created_at_us, updated_at_us, clientlog_telemetry_enabled)
+	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		2, 1, "bob@example.test", longUnicode, "hash2",
 		nil, 0, 0, 0,
 		nil, 0, 0,
-		0, int64(3000000), int64(4000000))
+		0, int64(3000000), int64(4000000), 0)
 	exec(`INSERT INTO principals (id, kind, canonical_email, display_name, password_hash,
 	        totp_secret, quota_bytes, flags, seen_addresses_enabled,
 	        avatar_blob_hash, avatar_blob_size, xface_enabled,
-	        used_bytes, created_at_us, updated_at_us)
-	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	        used_bytes, created_at_us, updated_at_us, clientlog_telemetry_enabled)
+	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		3, 2, "svc@example.test", "", "hash3",
 		nil, 0, 0, 1,
 		nil, 0, 0,
-		0, int64(5000000), int64(6000000))
+		0, int64(5000000), int64(6000000), nil)
 
 	// push_subscription
 	exec(`INSERT INTO push_subscription (id, principal_id, device_client_id, url,
@@ -191,16 +193,24 @@ func seedFidelityRows(t *testing.T, db *sql.DB) {
 		1, 1, "rule1", 1, 0, `[{"field":"from"}]`, `[{"op":"move","folder":"Junk"}]`,
 		int64(1000000), int64(2000000))
 
-	// jmap_categorisation_config
+	// jmap_categorisation_config. Row 1 exercises the operator guardrail
+	// (migration 0027) and a populated derived-categories cache with its
+	// paired epoch (migrations 0028/0029); row 2 keeps the post-prompt-
+	// change defaults (guardrail unset, derived_categories_json NULL,
+	// epoch 0).
 	exec(`INSERT INTO jmap_categorisation_config (principal_id, prompt, category_set_json,
-	        endpoint_url, model, api_key_env, timeout_sec, enabled, updated_at_us)
-	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	        endpoint_url, model, api_key_env, timeout_sec, enabled, updated_at_us,
+	        guardrail, derived_categories_json, derived_categories_epoch)
+	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		1, "categorise this", binaryBlob, "https://api.example.test", "gpt-4", "OPENAI_KEY",
-		30, 1, int64(1000000))
+		30, 1, int64(1000000),
+		"never suggest legal advice", `["work","personal","newsletter"]`, int64(3))
 	exec(`INSERT INTO jmap_categorisation_config (principal_id, prompt, category_set_json,
-	        endpoint_url, model, api_key_env, timeout_sec, enabled, updated_at_us)
-	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		2, "", []byte("[]"), nil, nil, nil, 0, 0, int64(2000000))
+	        endpoint_url, model, api_key_env, timeout_sec, enabled, updated_at_us,
+	        guardrail, derived_categories_json, derived_categories_epoch)
+	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		2, "", []byte("[]"), nil, nil, nil, 0, 0, int64(2000000),
+		"", nil, int64(0))
 
 	// chat_account_settings
 	exec(`INSERT INTO chat_account_settings (principal_id, default_retention_seconds, default_edit_window_seconds, created_at_us, updated_at_us)
@@ -220,34 +230,46 @@ func seedFidelityRows(t *testing.T, db *sql.DB) {
 	      VALUES (?, ?, ?, ?, ?)`,
 		2, "reply", 1, nil, int64(2000000))
 
-	// mailboxes — the first row exercises default disposition ('none')
-	// and NULL priority (unranked); the second exercises a non-default
-	// disposition and a set priority (issue #333, migration 0107).
+	// mailboxes — the first row exercises default disposition ('none'),
+	// NULL priority (unranked), NULL color_hex and default sort_order 0;
+	// the second exercises a non-default disposition, a set priority
+	// (issue #333, migration 0107), a set color_hex (migration 0008) and
+	// a non-zero sort_order (migration 0023).
 	exec(`INSERT INTO mailboxes (id, principal_id, parent_id, name, attributes,
 	        uidvalidity, uidnext, highest_modseq, created_at_us, updated_at_us)
 	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		1, 1, 0, "INBOX", 0, 1, 1, 1, int64(1000000), int64(2000000))
 	exec(`INSERT INTO mailboxes (id, principal_id, parent_id, name, attributes,
 	        uidvalidity, uidnext, highest_modseq, created_at_us, updated_at_us,
-	        disposition, priority)
-	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		2, 1, 1, "Archive", 2, 2, 1, 1, int64(3000000), int64(4000000), "pinned", int64(0))
+	        disposition, priority, color_hex, sort_order)
+	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		2, 1, 1, "Archive", 2, 2, 1, 1, int64(3000000), int64(4000000), "pinned", int64(0),
+		"#FF8800", int64(5))
 
 	// blob_refs (seed before messages reference them)
 	exec(`INSERT INTO blob_refs (hash, size, ref_count, last_change_us) VALUES (?, ?, ?, ?)`,
 		"aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899", 512, 1, int64(1000000))
 
-	// messages
+	// messages. Row 1 exercises every body-meta and failed-image column
+	// (migrations 0043/0059/0077/0100) with non-default values so a
+	// backup/restore that drops any of them fails the byte-for-byte dump
+	// comparison.
 	exec(`INSERT INTO messages (id, principal_id, internal_date_us, received_at_us, size,
 	        blob_hash, blob_size, thread_id, env_subject, env_from, env_to,
 	        env_cc, env_bcc, env_reply_to, env_message_id, env_in_reply_to,
-	        env_references, env_date_us, ingest_source, ingest_source_ref)
-	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	        env_references, env_date_us, ingest_source, ingest_source_ref,
+	        internalize_pending, preview, has_attachment, body_meta_computed,
+	        failed_image_count, failed_image_state,
+	        retryable_failed_image_count, failed_image_reason)
+	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		1, 1, int64(1000000), int64(1000001), 512,
 		"aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899", 512,
 		100, longUnicode, "alice@example.test", "bob@example.test",
 		"", "", "", "<msg1@example.test>", "",
-		"", int64(1000000), "imap-import", "acct-classic-computing")
+		"", int64(1000000), "imap-import", "acct-classic-computing",
+		1, "The quick brown fox previews here", 1, 1,
+		2, "opaque-retained-failed-image-state",
+		1, "blocked_by_policy")
 
 	// message_mailboxes
 	exec(`INSERT INTO message_mailboxes (message_id, mailbox_id, uid, modseq, flags, keywords_csv, snoozed_until_us, wake_mailbox_id, received_to)
@@ -283,11 +305,13 @@ func seedFidelityRows(t *testing.T, db *sql.DB) {
 	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		2, 1, 2, "Email", 2, 0, 2, "background", int64(2000000))
 
-	// audit_log
-	exec(`INSERT INTO audit_log (id, at_us, actor_kind, actor_id, action, subject, remote_addr, outcome, message, metadata_json, principal_id)
-	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	// audit_log — domain (migration 0075, REQ-ADM-307) is non-default so a
+	// domain-scoped operator's filtered view is exercised by the fidelity
+	// comparison.
+	exec(`INSERT INTO audit_log (id, at_us, actor_kind, actor_id, action, subject, remote_addr, outcome, message, metadata_json, principal_id, domain)
+	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		1, int64(1000000), 1, "alice@example.test", "login", "session", "127.0.0.1", 0, "ok",
-		`{"ua":"test"}`, 1)
+		`{"ua":"test"}`, 1, "example.test")
 
 	// cursors
 	exec(`INSERT INTO cursors (key, seq) VALUES (?, ?)`, "principal:1", int64(42))
@@ -390,41 +414,63 @@ func seedFidelityRows(t *testing.T, db *sql.DB) {
 	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		1, 1, "1.2.3.4", 5, 0, 1, 0, "pass", "fail", "example.test", "example.test", "example.test")
 
-	// jmap_states
+	// jmap_states. Row 1 gives every per-datatype counter (including the
+	// twelve added by migrations 0008/0010/0011/0012/0017/0056/0065/0076)
+	// a distinct non-zero value; row 2 is the all-zero edge case.
 	exec(`INSERT INTO jmap_states (principal_id, mailbox_state, email_state, thread_state,
 	        identity_state, email_submission_state, vacation_response_state, updated_at_us,
 	        shortcut_coach_state, category_settings_state, managed_rule_state,
-	        seen_address_state, internalize_status_state)
-	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		1, 10, 20, 30, 40, 50, 60, int64(1000000), 1, 2, 3, 4, 5)
+	        seen_address_state, internalize_status_state,
+	        sieve_state, address_book_state, contact_state,
+	        calendar_state, calendar_event_state,
+	        conversation_state, message_chat_state, membership_state,
+	        push_subscription_state, file_share_state, imap_import_state,
+	        email_bulk_job_state)
+	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		1, 10, 20, 30, 40, 50, 60, int64(1000000), 1, 2, 3, 4, 5,
+		6, 7, 8, 9, 11, 12, 13, 14, 15, 16, 17, 18)
 	exec(`INSERT INTO jmap_states (principal_id, mailbox_state, email_state, thread_state,
 	        identity_state, email_submission_state, vacation_response_state, updated_at_us,
 	        shortcut_coach_state, category_settings_state, managed_rule_state,
-	        seen_address_state, internalize_status_state)
-	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		2, 0, 0, 0, 0, 0, 0, int64(2000000), 0, 0, 0, 0, 0)
+	        seen_address_state, internalize_status_state,
+	        sieve_state, address_book_state, contact_state,
+	        calendar_state, calendar_event_state,
+	        conversation_state, message_chat_state, membership_state,
+	        push_subscription_state, file_share_state, imap_import_state,
+	        email_bulk_job_state)
+	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		2, 0, 0, 0, 0, 0, 0, int64(2000000), 0, 0, 0, 0, 0,
+		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
 
-	// jmap_identities (needed before identity_submission)
+	// jmap_identities (needed before identity_submission). ident-1 carries
+	// the migration-0008 signature extension and non-zero migration-0052
+	// resend rate-limit bookkeeping (verify_last_issued_at_us /
+	// verify_window_started_at_us / verify_window_count); ident-2 keeps
+	// these at their unset/default values.
 	exec(`INSERT INTO jmap_identities (id, principal_id, name, email, reply_to_json,
 	        bcc_json, text_signature, html_signature, may_delete,
 	        created_at_us, updated_at_us,
-	        avatar_blob_hash, avatar_blob_size, xface_enabled, verified_at_us, is_default)
-	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	        avatar_blob_hash, avatar_blob_size, xface_enabled, verified_at_us, is_default,
+	        signature, verify_last_issued_at_us, verify_window_started_at_us, verify_window_count)
+	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		"ident-1", 1, "Alice", "alice@example.test",
 		[]byte(`[{"email":"alice@example.test"}]`),
 		[]byte(`[{"email":"archive@example.test"}]`),
 		"Regards,\nAlice", "<p>Regards,<br>Alice</p>",
 		1, int64(1000000), int64(2000000),
-		"abc123blobhash", 1024, 1, int64(3000000), 1)
+		"abc123blobhash", 1024, 1, int64(3000000), 1,
+		"Sent from my herold account", int64(500000), int64(400000), int64(2))
 	exec(`INSERT INTO jmap_identities (id, principal_id, name, email, reply_to_json,
 	        bcc_json, text_signature, html_signature, may_delete,
 	        created_at_us, updated_at_us,
-	        avatar_blob_hash, avatar_blob_size, xface_enabled, verified_at_us, is_default)
-	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	        avatar_blob_hash, avatar_blob_size, xface_enabled, verified_at_us, is_default,
+	        signature, verify_last_issued_at_us, verify_window_started_at_us, verify_window_count)
+	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		"ident-2", 2, "", "bob@example.test",
 		[]byte("[]"), []byte("[]"), "", "", 0,
 		int64(3000000), int64(4000000),
-		nil, 0, 0, nil, 0)
+		nil, 0, 0, nil, 0,
+		nil, nil, nil, int64(0))
 
 	// identity_submission (FK to jmap_identities)
 	exec(`INSERT INTO identity_submission (identity_id, submit_host, submit_port,
@@ -682,22 +728,25 @@ func seedFidelityRows(t *testing.T, db *sql.DB) {
 		int64(2000000), int64(8000000), nil, 0,
 		nil, "pending", nil, nil)
 
-	// imapimport_account. imap-1 carries a populated own_addresses_json
-	// and a completed learning pass (re #396, third round); imap-2 keeps
-	// the column defaults (own_addresses_json = "[]",
-	// learned_addresses_json / addresses_learned_at NULL, i.e. the
-	// learning pass has never run for it).
+	// imapimport_account. imap-1 carries a populated own_addresses_json,
+	// a completed learning pass (re #396, third round), a per-identity
+	// owner (migration 0062), a created provenance-label mailbox
+	// (migration 0063) and enabled debug logging (migration 0074);
+	// imap-2 keeps all of those at their legacy/unset defaults
+	// (own_addresses_json = "[]", learned_addresses_json /
+	// addresses_learned_at / identity_id / provenance_mailbox_id NULL,
+	// debug_log off).
 	exec(`INSERT INTO imapimport_account (id, principal_id, account_name, host, port, tls_mode,
 	        username, auth_method, backfill_floor_date, credential_ct, state,
 	        last_success_at, last_error, delete_propagates,
 	        own_addresses_json, learned_addresses_json, addresses_learned_at,
-	        created_at, updated_at)
-	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	        created_at, updated_at, identity_id, provenance_mailbox_id, debug_log)
+	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		"imap-1", 1, "Gmail", "imap.gmail.com", 993, "implicit",
 		"alice@gmail.com", "password", int64(1000000), binaryBlob, "enabled",
 		int64(2000000), "", 1,
 		`["info@example.com"]`, `["vorstand@example.com"]`, int64(2500000),
-		int64(1000000), int64(2000000))
+		int64(1000000), int64(2000000), "ident-1", int64(2), 1)
 	exec(`INSERT INTO imapimport_account (id, principal_id, account_name, host, port, tls_mode,
 	        username, auth_method, backfill_floor_date, credential_ct, state,
 	        last_success_at, last_error, delete_propagates, created_at, updated_at)
@@ -731,16 +780,24 @@ func seedFidelityRows(t *testing.T, db *sql.DB) {
 	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		"submig-1", 1, 2, "17", "running", 42, 10, 1, "", int64(1000000), int64(2000000))
 
-	// sessions — excluded from backup by default; seed one row to verify
-	// the session table is at least scannable by the engine.
+	// sessions — excluded from backup content by default (backup.go writes
+	// an empty JSONL regardless), but the engine must still round-trip it
+	// correctly since TestFidelity_AllTables drives EnumerateRows/Insert
+	// directly. sess-abc exercises the migration-0054/0066 device-context
+	// columns and an active (non-tombstoned) session; sess-xyz exercises
+	// the migration-0068 tombstone (revoked_at_us set).
 	exec(`INSERT INTO sessions (session_id, principal_id, created_at_us, expires_at_us,
-	        clientlog_telemetry_enabled, clientlog_livetail_until_us)
-	      VALUES (?, ?, ?, ?, ?, ?)`,
-		"sess-abc", 1, int64(1000000), int64(9999999), 1, int64(8000000))
+	        clientlog_telemetry_enabled, clientlog_livetail_until_us,
+	        last_seen_at_us, user_agent, last_seen_ip, revoked_at_us)
+	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"sess-abc", 1, int64(1000000), int64(9999999), 1, int64(8000000),
+		int64(5000000), "Mozilla/5.0 (Macintosh)", "10.0.0.5", nil)
 	exec(`INSERT INTO sessions (session_id, principal_id, created_at_us, expires_at_us,
-	        clientlog_telemetry_enabled, clientlog_livetail_until_us)
-	      VALUES (?, ?, ?, ?, ?, ?)`,
-		"sess-xyz", 2, int64(2000000), int64(9999999), 0, nil)
+	        clientlog_telemetry_enabled, clientlog_livetail_until_us,
+	        last_seen_at_us, user_agent, last_seen_ip, revoked_at_us)
+	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"sess-xyz", 2, int64(2000000), int64(9999999), 0, nil,
+		int64(2000000), "", "", int64(9500000))
 
 	// clientlog — excluded from backup by default; one row to verify scannability.
 	exec(`INSERT INTO clientlog (id, slice, server_ts, client_ts, clock_skew_ms,

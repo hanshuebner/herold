@@ -51,6 +51,12 @@ type PrincipalRow struct {
 	// (issue #227, REQ-SUBACCT-01): non-nil only for a sub-principal
 	// (Kind == PrincipalKindSubAccount), naming its owning parent.
 	ParentPrincipalID *int64 `json:"parent_principal_id,omitempty" nullable:"true"`
+	// ClientlogTelemetryEnabled is the migration-0038 per-user client-log
+	// telemetry opt-out (REQ-OPS-208, REQ-CLOG-06): nil means "use the
+	// system default", explicit true/false overrides it. Losing this on
+	// restore would silently revert a user's opt-out back to the system
+	// default.
+	ClientlogTelemetryEnabled *bool `json:"clientlog_telemetry_enabled,omitempty"`
 }
 
 // GrantRow mirrors the grants table introduced in migration 0079 (epic #182,
@@ -206,6 +212,20 @@ type CategorisationConfigRow struct {
 	TimeoutSec      int64   `json:"timeout_sec"`
 	Enabled         bool    `json:"enabled"`
 	UpdatedAtUs     int64   `json:"updated_at_us"`
+	// Guardrail is the migration-0027 operator-set classifier guardrail
+	// text (REQ-FILT-67), orthogonal to Prompt.
+	Guardrail string `json:"guardrail"`
+	// DerivedCategoriesJSON is the migration-0028 server-persisted list of
+	// category names from the most recent successful classification
+	// (REQ-FILT-217): the suite renders tabs from this without waiting for
+	// the next delivery. NULL means no successful classification since the
+	// last prompt change, distinct from an empty list.
+	DerivedCategoriesJSON *string `json:"derived_categories_json,omitempty"`
+	// DerivedCategoriesEpoch is the migration-0029 optimistic-lock counter
+	// paired with DerivedCategoriesJSON (REQ-FILT-217); restored alongside
+	// it so a post-restore SetDerivedCategories call is not rejected by a
+	// stale epoch mismatch.
+	DerivedCategoriesEpoch int64 `json:"derived_categories_epoch"`
 }
 
 type MailboxRow struct {
@@ -225,6 +245,12 @@ type MailboxRow struct {
 	// Priority is the mailbox's rank in its principal's ranked-label
 	// list; nil means unranked (migration 0107).
 	Priority *int64 `json:"priority,omitempty"`
+	// ColorHex is the migration-0008 JMAP Mailbox.color extension
+	// (REQ-PROTO-56 / REQ-STORE-34); NULL when unset.
+	ColorHex *string `json:"color_hex,omitempty"`
+	// SortOrder is the migration-0023 RFC 8621 Section 2.1 Mailbox.sortOrder
+	// property; 0 is a valid, meaningful value (default order), not "unset".
+	SortOrder int64 `json:"sort_order"`
 }
 
 // MessageRow mirrors the messages table after migration 0024 removed the
@@ -266,6 +292,38 @@ type MessageRow struct {
 	// IngestSource: the import account name for "imap-import", the
 	// mailing list address for "mailing-list-archive", empty otherwise.
 	IngestSourceRef string `json:"ingest_source_ref"`
+	// InternalizePending is the migration-0043 external-image rewrite
+	// marker (REQ-EXTIMG-91/97): true means the first JMAP Email/get on
+	// this message must trigger the internalize rewriter before the body
+	// is served. Losing it on restore would leave a bulk-imported
+	// message's external images un-rewritten forever, since nothing else
+	// ever re-arms the flag.
+	InternalizePending bool `json:"internalize_pending,omitempty"`
+	// Preview, HasAttachment and BodyMetaComputed are the migration-0059
+	// precomputed body metadata (RFC 8621 Email.preview / hasAttachment):
+	// restoring the already-computed values keeps them immediately
+	// authoritative instead of forcing every message back through the
+	// background body-meta sweep after a restore.
+	Preview          string `json:"preview,omitempty"`
+	HasAttachment    bool   `json:"has_attachment,omitempty"`
+	BodyMetaComputed bool   `json:"body_meta_computed,omitempty"`
+	// FailedImageCount and FailedImageState are the migration-0077
+	// server-only retained state for the failed-external-image retry
+	// affordance (issue #162): the origin URLs of images that failed to
+	// internalize are never written to the stored body, so this state is
+	// the only place they survive. Losing it on restore would hide the
+	// Email.failedImageCount badge and disable retry for mail that
+	// already lost its images before the backup was taken -- the
+	// original URLs cannot be recovered from anywhere else.
+	FailedImageCount int64  `json:"failed_image_count,omitempty"`
+	FailedImageState string `json:"failed_image_state,omitempty"`
+	// RetryableFailedImageCount and FailedImageReason are the
+	// migration-0100 refinement of FailedImageCount/FailedImageState
+	// (issue #271): which failures a retry can resolve, and the dominant
+	// permanent-failure category. Restored alongside their migration-0077
+	// counterparts for the same reason.
+	RetryableFailedImageCount int64  `json:"retryable_failed_image_count,omitempty"`
+	FailedImageReason         string `json:"failed_image_reason,omitempty"`
 }
 
 // MessageMailboxRow mirrors one row of the message_mailboxes join table
@@ -412,6 +470,12 @@ type AuditLogRow struct {
 	Message      string `json:"message"`
 	MetadataJSON string `json:"metadata_json"`
 	PrincipalID  int64  `json:"principal_id"`
+	// Domain is the migration-0075 REQ-ADM-307 operator-scope tag: the mail
+	// domain an entry relates to, empty for domain-agnostic global actions.
+	// Dropping it on restore would surface as domain-scoped operators
+	// silently losing every pre-restore audit entry from their own filtered
+	// view.
+	Domain string `json:"domain"`
 }
 
 type CursorRow struct {
@@ -581,6 +645,26 @@ type JMAPStateRow struct {
 	// (REQ-EXTIMG-BG-INTERNAL-20). Zero for rows written before
 	// migration 0045.
 	InternalizeStatusState int64 `json:"internalize_status_state,omitempty"`
+	// The following are further per-datatype JMAP state counters, same
+	// shape as the ones above: each is bumped by IncrementJMAPState on
+	// every mutation to its datatype and read back by JMAP */get and
+	// */changes to detect staleness. Resetting any of them to zero on
+	// restore does not lose user data, but it does force every client
+	// with a cached state token higher than the restored value into a
+	// full resync of that datatype (cannotCalculateChanges) the next time
+	// it polls -- restoring the counters avoids that disruption.
+	SieveState            int64 `json:"sieve_state,omitempty"`
+	AddressBookState      int64 `json:"address_book_state,omitempty"`
+	ContactState          int64 `json:"contact_state,omitempty"`
+	CalendarState         int64 `json:"calendar_state,omitempty"`
+	CalendarEventState    int64 `json:"calendar_event_state,omitempty"`
+	ConversationState     int64 `json:"conversation_state,omitempty"`
+	MessageChatState      int64 `json:"message_chat_state,omitempty"`
+	MembershipState       int64 `json:"membership_state,omitempty"`
+	PushSubscriptionState int64 `json:"push_subscription_state,omitempty"`
+	FileShareState        int64 `json:"file_share_state,omitempty"`
+	IMAPImportState       int64 `json:"imap_import_state,omitempty"`
+	EmailBulkJobState     int64 `json:"email_bulk_job_state,omitempty"`
 }
 
 type JMAPEmailSubmissionRow struct {
@@ -640,6 +724,19 @@ type JMAPIdentityRow struct {
 	// migration 0053). Durable per-row state: backed up so the default
 	// pointer survives a backup/restore round-trip.
 	IsDefault bool `json:"is_default,omitempty"`
+	// Signature is the migration-0008 plain-text Identity.signature
+	// extension (REQ-PROTO-57), orthogonal to TextSignature/HTMLSignature.
+	// NULL when unset.
+	Signature *string `json:"signature,omitempty"`
+	// VerifyLastIssuedAtUs and VerifyWindowStartedAtUs/VerifyWindowCount
+	// are the migration-0052 per-identity verification-resend rate-limit
+	// bookkeeping (REQ-IDENT-36). Unlike the verification token/code
+	// hashes below, these survive a successful verify by design (so a
+	// user cannot escape the daily resend cap by re-verifying) --
+	// dropping them on restore would silently reset that cap.
+	VerifyLastIssuedAtUs    *int64 `json:"verify_last_issued_at_us,omitempty"`
+	VerifyWindowStartedAtUs *int64 `json:"verify_window_started_at_us,omitempty"`
+	VerifyWindowCount       int64  `json:"verify_window_count,omitempty"`
 }
 
 type TLSRPTFailureRow struct {
@@ -916,6 +1013,16 @@ type SessionRow struct {
 	ExpiresAtUs               int64  `json:"expires_at_us"`
 	ClientlogTelemetryEnabled bool   `json:"clientlog_telemetry_enabled"`
 	ClientlogLivetailUntilUs  *int64 `json:"clientlog_livetail_until_us,omitempty"`
+	// LastSeenAtUs (migration 0054), UserAgent/LastSeenIP (migration
+	// 0066) and RevokedAtUs (migration 0068) complete the live schema.
+	// The table itself is excluded from backup content entirely (see the
+	// doc comment above and backup.go's writeEmptyJSONL call for
+	// "sessions"), so these fields are never populated by a real dump;
+	// they are declared for column-completeness parity with the schema.
+	LastSeenAtUs int64  `json:"last_seen_at_us,omitempty"`
+	UserAgent    string `json:"user_agent,omitempty"`
+	LastSeenIP   string `json:"last_seen_ip,omitempty"`
+	RevokedAtUs  *int64 `json:"revoked_at_us,omitempty"`
 }
 
 // SessionElevationRow mirrors one row of the session_elevations table
@@ -1086,8 +1193,13 @@ type FileShareRow struct {
 // base64 by encoding/json. BackfillFloorDate and LastSuccessAt are
 // nullable unix-micros integers.
 type IMAPImportAccountRow struct {
-	ID                string `json:"id"`
-	PrincipalID       int64  `json:"principal_id"`
+	ID          string `json:"id"`
+	PrincipalID int64  `json:"principal_id"`
+	// IdentityID is the migration-0062 owning JMAP Identity (issue #25,
+	// decision 10); empty for legacy principal-scoped rows. Nullable TEXT
+	// in the schema, matching PrincipalRow.AvatarBlobHash's
+	// empty-string-is-NULL convention.
+	IdentityID        string `json:"identity_id,omitempty" nullable:"true"`
 	AccountName       string `json:"account_name"`
 	Host              string `json:"host"`
 	Port              int64  `json:"port"`
@@ -1100,6 +1212,14 @@ type IMAPImportAccountRow struct {
 	LastSuccessAt     *int64 `json:"last_success_at,omitempty"` // unix-micros, NULL = never
 	LastError         string `json:"last_error"`
 	DeletePropagates  bool   `json:"delete_propagates"` // SQLite 0/1, Postgres bool
+	// ProvenanceMailboxID is the migration-0063 cached id of this
+	// account's provenance label mailbox (issue #25, REQ-IMAP-IMP-100..
+	// 101); NULL until the worker first enables the account and creates
+	// the label.
+	ProvenanceMailboxID *int64 `json:"provenance_mailbox_id,omitempty"`
+	// DebugLog is the migration-0074 per-account verbosity toggle
+	// (REQ-ADM-304, re #138), operator-set and persisted across restarts.
+	DebugLog bool `json:"debug_log"`
 	// ExcludedFoldersJSON is the JSON array of no-sync upstream folder
 	// names, added by migration 0103 (issue #303/#305). "[]" means none.
 	ExcludedFoldersJSON string `json:"excluded_folders_json"`

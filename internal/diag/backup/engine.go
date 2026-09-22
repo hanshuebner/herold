@@ -43,7 +43,7 @@ package backup
 // Go -> SQL (INSERT / bind):
 //   bool      — converted to int64 (0 or 1) for SQLite; the engine
 //               detects bool via reflection.
-//   *bool     — not used in Row structs; reserved.
+//   *bool     — nil → driver nil (SQL NULL); non-nil → 0 or 1.
 //   *int64    — nil → driver nil (SQL NULL); non-nil → dereferenced value.
 //   *string   — nil → driver nil (SQL NULL); non-nil → dereferenced value.
 //   *float64  — nil → driver nil (SQL NULL); non-nil → dereferenced value.
@@ -57,6 +57,8 @@ package backup
 //   *int64 fields    — scanned into sql.NullInt64; stored as pointer when Valid.
 //   *string fields   — scanned into sql.NullString; stored as pointer when Valid.
 //   *float64 fields  — scanned into sql.NullFloat64; stored as pointer when Valid.
+//   *bool fields     — scanned into sql.NullInt64 (SQLite has no native
+//                      boolean); stored as pointer to (value != 0) when Valid.
 //   []byte fields    — scanned directly (nil for NULL, slice for non-NULL).
 //   int64 / string / float64 — scanned directly into the field pointer.
 //
@@ -207,6 +209,7 @@ const (
 	fkNullString                   // *string, NULL when nil
 	fkNullFloat64                  // *float64, NULL when nil
 	fkNullStringZ                  // string with nullable:"true" — DB NULL↔Go ""
+	fkNullBool                     // *bool, NULL when nil
 )
 
 // classifyField returns the fieldKind for a struct field, or -1 if the field
@@ -238,6 +241,8 @@ func classifyField(f reflect.StructField) fieldKind {
 			return fkNullString
 		case reflect.Float64:
 			return fkNullFloat64
+		case reflect.Bool:
+			return fkNullBool
 		}
 	}
 	return -1 // unsupported
@@ -382,6 +387,10 @@ func genericEnumerate(ctx context.Context, tx *sql.Tx, table string, fn func(any
 				scanTargets[i] = &containers[i].ns
 			case fkNullFloat64:
 				scanTargets[i] = &containers[i].nf64
+			case fkNullBool:
+				// SQLite has no native boolean; a nullable bool column is an
+				// INTEGER that is either NULL, 0, or 1.
+				scanTargets[i] = &containers[i].ni64
 			case fkNullStringZ:
 				// nullable string (empty string = NULL): scan via NullString.
 				scanTargets[i] = &containers[i].ns
@@ -418,6 +427,12 @@ func genericEnumerate(ctx context.Context, tx *sql.Tx, table string, fn func(any
 					v := c.nf64.Float64
 					fv.Set(reflect.ValueOf(&v))
 				}
+			case fkNullBool:
+				if c.ni64.Valid {
+					v := c.ni64.Int64 != 0
+					fv.Set(reflect.ValueOf(&v))
+				}
+				// else: field stays nil (zero value of *bool)
 			case fkNullStringZ:
 				// NULL in DB → "" in Go (zero value stays).
 				if c.ns.Valid {
@@ -514,6 +529,14 @@ func genericInsert(ctx context.Context, tx *sql.Tx, table string, row any) error
 				args[i] = nil
 			} else {
 				args[i] = fv.Elem().Float()
+			}
+		case fkNullBool:
+			if fv.IsNil() {
+				args[i] = nil
+			} else if fv.Elem().Bool() {
+				args[i] = int64(1)
+			} else {
+				args[i] = int64(0)
 			}
 		case fkNullStringZ:
 			// empty string → NULL; non-empty → value.
