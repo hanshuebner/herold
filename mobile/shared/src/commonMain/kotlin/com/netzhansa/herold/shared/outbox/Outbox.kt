@@ -258,9 +258,13 @@ class Outbox(
         )
     }
 
-    /** Puts every failed entry back in the queue. */
+    /**
+     * Puts every entry a drain will not pick up on its own back in the
+     * queue: the ones the server refused, and the ones waiting out a
+     * server that could not take them (issue #420).
+     */
     suspend fun retryAll() {
-        store.outboxList().filter { it.state == OutboxState.FAILED }.forEach { retry(it.id) }
+        store.outboxList().filter { it.isStalled }.forEach { retry(it.id) }
     }
 
     /**

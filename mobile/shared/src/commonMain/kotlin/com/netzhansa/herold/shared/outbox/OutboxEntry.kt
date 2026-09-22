@@ -38,6 +38,16 @@ enum class OutboxKind {
 enum class OutboxState {
     QUEUED,
     SENDING,
+
+    /**
+     * The server does not understand the request as sent, which is what
+     * a server older than this build answers to a request the client has
+     * grown (issue #420). The entry keeps its place and is tried again
+     * on a widening schedule until the server can take it or the drain
+     * gives up on it, and it lets the entries behind it through in the
+     * meantime.
+     */
+    DEFERRED,
     FAILED,
     ;
 
@@ -80,6 +90,9 @@ data class OutboxEntry(
 ) {
     /** True while the entry is still going to be submitted on its own. */
     val isPending: Boolean get() = state != OutboxState.FAILED
+
+    /** True when a manual retry is what puts the entry back in the queue. */
+    val isStalled: Boolean get() = state == OutboxState.FAILED || state == OutboxState.DEFERRED
 }
 
 /** A new entry as a caller hands it in; the store assigns the id. */

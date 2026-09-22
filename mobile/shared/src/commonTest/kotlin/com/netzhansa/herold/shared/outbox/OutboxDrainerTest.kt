@@ -51,7 +51,10 @@ private fun message(id: String) = Email(
  */
 class OutboxDrainerTest {
 
-    private class Harness(val clock: MutableClock = MutableClock()) {
+    private class Harness(
+        val clock: MutableClock = MutableClock(),
+        maxDeferredAttempts: Int = 24,
+    ) {
         val store = FakeLocalStore()
         val api = FakeJmapApi()
         val spool = InMemoryBlobSpool()
@@ -68,13 +71,17 @@ class OutboxDrainerTest {
             reachability = reachability,
             log = { logs += it },
             now = { clock.now },
+            maxDeferredAttempts = maxDeferredAttempts,
         )
         val actions = MailActions(store, outbox)
     }
 
     private class MutableClock(var now: Long = 1_000_000)
 
-    private suspend fun harness(vararg emails: Email): Harness = Harness().apply {
+    private suspend fun harness(
+        vararg emails: Email,
+        maxDeferredAttempts: Int = 24,
+    ): Harness = Harness(maxDeferredAttempts = maxDeferredAttempts).apply {
         store.upsertMailboxes(boxes)
         store.upsertEmails(emails.toList())
         store.upsertIdentities(listOf(identity))
@@ -325,6 +332,67 @@ class OutboxDrainerTest {
         assertEquals(1, h.api.emailCreates.size)
         assertTrue(h.api.sendCalls.isEmpty(), "a draft is written, not submitted")
         assertTrue(h.outbox.list().isEmpty())
+    }
+
+    /**
+     * A server that does not understand the request has said nothing
+     * about the user's change, so the entry waits for a server that
+     * does (issue #420) and the writes queued behind it still go out.
+     */
+    @Test
+    fun anEntryWaitingForTheServerLetsTheEntriesBehindItThrough() = runTest {
+        val h = harness(message("e1"), message("e2"))
+        h.api.setFailure = JmapException("unknown request", status = 400)
+
+        h.actions.setFlagged(listOf(h.store.email("acct-a", "e1")!!), true)
+        h.drainer.drain()
+        val waiting = h.outbox.list().single()
+        assertEquals(OutboxState.DEFERRED, waiting.state)
+        assertTrue(waiting.nextAttemptAt > h.clock.now)
+
+        // A write made afterwards, with the server answering again.
+        h.api.setFailure = null
+        h.actions.setSeen(listOf(h.store.email("acct-a", "e2")!!), true)
+        h.drainer.drain()
+
+        assertEquals(
+            setOf("e2"),
+            h.api.emailSetCalls.last().keys,
+            "the write behind the waiting entry did not go out",
+        )
+        assertEquals(OutboxState.DEFERRED, h.outbox.list().first().state)
+        assertEquals(1, h.outbox.list().size, "the entry behind it is still queued")
+    }
+
+    /**
+     * The optimistic rows of a deferred entry stand while it waits - the
+     * server has not disagreed with them - and go back to what they were
+     * when the drain finally gives up (issue #420).
+     */
+    @Test
+    fun aDeferredActionKeepsItsRowsUntilTheDrainGivesUpAndThenRevertsThem() = runTest {
+        val h = harness(message("e1"), maxDeferredAttempts = 2)
+        h.api.setFailure = JmapException("unknown request", status = 400)
+
+        h.actions.setFlagged(listOf(h.store.email("acct-a", "e1")!!), true)
+        h.drainer.drain()
+        assertEquals(OutboxState.DEFERRED, h.outbox.list().single().state)
+        assertTrue(
+            h.store.email("acct-a", "e1")!!.keywords.contains("\$flagged"),
+            "the optimistic flag was taken back while the entry still waits",
+        )
+
+        h.clock.now += 24 * 60 * 60_000
+        val gaveUp = h.drainer.drain()
+
+        assertEquals(1, gaveUp.rejected)
+        val entry = h.outbox.list().single()
+        assertEquals(OutboxState.FAILED, entry.state)
+        assertTrue(entry.lastError!!.contains("unsent after 2 attempts"), entry.lastError!!)
+        assertTrue(
+            !h.store.email("acct-a", "e1")!!.keywords.contains("\$flagged"),
+            "the optimistic flag outlived the entry the drain gave up on",
+        )
     }
 
     @Test

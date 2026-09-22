@@ -538,7 +538,10 @@ class SqlDelightLocalStore(
         database.blobCacheQueries.totalSize().executeAsOne()
     }
 
-    override suspend fun clearAll() = withContext(dispatcher) {
+    override suspend fun clearAll(): List<OutboxEntry> = withContext(dispatcher) {
+        // Read before the delete: what goes with the account is what the
+        // caller has to account for (issue #420).
+        val dropped = database.outboxQueries.selectAll().executeAsList().map { it.toDomain() }
         database.transaction {
             database.accountList().forEach { accountId ->
                 database.mailboxQueries.deleteForAccount(accountId)
@@ -557,6 +560,7 @@ class SqlDelightLocalStore(
         }
         blobFiles.deleteAll()
         tombstones.clear()
+        dropped
     }
 
     private fun writeMembership(accountId: String, emailId: String, mailboxIds: Set<String>) {

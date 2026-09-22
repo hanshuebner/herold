@@ -313,7 +313,8 @@ class FakeLocalStore(
 
     override suspend fun blobCacheSize(): Long = blobs.values.sumOf { it.bytes.size.toLong() }
 
-    override suspend fun clearAll() {
+    override suspend fun clearAll(): List<OutboxEntry> {
+        val dropped = outboxRows.value
         accountRows.value = emptyList()
         mailboxRows.value = emptyList()
         emailRows.value = emptyList()
@@ -325,5 +326,6 @@ class FakeLocalStore(
         outboxRows.value = emptyList()
         pushRow = null
         tombstones.clear()
+        return dropped
     }
 }

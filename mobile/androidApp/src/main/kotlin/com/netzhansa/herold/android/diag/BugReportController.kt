@@ -162,6 +162,7 @@ class BugReportController(private val container: AppContainer) {
             queued = entries.count { it.state == OutboxState.QUEUED },
             sending = entries.count { it.state == OutboxState.SENDING },
             failed = entries.count { it.state == OutboxState.FAILED },
+            deferred = entries.count { it.state == OutboxState.DEFERRED },
             entries = entries.map { entry ->
                 OutboxLine(
                     kind = entry.kind.name,

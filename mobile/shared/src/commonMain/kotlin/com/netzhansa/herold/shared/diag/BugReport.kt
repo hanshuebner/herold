@@ -31,9 +31,11 @@ data class OutboxSummary(
     val queued: Int = 0,
     val sending: Int = 0,
     val failed: Int = 0,
+    /** Entries waiting for a server that can take them (issue #420). */
+    val deferred: Int = 0,
     val entries: List<OutboxLine> = emptyList(),
 ) {
-    val total: Int get() = queued + sending + failed
+    val total: Int get() = queued + sending + failed + deferred
 }
 
 /** What the phone is and what the app running on it was built from. */
@@ -408,6 +410,7 @@ object BugBundleWriter {
             put("queued", capture.outbox.queued)
             put("sending", capture.outbox.sending)
             put("failed", capture.outbox.failed)
+            put("deferred", capture.outbox.deferred)
             putJsonArray("entries") {
                 capture.outbox.entries.forEach { entry ->
                     addJsonObject {
@@ -489,7 +492,8 @@ object BugBundleWriter {
         append("- Outbox: ").append(capture.outbox.total).append(" entries")
         append(" (").append(capture.outbox.queued).append(" queued, ")
         append(capture.outbox.sending).append(" sending, ")
-        append(capture.outbox.failed).append(" failed)\n")
+        append(capture.outbox.failed).append(" failed, ")
+        append(capture.outbox.deferred).append(" waiting for the server)\n")
         capture.outbox.entries.forEach { entry ->
             append("  - ").append(entry.kind).append(" ").append(entry.state)
             append(", ").append(entry.attempts).append(" attempts: ")

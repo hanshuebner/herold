@@ -43,6 +43,14 @@ private sealed interface StepResult {
     data class Retry(val message: String) : StepResult
 
     /**
+     * The server does not understand the request as sent. A server
+     * behind the build that queued the entry answers this way, so the
+     * entry waits for the server to catch up rather than being given
+     * up on (issue #420).
+     */
+    data class Deferred(val message: String) : StepResult
+
+    /**
      * Nothing reached the server. The entry stays queued exactly as it
      * was and the failure goes to the log, not to the user (issue #370).
      */
@@ -64,10 +72,19 @@ data class DrainOutcome(
     val retryable: Int = 0,
     /** Entries the pass left queued because the server could not be reached. */
     val offline: Int = 0,
+    /**
+     * Entries left waiting for a server that can take them (issue #420).
+     * They are pending, and their next attempt is hours out.
+     */
+    val deferred: Int = 0,
     val pending: Int = 0,
 ) {
-    /** True when entries remain that a later pass should pick up. */
-    val hasMore: Boolean get() = pending > 0
+    /**
+     * True when entries remain that a later pass should pick up soon. An
+     * entry waiting on a server upgrade is not due for hours, so it does
+     * not keep a background job coming back.
+     */
+    val hasMore: Boolean get() = pending - deferred > 0
 }
 
 /**
@@ -82,6 +99,12 @@ data class DrainOutcome(
  * its order. A refusal the server actually answered with reverts the
  * optimistic rows, marks the entry failed with the reason, and leaves it
  * listed for a manual retry (REQ-AND-SYNC-23/25).
+ *
+ * A server that does not understand the request as sent - the answer a
+ * server older than this build gives a request the client has grown - is
+ * neither of those: the entry is deferred and offered again on a widening
+ * schedule until the server can take it, so a report queued against
+ * yesterday's server still arrives (REQ-AND-SYNC-27, issue #420).
  */
 class OutboxDrainer(
     private val api: JmapApi,
@@ -105,6 +128,16 @@ class OutboxDrainer(
     private val maxAttempts: Int = DEFAULT_MAX_ATTEMPTS,
     private val backoffBaseMs: Long = DEFAULT_BACKOFF_BASE_MS,
     private val backoffCapMs: Long = DEFAULT_BACKOFF_CAP_MS,
+    /**
+     * How often an entry the server does not understand is offered
+     * again before the drain gives up on it (issue #420). The schedule
+     * below spends these over about a week, which covers a client that
+     * has outrun the server it talks to; a request no server will ever
+     * take stops there rather than being offered forever.
+     */
+    private val maxDeferredAttempts: Int = DEFAULT_MAX_DEFERRED_ATTEMPTS,
+    private val deferredBaseMs: Long = DEFAULT_DEFERRED_BASE_MS,
+    private val deferredCapMs: Long = DEFAULT_DEFERRED_CAP_MS,
 ) {
     private val mutex = Mutex()
 
@@ -128,10 +161,15 @@ class OutboxDrainer(
             for (entry in entries.sortedBy { it.id }) {
                 val due = entry.nextAttemptAt <= now()
                 if (!due) {
-                    // A send held for its undo window lets the entries
-                    // behind it through; a backoff after a failure holds
-                    // the account's order until the failed entry drains.
-                    if (entry.attempts > 0) break else continue
+                    // A backoff after a transient failure holds the
+                    // account's order until that entry drains. A send
+                    // held for its undo window and an entry waiting for
+                    // a server that can take it both let the entries
+                    // behind them through - the first because its wait
+                    // is the user's, the second because its wait is the
+                    // server's and may be days long.
+                    val holdsTheQueue = entry.attempts > 0 && entry.state != OutboxState.DEFERRED
+                    if (holdsTheQueue) break else continue
                 }
                 store.updateOutboxState(
                     id = entry.id,
@@ -161,6 +199,46 @@ class OutboxDrainer(
                         )
                         _failures.tryEmit(OutboxFailure(entry.id, entry.kind, entry.label, result.message))
                         rejected++
+                    }
+
+                    is StepResult.Deferred -> {
+                        reachability.reached()
+                        val attempts = entry.attempts + 1
+                        if (attempts >= maxDeferredAttempts) {
+                            // The waiting is spent. The entry is not
+                            // thrown away - it is what the user wrote,
+                            // and a queued bug report is the evidence
+                            // for its own defect - so it stays listed
+                            // with what became of it, and the user
+                            // hears about it (issue #420).
+                            revert(entry)
+                            val message = gaveUpMessage(result.message, attempts)
+                            store.updateOutboxState(
+                                id = entry.id,
+                                state = OutboxState.FAILED,
+                                attempts = attempts,
+                                lastError = message,
+                                permanent = true,
+                                nextAttemptAt = 0,
+                            )
+                            log("outbox: \"${entry.label}\" is given up on after $attempts attempts (${result.message})")
+                            _failures.tryEmit(OutboxFailure(entry.id, entry.kind, entry.label, message))
+                            rejected++
+                        } else {
+                            val nextAt = now() + deferredBackoff(attempts)
+                            store.updateOutboxState(
+                                id = entry.id,
+                                state = OutboxState.DEFERRED,
+                                attempts = attempts,
+                                lastError = result.message,
+                                permanent = false,
+                                nextAttemptAt = nextAt,
+                            )
+                            log(
+                                "outbox: \"${entry.label}\" waits for a server that can take it " +
+                                    "(attempt $attempts of $maxDeferredAttempts: ${result.message})",
+                            )
+                        }
                     }
 
                     is StepResult.Retry -> {
@@ -209,12 +287,14 @@ class OutboxDrainer(
                 }
             }
         }
+        val left = outbox.list().filter { it.isPending }
         DrainOutcome(
             submitted = submitted,
             rejected = rejected,
             retryable = retryable,
             offline = offline,
-            pending = outbox.list().count { it.isPending },
+            deferred = left.count { it.state == OutboxState.DEFERRED },
+            pending = left.size,
         )
     }
 
@@ -564,14 +644,31 @@ class OutboxDrainer(
      */
     private fun failureOf(t: Throwable): StepResult = when (classifyFailure(t)) {
         FailureKind.REFUSED -> StepResult.Rejected(t.message ?: "the server refused the change")
+        FailureKind.UNSUPPORTED -> StepResult.Deferred(
+            t.message ?: "this server does not take this request",
+        )
+
         FailureKind.BUSY -> StepResult.Retry(t.message ?: "the server could not do this now")
         FailureKind.OFFLINE -> StepResult.Offline(t.message ?: "no connection")
     }
 
-    private fun backoff(attempts: Int): Long {
-        var delay = backoffBaseMs
-        repeat(attempts - 1) { delay = (delay * 2).coerceAtMost(backoffCapMs) }
-        return delay.coerceAtMost(backoffCapMs)
+    /** What the outbox screen says about an entry the drain gave up on. */
+    private fun gaveUpMessage(reason: String, attempts: Int): String =
+        "$reason - unsent after $attempts attempts; it is kept here and goes out on a retry"
+
+    private fun backoff(attempts: Int): Long = widening(attempts, backoffBaseMs, backoffCapMs)
+
+    /**
+     * How long an entry waits for the server to catch up. It widens like
+     * the transient backoff but from minutes rather than seconds: the
+     * condition it waits out is a server deployment, not a busy moment.
+     */
+    private fun deferredBackoff(attempts: Int): Long = widening(attempts, deferredBaseMs, deferredCapMs)
+
+    private fun widening(attempts: Int, baseMs: Long, capMs: Long): Long {
+        var delay = baseMs
+        repeat(attempts - 1) { delay = (delay * 2).coerceAtMost(capMs) }
+        return delay.coerceAtMost(capMs)
     }
 
     private companion object {
@@ -581,6 +678,15 @@ class OutboxDrainer(
         const val DEFAULT_MAX_ATTEMPTS = 6
         const val DEFAULT_BACKOFF_BASE_MS = 5_000L
         const val DEFAULT_BACKOFF_CAP_MS = 5 * 60_000L
+
+        /**
+         * 24 offers on the widening schedule below spend about eight
+         * days, so a client that has outrun its server survives a
+         * deployment that takes a working week.
+         */
+        const val DEFAULT_MAX_DEFERRED_ATTEMPTS = 24
+        const val DEFAULT_DEFERRED_BASE_MS = 15 * 60_000L
+        const val DEFAULT_DEFERRED_CAP_MS = 12 * 60 * 60_000L
     }
 }
 

@@ -11,6 +11,8 @@ import com.netzhansa.herold.shared.outbox.Outbox
 import com.netzhansa.herold.shared.outbox.OutboxDrainer
 import com.netzhansa.herold.shared.outbox.OutboxKind
 import com.netzhansa.herold.shared.outbox.OutboxState
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -41,7 +43,7 @@ private class UnreachableHost : Exception("Unable to resolve host \"mail.example
  */
 class BugReportQueueTest {
 
-    private class Harness(var now: Long = 1_000_000) {
+    private class Harness(var now: Long = 1_000_000, maxDeferredAttempts: Int = 24) {
         val store = FakeLocalStore()
         val spool = InMemoryBlobSpool()
         val outbox = Outbox(store) { now }
@@ -57,6 +59,7 @@ class BugReportQueueTest {
             bugReports = reports,
             log = { logs += it },
             now = { now },
+            maxDeferredAttempts = maxDeferredAttempts,
         )
     }
 
@@ -142,21 +145,107 @@ class BugReportQueueTest {
     }
 
     /**
-     * A report the server refused is retried from the outbox screen:
-     * the retry puts it back in the queue, its spooled files are still
-     * on the device, and the next drain posts it.
+     * The loss this ticket is about (issue #420): reports carrying a
+     * crash trace were refused by a server that did not yet know the
+     * `crash.txt` part, and never went out again once it did. A refusal
+     * the client cannot act on is the server being behind, so the report
+     * waits for it and leaves by itself when the server catches up, with
+     * no hand on the phone.
      */
     @Test
-    fun aRefusedReportGoesOutOnARetry() = runTest {
+    fun aReportAnOlderServerCannotTakeLeavesWhenTheServerCatchesUp() = runTest {
+        val h = Harness()
+        h.reports.failure = JmapException(
+            "the bug report was refused: unexpected part \"crash.txt\"",
+            status = 400,
+        )
+        queue(h)
+
+        val refused = h.drainer.drain()
+        assertEquals(0, refused.submitted)
+        assertEquals(1, refused.deferred, "the refused report was not held for a later server")
+        val waiting = h.outbox.list().single()
+        assertEquals(OutboxState.DEFERRED, waiting.state)
+        assertTrue(waiting.isPending, "a report waiting for the server counts as gone")
+        assertTrue(waiting.nextAttemptAt > h.now, "the next offer is not scheduled")
+        assertTrue(
+            waiting.lastError!!.contains("crash.txt"),
+            "the server's reason is lost: ${waiting.lastError}",
+        )
+        // Nothing keeps a background job coming back for an entry whose
+        // next offer is hours away.
+        assertTrue(!refused.hasMore, "a deferred report keeps the drain job alive")
+
+        // The server is upgraded and takes the part.
+        h.reports.failure = null
+        h.now += 30 * 60_000
+        val taken = h.drainer.drain()
+
+        assertEquals(1, taken.submitted)
+        assertEquals(
+            listOf("report.json", "report.md", "logs.txt", "screenshot-1.png"),
+            h.reports.posts.single().map { it.name },
+        )
+        assertTrue(h.outbox.list().isEmpty(), "the delivered report is still queued")
+    }
+
+    /**
+     * The waiting is bounded: a report no server will ever take stops
+     * being offered, and the reader is told rather than the entry going
+     * quiet. It is kept, because a queued report is the evidence for its
+     * own defect.
+     */
+    @Test
+    fun aReportNoServerTakesIsGivenUpOnInTheOpen() = runTest {
+        val h = Harness(maxDeferredAttempts = 3)
+        h.reports.failure = JmapException(
+            "the bug report was refused: unexpected part \"crash.txt\"",
+            status = 400,
+        )
+        queue(h)
+        val announced = mutableListOf<String>()
+        val watching = backgroundScope.launch { h.drainer.failures.collect { announced += it.message } }
+        runCurrent()
+
+        repeat(2) {
+            h.drainer.drain()
+            assertEquals(OutboxState.DEFERRED, h.outbox.list().single().state)
+            h.now += 24 * 60 * 60_000
+        }
+        val last = h.drainer.drain()
+        runCurrent()
+        watching.cancel()
+
+        assertEquals(1, last.rejected)
+        val entry = h.outbox.list().single()
+        assertEquals(OutboxState.FAILED, entry.state, "the entry the drain gave up on is not listed")
+        assertEquals(3, entry.attempts)
+        assertTrue(
+            entry.lastError!!.contains("unsent after 3 attempts"),
+            "the give-up does not say what became of the report: ${entry.lastError}",
+        )
+        assertTrue(
+            announced.any { it.contains("unsent after 3 attempts") },
+            "nobody was told the report was given up on: $announced",
+        )
+        assertEquals(0, h.reports.posts.size)
+    }
+
+    /**
+     * A report the user retries by hand goes out at once rather than
+     * waiting out the schedule: the maintainer knowing the server is
+     * ready is better information than the backoff.
+     */
+    @Test
+    fun aWaitingReportGoesOutAtOnceOnARetry() = runTest {
         val h = Harness()
         h.reports.failure = JmapException("the bug report was refused: unknown part", status = 400)
         queue(h)
         h.drainer.drain()
-        val failed = h.outbox.list().single()
-        assertEquals(OutboxState.FAILED, failed.state)
+        assertEquals(OutboxState.DEFERRED, h.outbox.list().single().state)
 
         h.reports.failure = null
-        h.outbox.retry(failed.id)
+        h.outbox.retryAll()
         val outcome = h.drainer.drain()
 
         assertEquals(1, outcome.submitted)

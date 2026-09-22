@@ -72,7 +72,7 @@ re-fetch happens only on `cannotCalculateChanges` or first run.
 ## Outbox and optimistic reconciliation
 
 The outbox is a durable table of pending mutations (`Foo/set` patches, drafts,
-submissions) with a status (`queued` / `sending` / `failed`) and the pre-change
+submissions) with a status (`queued` / `sending` / `deferred` / `failed`) and the pre-change
 snapshot needed to revert. It survives process death and is never evicted by
 cache pressure (`../requirements/02-offline-and-sync.md` REQ-AND-SYNC-22).
 
@@ -87,13 +87,31 @@ Optimistic write path (Suite architecture § Optimistic writes, extended):
 5. On permanent rejection: revert to the pre-change snapshot; mark the entry
    `failed`; notify (Suite `REQ-OPT-02`).
 
-What counts as permanent is the server having answered: a `notUpdated` /
-`notCreated` entry, or a 4xx other than 408 and 429. Everything else - no
-route to the host, a 5xx, a timeout - is transient: the entry stays queued
-with an exponential backoff (5 s doubling to 5 min, six attempts) and the
-entries behind it on that account wait, so the queue keeps its order. A
-failed entry is skipped rather than blocking, and a manual retry submits it
-at once.
+What counts as permanent is the server having answered about the entry: a
+`notUpdated` / `notCreated` entry, a JMAP method error, or a 4xx other than
+400, 404, 405, 415, 408 and 429. Everything else - no route to the host, a
+5xx, a timeout - is transient: the entry stays queued with an exponential
+backoff (5 s doubling to 5 min, six attempts) and the entries behind it on
+that account wait, so the queue keeps its order. A failed entry is skipped
+rather than blocking, and a manual retry submits it at once.
+
+The statuses that say the server did not understand the request - 400, 404,
+405, 415, 501 - are the third case (`../requirements/02-offline-and-sync.md`
+REQ-AND-SYNC-27). They look permanent on the wire and describe a server one
+release behind the client, which is a condition that ends: the entry becomes
+`deferred`, keeps its payload and its optimistic rows, and is offered again
+from 15 min doubling to 12 h, up to 24 times, letting the entries behind it
+through while it waits. It is what carries a bug report queued against
+yesterday's server to the server that can take it (issue #420). At the end
+of the schedule the entry reverts, is marked `failed` with what became of
+it, and the user is told - the entry itself is kept either way, because a
+queued report is the evidence for its own defect.
+
+Nothing else removes an entry. The clear that runs on sign-out, and when
+another principal signs in on the same install, hands back the entries it
+drops so the app can name each one in the diagnostic log; a schema migration
+carries the queue across an app update untouched
+(REQ-AND-SYNC-28).
 
 A composed message is one entry with three steps - upload each attachment,
 `Email/set` the draft, `EmailSubmission/set` - and the entry's payload is

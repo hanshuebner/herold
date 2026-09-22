@@ -200,8 +200,14 @@ interface LocalStore {
 
     suspend fun blobCacheSize(): Long
 
-    /** Drops every row of every account; used on sign-out (REQ-AND-AUTH-21). */
-    suspend fun clearAll()
+    /**
+     * Drops every row of every account; used on sign-out
+     * (REQ-AND-AUTH-21). The outbox entries it takes with it are handed
+     * back, because an unsent write leaving with the account is
+     * something the reader has to be told about rather than something
+     * that happens quietly (REQ-AND-SYNC-28, issue #420).
+     */
+    suspend fun clearAll(): List<OutboxEntry>
 
     companion object {
         const val DEFAULT_INBOX_LIMIT: Long = 500

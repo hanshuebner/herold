@@ -42,6 +42,7 @@ import com.netzhansa.herold.shared.outbox.FileBlobSpool
 import com.netzhansa.herold.shared.outbox.Outbox
 import com.netzhansa.herold.shared.outbox.OutboxKind
 import com.netzhansa.herold.shared.outbox.OutboxDrainer
+import com.netzhansa.herold.shared.outbox.OutboxEntry
 import com.netzhansa.herold.shared.push.PushRegistrar
 import com.netzhansa.herold.shared.mail.UnsubscribeClient
 import com.netzhansa.herold.shared.search.MailSearch
@@ -488,7 +489,7 @@ class AppContainer(context: Context) {
         if (!username.isNullOrBlank() && !previous.isNullOrBlank() && previous != username) {
             // A different account on the same install: the cached mail
             // of the previous one does not carry over (REQ-AND-AUTH-21).
-            store.clearAll()
+            announceDropped(store.clearAll(), "another principal signed in on this install")
         }
         if (!username.isNullOrBlank()) tokenStore.setPrincipal(username)
         tokenStore.setGrantId(
@@ -540,7 +541,30 @@ class AppContainer(context: Context) {
         // An unsent report belongs to the account that would have sent
         // it (REQ-AND-SYS-53), so it goes with the account's rows.
         pendingBugReport.clear()
-        store.clearAll()
+        announceDropped(store.clearAll(), "the account signed out")
+    }
+
+    /**
+     * Says what unsent work went with the account's rows
+     * (REQ-AND-SYNC-28, issue #420). An outbox entry is a write the user
+     * made and a queued bug report is the evidence for its own defect,
+     * so neither leaves without a line naming it: the ring carries it
+     * into the next report and logcat has it on the device.
+     */
+    private fun announceDropped(dropped: List<OutboxEntry>, reason: String) {
+        if (dropped.isEmpty()) return
+        DiagLog.w(
+            OUTBOX_TAG,
+            "${dropped.size} unsent outbox ${if (dropped.size == 1) "entry is" else "entries are"} " +
+                "dropped because $reason",
+        )
+        dropped.forEach { entry ->
+            DiagLog.w(
+                OUTBOX_TAG,
+                "dropped ${entry.kind} \"${entry.label}\" (${entry.state}, " +
+                    "${entry.attempts} attempts${entry.lastError?.let { ", last error: $it" }.orEmpty()})",
+            )
+        }
     }
 
     /**

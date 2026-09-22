@@ -59,7 +59,7 @@ fun OutboxScreen(
                 },
                 title = { Text("Outbox", modifier = Modifier.testTag("outbox-title")) },
                 actions = {
-                    if (entries.any { it.state == OutboxState.FAILED }) {
+                    if (entries.any { it.isStalled }) {
                         TextButton(
                             onClick = {
                                 scope.launch {
@@ -130,7 +130,10 @@ private fun EntryRow(entry: OutboxEntry, onRetry: () -> Unit, onDiscard: () -> U
                 modifier = Modifier.testTag("outbox-state-${entry.id}"),
             )
         }
-        if (entry.state == OutboxState.FAILED) {
+        // A deferred entry goes out by itself when the server can take
+        // it; the buttons are there because the user may know the server
+        // is ready now, or may want the entry gone (issue #420).
+        if (entry.isStalled) {
             TextButton(onClick = onRetry, modifier = Modifier.testTag("outbox-retry-${entry.id}")) {
                 Text("Retry")
             }
@@ -145,6 +148,9 @@ private fun EntryRow(entry: OutboxEntry, onRetry: () -> Unit, onDiscard: () -> U
 private fun stateLabel(entry: OutboxEntry): String = when (entry.state) {
     OutboxState.SENDING -> "Sending"
     OutboxState.FAILED -> entry.lastError?.let { "Failed: $it" } ?: "Failed"
+    OutboxState.DEFERRED ->
+        "Waiting for the server to take it" + (entry.lastError?.let { " - $it" } ?: "")
+
     OutboxState.QUEUED -> when {
         entry.attempts > 0 -> "Waiting to retry" + (entry.lastError?.let { " - $it" } ?: "")
         else -> "Queued"

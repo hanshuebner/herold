@@ -106,6 +106,29 @@ class BugReportPostTest {
         assertEquals(FailureKind.REFUSED, classifyFailure(jmap))
     }
 
+    /**
+     * The refusal that cost three crash traces (issue #420): a server
+     * that does not know a part answers 400. Nothing about the bundle
+     * is wrong for a server that does know it, so this is the server
+     * being behind - the client waits for it rather than giving the
+     * report up.
+     */
+    @Test
+    fun aPartTheServerDoesNotKnowIsTheServerBeingBehind() = runTest {
+        val recorded = Recorded()
+        val client = client(
+            recorded,
+            status = HttpStatusCode.BadRequest,
+            response = "{\"type\":\"about:blank\",\"title\":\"bad_request\"," +
+                "\"detail\":\"unexpected part \\\"crash.txt\\\"\"}",
+        )
+        val failure = runCatching { client.postBugReport(parts) }.exceptionOrNull()
+
+        val jmap = failure as? JmapException ?: fail("the refusal was not a JmapException: $failure")
+        assertEquals(400, jmap.status)
+        assertEquals(FailureKind.UNSUPPORTED, classifyFailure(jmap))
+    }
+
     @Test
     fun aBusyServerIsWorthAnotherAttempt() = runTest {
         val recorded = Recorded()

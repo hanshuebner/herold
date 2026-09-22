@@ -73,6 +73,7 @@ data class PendingFactsRecord(
     val outboxQueued: Int = 0,
     val outboxSending: Int = 0,
     val outboxFailed: Int = 0,
+    val outboxDeferred: Int = 0,
     val pushChoice: String = "",
     val pushTransport: String? = null,
     val pushDistributor: String? = null,
@@ -155,6 +156,7 @@ object PendingBugReports {
                 outboxQueued = capture.outbox.queued,
                 outboxSending = capture.outbox.sending,
                 outboxFailed = capture.outbox.failed,
+                outboxDeferred = capture.outbox.deferred,
                 pushChoice = capture.push.choice,
                 pushTransport = capture.push.transport,
                 pushDistributor = capture.push.distributor,
@@ -212,6 +214,7 @@ object PendingBugReports {
                 queued = facts.outboxQueued,
                 sending = facts.outboxSending,
                 failed = facts.outboxFailed,
+                deferred = facts.outboxDeferred,
                 entries = facts.outbox.map {
                     OutboxLine(it.kind, it.state, it.attempts, it.label, it.lastError)
                 },
