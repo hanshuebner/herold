@@ -7,16 +7,30 @@ name: mobile
 # NOT referenced by ci.yml's release job needs: chain, so a mobile build
 # failure never blocks the server auto-deploy.
 #
-# Builds shared + androidApp and runs their host-JVM unit tests
-# (shared's androidUnitTest source set, including JmapClientLiveTest --
-# see that file for why it needs no emulator: it drives the real
-# device-token + Mailbox/get path over plain HTTP from the host JVM,
-# skipping gracefully when HEROLD_DEV_INSTANCE_URL is unset). No
-# Android emulator or KVM is used or required by this workflow; the
-# emulator-driven instrumented harness (androidApp's androidTest source
-# set) is a separate, not-yet-landed increment pending KVM-capable
-# runner infra (docs/design/android/implementation-plan.md Phase 0,
-# "Remaining work").
+# Builds shared + androidApp, compiles the androidTest (instrumented)
+# source set, and runs the host-JVM unit tests (shared's
+# androidUnitTest source set, including JmapClientLiveTest -- see that
+# file for why it needs no emulator: it drives the real device-token +
+# Mailbox/get path over plain HTTP from the host JVM, skipping
+# gracefully when HEROLD_DEV_INSTANCE_URL is unset).
+#
+# CI gate for the instrumented suite (androidApp/src/androidTest, which
+# holds every on-device acceptance spec, including
+# InboxRefreshAcceptanceTest for #450 and MessageBodyRenderingAcceptanceTest
+# for #456): this workflow compiles it (assembleDebugAndroidTest, re
+# #476) so a spec that no longer builds fails the run, but it does not
+# execute it. The runner pool is ephemeral Hetzner cpx42 VMs spawned by
+# herold-runner-orchestrator; a probe job on that pool (`ls -l
+# /dev/kvm`, `grep -c -E 'vmx|svm' /proc/cpuinfo`, `egrep -o kvm
+# /proc/modules`, run https://code.netzhansa.com/herold/herold/actions/runs/2492)
+# found no /dev/kvm, zero virtualization-extension flags in
+# /proc/cpuinfo, and no kvm kernel module: the host does not expose
+# nested virtualization to the guest, so an Android emulator cannot
+# boot at a CI-usable speed here. Running the instrumented suite
+# against a real emulator stays a local, on-device step -- the
+# acceptance specs above are what a developer runs by hand before
+# shipping the branch that carries them -- until a KVM-capable runner
+# exists (#256).
 
 on:
   push:
@@ -112,14 +126,24 @@ jobs:
 
       # androidApp's host-JVM unit tests: the parts of the app that hold
       # a decision rather than a screen (ImageFormatsTest, issue #445).
-      # The instrumented source set is a separate emulator-driven run and
-      # is not built here. assembleDebug is the same command the
-      # "Delivered" acceptance in #251 verified from a clean checkout.
+      # assembleDebug is the same command the "Delivered" acceptance in
+      # #251 verified from a clean checkout.
       - name: androidApp unit tests
         run: ./gradlew --no-daemon :androidApp:testDebugUnitTest
 
       - name: androidApp assembleDebug
         run: ./gradlew --no-daemon :androidApp:assembleDebug
+
+      # Compiles and packages androidApp/src/androidTest -- the
+      # instrumented acceptance specs (InboxRefreshAcceptanceTest,
+      # MessageBodyRenderingAcceptanceTest, and the rest of the on-device
+      # suite) -- without running any of them. No emulator is started;
+      # see the workflow header for the KVM probe that ruled one out on
+      # this runner pool (re #476). This step's only job is to make a
+      # spec that no longer builds fail the run instead of failing
+      # silently the next time someone runs it on a device.
+      - name: androidApp assembleDebugAndroidTest (instrumented sources compile only)
+        run: ./gradlew --no-daemon :androidApp:assembleDebugAndroidTest
 
   # Release lane: an `android-vX.Y.Z` tag builds a signed APK and attaches
   # it to a Forgejo release, the same shape ci.yml's release job uses
