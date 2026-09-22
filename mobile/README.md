@@ -309,6 +309,33 @@ shows (issue #440).
       -e class com.netzhansa.herold.android.BodyImageSourceAcceptanceTest \
       com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
 
+### The quoted-history fold (issue #456)
+
+`QuotedHistoryFoldAcceptanceTest` is the fold's end-to-end gate: the
+seven shapes of `QuotedFoldShapes` - the Suite's own live-spec bodies,
+byte for byte - delivered four times each, plain and with an unrelated
+paragraph ahead, after and at both ends, opened in the reader and
+measured in the WebView's accessibility tree. One method per shape, so
+one shape's regression does not hide the next:
+
+    adb shell am instrument -w -r \
+      -e class com.netzhansa.herold.android.QuotedHistoryFoldAcceptanceTest \
+      -e heroldBaseUrl http://10.0.2.2:<backend-port> \
+      -e heroldSmtpAddr 10.0.2.2:<smtp-port> \
+      com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+
+`QuotedFoldShapesTest` reads the same table on the host JVM, out of the
+sanitiser's output rather than off a screen, and runs in seconds:
+
+    ./gradlew :shared:testDebugUnitTest --tests '*QuotedFoldShapesTest*'
+
+That is where a rule is put back to watch the spec go red. Writing an
+older `QuotedHtml.kt` over the current one (`git show <commit>:mobile/
+shared/src/commonMain/kotlin/com/netzhansa/herold/shared/mail/
+QuotedHtml.kt`) turns it red on the shape that commit's successor
+fixed; `QuotedFoldPredicateComparisonTest` reads internals the older
+files do not expose, so move it aside for the experiment.
+
 `ForwardHtmlAcceptanceTest` forwards a formatted message - a heading, a
 table, an inline image, a script and a style block - to the signed-in
 principal, then reads the copy that arrived over JMAP: the markup and

@@ -26,6 +26,11 @@ kotlin {
             implementation(libs.ktor.client.content.negotiation)
             implementation(libs.ktor.serialization.kotlinx.json)
         }
+        // The seven quoted-history shapes are one table, read by the
+        // host-JVM check here and by the instrumented check in
+        // androidApp, which asserts the same fixtures against what a
+        // device renders (issue #456).
+        commonTest { kotlin.srcDir("src/foldShapes/kotlin") }
         commonTest.dependencies {
             implementation(libs.kotlin.test)
             implementation(libs.kotlinx.coroutines.core)

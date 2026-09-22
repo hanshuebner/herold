@@ -264,7 +264,13 @@ android {
 
     sourceSets {
         getByName("debug") { res.srcDir(acceptanceTlsResDir) }
-        getByName("androidTest") { assets.srcDir(acceptanceTlsAssetsDir) }
+        getByName("androidTest") {
+            assets.srcDir(acceptanceTlsAssetsDir)
+            // The quoted-history shapes the instrumented spec delivers are
+            // the same table the shared module's host-JVM check reads, so
+            // the two cannot drift on what a shape is (issue #456).
+            kotlin.srcDir("../shared/src/foldShapes/kotlin")
+        }
     }
 
     buildTypes {
