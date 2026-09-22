@@ -67,7 +67,15 @@ impression.
 
 Unlike the Suite, a cold start does not re-fetch from scratch — the persisted
 state strings let `Foo/changes` deliver only the delta since last sync. A full
-re-fetch happens only on `cannotCalculateChanges` or first run.
+re-fetch happens on first run and on a state the fold cannot carry.
+
+A `Foo/changes` answer that reports more changes to come is folded and
+asked again from the state it returned. An answer that reports more to
+come and hands back the state it was asked from carries the fold
+nowhere, so that type is re-fetched instead: asking again would put the
+identical question and the pass would never end (issue #450). The number
+of rounds one type's fold takes in a pass is capped for the same reason,
+so no sequence of answers keeps a pass running.
 
 ## Outbox and optimistic reconciliation
 

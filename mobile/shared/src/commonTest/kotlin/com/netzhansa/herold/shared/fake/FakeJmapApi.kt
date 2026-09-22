@@ -48,6 +48,12 @@ class FakeJmapApi(
     var emailState: String = "email-1"
     var emailChanges: ChangesOutcome = ChangesOutcome.Changed("email-1", emptyList(), emptyList(), emptyList(), false)
 
+    /** How many times the fold has asked for email changes. */
+    var emailChangesCalls = 0
+
+    /** An answer that depends on the state it was asked from. */
+    var emailChangesFrom: ((String) -> ChangesOutcome)? = null
+
     var threads: List<WireThread> = emptyList()
     var threadState: String = "thread-1"
     var threadChanges: ChangesOutcome = ChangesOutcome.Changed("thread-1", emptyList(), emptyList(), emptyList(), false)
@@ -164,7 +170,10 @@ class FakeJmapApi(
         return GetResult(emailState, list, notFound = ids.filter { it !in emails })
     }
 
-    override suspend fun emailChanges(accountId: String, sinceState: String): ChangesOutcome = emailChanges
+    override suspend fun emailChanges(accountId: String, sinceState: String): ChangesOutcome {
+        emailChangesCalls++
+        return emailChangesFrom?.invoke(sinceState) ?: emailChanges
+    }
 
     override suspend fun threadGet(accountId: String, ids: List<String>): GetResult<WireThread> =
         GetResult(threadState, threads.filter { it.id in ids })

@@ -93,6 +93,11 @@ first wait reads. `adb shell input keyevent KEYCODE_WAKEUP` and
 `adb shell wm dismiss-keyguard` before each `am instrument` keeps a
 long session out of it.
 
+`InboxRefreshAcceptanceTest` runs online and needs no phases. It takes
+the wire away and gives it back through a relay in the test process, and
+`t134` delivers a message over SMTP before putting the account behind, so
+pass the instance's `SMTP_ADDR` as `heroldSmtpAddr`.
+
 `UndoSendAcceptanceTest` runs online and needs no phases.
 `t64` needs the foreign-identity seed, so start the instance with
 `HEROLD_DEV_EXTERNAL_SUBMISSION=1`.

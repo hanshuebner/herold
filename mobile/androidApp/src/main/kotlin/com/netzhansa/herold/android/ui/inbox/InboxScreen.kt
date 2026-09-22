@@ -203,11 +203,15 @@ fun InboxScreen(
     var refreshing by remember { mutableStateOf(false) }
     LaunchedEffect(refreshing) {
         if (!refreshing) return@LaunchedEffect
-        try {
+        val served = try {
             session.syncScheduler.syncNow()
         } finally {
             refreshing = false
         }
+        // A gesture that ended on the ceiling rather than on a pass has
+        // shown the reader a spinner and changed nothing; it says so,
+        // on the scope that outlives this effect (issue #450).
+        if (!served) scope.launch { snackbar.showSnackbar(REFRESH_UNFINISHED) }
     }
 
     val rows = remember(emails, mailboxes, accounts, accountScope, drafts, pendingThreads) {
@@ -951,6 +955,10 @@ private val INDICATOR_MARGIN = 12.dp
 
 /** How far the icon turns as the pull reaches the threshold. */
 private const val PULL_SWEEP = 270f
+
+/** What a pull that ended without a pass tells the reader (issue #450). */
+private const val REFRESH_UNFINISHED = "Refresh did not finish; showing what the app already has"
+
 
 /** How far, and how often, the running indicator turns. */
 private const val SPIN_STEP = 30f

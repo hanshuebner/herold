@@ -628,6 +628,7 @@ class AppContainer(context: Context) {
             drainer = drainer,
             reachability = reachability,
             now = { System.currentTimeMillis() },
+            log = { message -> DiagLog.i(SYNC_TAG, message) },
         )
         val requestDrain: (Long) -> Unit = { delayMs -> drain(syncEngine, delayMs) }
         // What runs a pass when the event stream has nothing to say: a

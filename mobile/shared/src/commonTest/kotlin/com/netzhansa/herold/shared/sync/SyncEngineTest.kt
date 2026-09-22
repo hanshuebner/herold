@@ -207,6 +207,82 @@ class SyncEngineTest {
         assertEquals("email-after-reset", store.syncState("acct-a", SyncTypes.EMAIL))
     }
 
+    /**
+     * A changes answer that reports more to come and hands back the
+     * state it was asked from carries the fold nowhere: asking again
+     * puts the identical question, which is what left the reported
+     * phone in a pass that never ended (issue #450). The type is
+     * refetched instead, so the pass ends and the store is right.
+     */
+    @Test
+    fun aChangesAnswerThatDoesNotAdvanceRefetchesInsteadOfAskingAgain() = runTest {
+        val api = api()
+        api.inboxIds = listOf("e1")
+        api.emails = mapOf("e1" to wireEmail("e1"))
+        api.threads = listOf(WireThread(id = "t-e1", emailIds = listOf("e1")))
+        val store = FakeLocalStore()
+        val engine = SyncEngine(api, store)
+        engine.syncAll()
+
+        api.emailChanges = ChangesOutcome.Changed(
+            newState = "email-1",
+            created = listOf("e9"),
+            updated = emptyList(),
+            destroyed = emptyList(),
+            hasMoreChanges = true,
+        )
+        api.inboxIds = listOf("e2")
+        api.emails = mapOf("e2" to wireEmail("e2"))
+        api.threads = listOf(WireThread(id = "t-e2", emailIds = listOf("e2")))
+        api.emailState = "email-after-refetch"
+        api.emailChangesCalls = 0
+
+        engine.syncAll()
+
+        assertEquals(1, api.emailChangesCalls, "the fold asks once and then refetches")
+        assertEquals(listOf("e2"), store.emailList().map { it.id })
+        assertEquals("email-after-refetch", store.syncState("acct-a", SyncTypes.EMAIL))
+    }
+
+    /**
+     * An answer sequence that advances its state but never runs out of
+     * changes ends the same way: the fold is bounded, so no answer a
+     * server can give keeps a pass running (issue #450).
+     */
+    @Test
+    fun aFoldThatNeverRunsOutOfChangesIsBounded() = runTest {
+        val api = api()
+        api.inboxIds = listOf("e1")
+        api.emails = mapOf("e1" to wireEmail("e1"))
+        api.threads = listOf(WireThread(id = "t-e1", emailIds = listOf("e1")))
+        val store = FakeLocalStore()
+        val engine = SyncEngine(api, store)
+        engine.syncAll()
+
+        var round = 0
+        api.emailChangesFrom = {
+            round++
+            ChangesOutcome.Changed(
+                newState = "email-round-$round",
+                created = emptyList(),
+                updated = emptyList(),
+                destroyed = emptyList(),
+                hasMoreChanges = true,
+            )
+        }
+        api.emailState = "email-after-refetch"
+        api.emailChangesCalls = 0
+
+        engine.syncAll()
+
+        assertEquals(
+            SyncEngine.MAX_CHANGE_ROUNDS + 1,
+            api.emailChangesCalls,
+            "the fold stops at its round cap and refetches",
+        )
+        assertEquals("email-after-refetch", store.syncState("acct-a", SyncTypes.EMAIL))
+    }
+
     @Test
     fun walksEveryAccountTheSessionAdvertises() = runTest {
         val api = FakeJmapApi(session("acct-a", "acct-b"))

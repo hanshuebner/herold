@@ -61,6 +61,8 @@ class SyncEngine(
     private val reachability: Reachability = Reachability(),
     private val inboxFetchLimit: Int = DEFAULT_INBOX_FETCH,
     private val now: () -> Long = { 0L },
+    /** What a pass did and how long it took; the app's diagnostic ring. */
+    private val log: (String) -> Unit = {},
 ) {
     private val mutex = Mutex()
 
@@ -79,6 +81,7 @@ class SyncEngine(
      */
     suspend fun syncAll(): SyncStatus = mutex.withLock {
         _status.value = SyncStatus.Syncing
+        val startedAt = now()
         // The queue goes out before the fold: our own writes reach the
         // server first, so the changes we then read already contain them
         // rather than superseding them (REQ-AND-SYNC-24).
@@ -120,6 +123,10 @@ class SyncEngine(
             reachability.unreachable()
             _status.value = SyncStatus.Failed(t.message ?: "sync failed")
         }
+        // What a pass that got to the end costs is the ring's answer to
+        // "the refresh takes forever"; a pass that failed is reported by
+        // the scheduler with its reason (issue #450).
+        if (_status.value is SyncStatus.Idle) log("pass finished in ${now() - startedAt} ms")
         _status.value
     }
 
@@ -153,27 +160,52 @@ class SyncEngine(
         }
 
     private suspend fun syncAccountLocked(accountId: String, types: List<String> = SyncTypes.ALL) {
-        if (types.contains(SyncTypes.MAILBOX)) syncMailboxes(accountId)
-        if (types.contains(SyncTypes.EMAIL)) syncEmails(accountId)
-        if (types.contains(SyncTypes.THREAD)) syncThreads(accountId)
-        if (types.contains(SyncTypes.IDENTITY)) syncIdentities(accountId)
-        if (types.contains(SyncTypes.MANAGED_RULE)) syncManagedRules(accountId)
+        // A fold that took long enough for the reader to notice names
+        // itself, so a slow pass is read off the ring rather than
+        // guessed at (issue #450).
+        suspend fun fold(type: String, run: suspend () -> Unit) {
+            if (!types.contains(type)) return
+            val at = now()
+            run()
+            val took = now() - at
+            if (took >= SLOW_FOLD_MS) log("folding $type took $took ms")
+        }
+        fold(SyncTypes.MAILBOX) { syncMailboxes(accountId) }
+        fold(SyncTypes.EMAIL) { syncEmails(accountId) }
+        fold(SyncTypes.THREAD) { syncThreads(accountId) }
+        fold(SyncTypes.IDENTITY) { syncIdentities(accountId) }
+        fold(SyncTypes.MANAGED_RULE) { syncManagedRules(accountId) }
     }
 
-    private suspend fun syncMailboxes(accountId: String) {
+    /**
+     * Whether a `Foo/changes` answer leaves the fold where it started.
+     *
+     * An answer that reports more changes to come and hands back the
+     * state it was asked from carries the fold nowhere: asking again
+     * puts the identical question and the pass never ends (issue #450).
+     * A fold that has taken [MAX_CHANGE_ROUNDS] rounds is held to the
+     * same rule, so no sequence of answers can keep a pass running.
+     * Either way the type is refetched, which is what the client does
+     * for any state it cannot fold from.
+     */
+    private fun ChangesOutcome.Changed.leadsNowhere(since: String, round: Int): Boolean =
+        hasMoreChanges && (newState == since || round >= MAX_CHANGE_ROUNDS)
+
+    private suspend fun syncMailboxes(accountId: String, round: Int = 0) {
         val since = store.syncState(accountId, SyncTypes.MAILBOX)
         if (since == null) {
             fillMailboxes(accountId)
             return
         }
         when (val outcome = api.mailboxChanges(accountId, since)) {
-            is ChangesOutcome.CannotCalculate -> {
-                store.clearMailboxes(accountId)
-                store.setSyncState(accountId, SyncTypes.MAILBOX, null)
-                fillMailboxes(accountId)
-            }
+            is ChangesOutcome.CannotCalculate ->
+                refetchMailboxes(accountId, since, "the server cannot calculate them")
 
             is ChangesOutcome.Changed -> {
+                if (outcome.leadsNowhere(since, round)) {
+                    refetchMailboxes(accountId, since, "the changes answer does not advance")
+                    return
+                }
                 if (outcome.destroyed.isNotEmpty()) store.deleteMailboxes(accountId, outcome.destroyed)
                 val touched = outcome.created + outcome.updated
                 if (touched.isNotEmpty()) {
@@ -181,9 +213,17 @@ class SyncEngine(
                     store.upsertMailboxes(fetched.list.map { it.toDomain(accountId) })
                 }
                 store.setSyncState(accountId, SyncTypes.MAILBOX, outcome.newState)
-                if (outcome.hasMoreChanges) syncMailboxes(accountId)
+                if (outcome.hasMoreChanges) syncMailboxes(accountId, round + 1)
             }
         }
+    }
+
+    /** Drops the account's mailboxes and reads them again, saying why. */
+    private suspend fun refetchMailboxes(accountId: String, since: String, why: String) {
+        log("refetching mailboxes from state $since: $why")
+        store.clearMailboxes(accountId)
+        store.setSyncState(accountId, SyncTypes.MAILBOX, null)
+        fillMailboxes(accountId)
     }
 
     private suspend fun fillMailboxes(accountId: String) {
@@ -192,20 +232,21 @@ class SyncEngine(
         if (result.state.isNotBlank()) store.setSyncState(accountId, SyncTypes.MAILBOX, result.state)
     }
 
-    private suspend fun syncEmails(accountId: String) {
+    private suspend fun syncEmails(accountId: String, round: Int = 0) {
         val since = store.syncState(accountId, SyncTypes.EMAIL)
         if (since == null) {
             fillEmails(accountId)
             return
         }
         when (val outcome = api.emailChanges(accountId, since)) {
-            is ChangesOutcome.CannotCalculate -> {
-                store.clearEmails(accountId)
-                store.setSyncState(accountId, SyncTypes.EMAIL, null)
-                fillEmails(accountId)
-            }
+            is ChangesOutcome.CannotCalculate ->
+                refetchEmails(accountId, since, "the server cannot calculate them")
 
             is ChangesOutcome.Changed -> {
+                if (outcome.leadsNowhere(since, round)) {
+                    refetchEmails(accountId, since, "the changes answer does not advance")
+                    return
+                }
                 if (outcome.destroyed.isNotEmpty()) store.deleteEmails(accountId, outcome.destroyed)
                 val touched = (outcome.created + outcome.updated).distinct()
                 if (touched.isNotEmpty()) {
@@ -218,9 +259,17 @@ class SyncEngine(
                     if (fetched.notFound.isNotEmpty()) store.deleteEmails(accountId, fetched.notFound)
                 }
                 store.setSyncState(accountId, SyncTypes.EMAIL, outcome.newState)
-                if (outcome.hasMoreChanges) syncEmails(accountId)
+                if (outcome.hasMoreChanges) syncEmails(accountId, round + 1)
             }
         }
+    }
+
+    /** Drops the account's mail and reads it again, saying why. */
+    private suspend fun refetchEmails(accountId: String, since: String, why: String) {
+        log("refetching mail from state $since: $why")
+        store.clearEmails(accountId)
+        store.setSyncState(accountId, SyncTypes.EMAIL, null)
+        fillEmails(accountId)
     }
 
     /**
@@ -250,16 +299,17 @@ class SyncEngine(
         if (fetched.state.isNotBlank()) store.setSyncState(accountId, SyncTypes.EMAIL, fetched.state)
     }
 
-    private suspend fun syncThreads(accountId: String) {
+    private suspend fun syncThreads(accountId: String, round: Int = 0) {
         val since = store.syncState(accountId, SyncTypes.THREAD) ?: return
         when (val outcome = api.threadChanges(accountId, since)) {
-            is ChangesOutcome.CannotCalculate -> {
-                store.clearThreads(accountId)
-                store.setSyncState(accountId, SyncTypes.THREAD, null)
-                refetchThreadsOfKnownEmails(accountId)
-            }
+            is ChangesOutcome.CannotCalculate ->
+                refetchThreads(accountId, since, "the server cannot calculate them")
 
             is ChangesOutcome.Changed -> {
+                if (outcome.leadsNowhere(since, round)) {
+                    refetchThreads(accountId, since, "the changes answer does not advance")
+                    return
+                }
                 if (outcome.destroyed.isNotEmpty()) store.deleteThreads(accountId, outcome.destroyed)
                 val touched = (outcome.created + outcome.updated).distinct()
                 if (touched.isNotEmpty()) {
@@ -267,9 +317,17 @@ class SyncEngine(
                     store.upsertThreads(fetched.list.map { it.toDomain(accountId) })
                 }
                 store.setSyncState(accountId, SyncTypes.THREAD, outcome.newState)
-                if (outcome.hasMoreChanges) syncThreads(accountId)
+                if (outcome.hasMoreChanges) syncThreads(accountId, round + 1)
             }
         }
+    }
+
+    /** Drops the account's threads and reads them again, saying why. */
+    private suspend fun refetchThreads(accountId: String, since: String, why: String) {
+        log("refetching threads from state $since: $why")
+        store.clearThreads(accountId)
+        store.setSyncState(accountId, SyncTypes.THREAD, null)
+        refetchThreadsOfKnownEmails(accountId)
     }
 
     private suspend fun refetchThreadsOfKnownEmails(accountId: String) {
@@ -314,20 +372,21 @@ class SyncEngine(
      * written in the suite reaches the phone through `ManagedRule/changes`
      * rather than a screen-level fetch.
      */
-    private suspend fun syncManagedRules(accountId: String) {
+    private suspend fun syncManagedRules(accountId: String, round: Int = 0) {
         val since = store.syncState(accountId, SyncTypes.MANAGED_RULE)
         if (since == null) {
             fillManagedRules(accountId)
             return
         }
         when (val outcome = api.managedRuleChanges(accountId, since)) {
-            is ChangesOutcome.CannotCalculate -> {
-                store.clearManagedRules(accountId)
-                store.setSyncState(accountId, SyncTypes.MANAGED_RULE, null)
-                fillManagedRules(accountId)
-            }
+            is ChangesOutcome.CannotCalculate ->
+                refetchManagedRules(accountId, since, "the server cannot calculate them")
 
             is ChangesOutcome.Changed -> {
+                if (outcome.leadsNowhere(since, round)) {
+                    refetchManagedRules(accountId, since, "the changes answer does not advance")
+                    return
+                }
                 if (outcome.destroyed.isNotEmpty()) store.deleteManagedRules(accountId, outcome.destroyed)
                 val touched = (outcome.created + outcome.updated).distinct()
                 if (touched.isNotEmpty()) {
@@ -338,9 +397,17 @@ class SyncEngine(
                     }
                 }
                 store.setSyncState(accountId, SyncTypes.MANAGED_RULE, outcome.newState)
-                if (outcome.hasMoreChanges) syncManagedRules(accountId)
+                if (outcome.hasMoreChanges) syncManagedRules(accountId, round + 1)
             }
         }
+    }
+
+    /** Drops the account's rules and reads them again, saying why. */
+    private suspend fun refetchManagedRules(accountId: String, since: String, why: String) {
+        log("refetching rules from state $since: $why")
+        store.clearManagedRules(accountId)
+        store.setSyncState(accountId, SyncTypes.MANAGED_RULE, null)
+        fillManagedRules(accountId)
     }
 
     /**
@@ -481,5 +548,16 @@ class SyncEngine(
 
     companion object {
         const val DEFAULT_INBOX_FETCH = 100
+
+        /**
+         * How many `Foo/changes` rounds one type's fold takes in a pass
+         * before the type is refetched instead (issue #450). A client
+         * that is behind by a working day folds in a handful of rounds,
+         * so the cap is met only by an answer sequence going nowhere.
+         */
+        const val MAX_CHANGE_ROUNDS = 64
+
+        /** A fold slower than this names itself in the ring. */
+        const val SLOW_FOLD_MS = 2_000L
     }
 }

@@ -158,6 +158,54 @@ class InboxRefreshAcceptanceTest {
         )
     }
 
+    /**
+     * The check this ticket turns on: a pull on a reachable network
+     * finishes because its pass finished (issue #450).
+     *
+     * The account is put further behind than one `Email/changes` answer
+     * carries while the app cannot reach it - which is what a phone
+     * comes back to after a night in the background - and then the
+     * finger goes down. The gesture settles well inside the ceiling,
+     * the pass that carried it reached the server, and nothing tells
+     * the reader the refresh did not finish.
+     */
+    @Test
+    fun t134_aPullOnABacklogFinishesWithItsPass(): Unit = runBlocking {
+        val session = app.container.session.value!!
+        val scheduler = session.syncScheduler
+        // Mail in the inbox, so the pass records a state to fold from
+        // rather than reading the account for the first time.
+        val subject = "backlog anchor " + System.nanoTime()
+        DevInstance.deliverMail(subject = subject, body = "anchor")
+        DevInstance.awaitFiled(subject)
+        session.syncEngine.syncAll()
+
+        // The account moves on while the app cannot see it, so the
+        // first answer the fold gets back is a trimmed one.
+        reach.takeAway()
+        Backlog.raise(DevInstance.serverClient())
+        reach.giveBack()
+        val before = scheduler.lastSuccessAtMs.value
+
+        val at = System.currentTimeMillis()
+        pull()
+        compose.waitUntil(CEILING_MS) { indicatorSays(RUNNING) }
+        compose.waitUntil(PASS_MS) { indicatorSays(READY) }
+        val took = System.currentTimeMillis() - at
+        android.util.Log.i("herold.acceptance", "the pull on a backlog settled in $took ms")
+
+        compose.waitUntil(PASS_MS) { scheduler.lastSuccessAtMs.value != before }
+        assertTrue(
+            "the pull settled in $took ms, which is not inside the ceiling",
+            took < SyncScheduler.FORCED_SYNC_CEILING_MS,
+        )
+        assertTrue(
+            "the reader was told the refresh did not finish",
+            compose.onAllNodesWithText("did not finish", substring = true).fetchSemanticsNodes().isEmpty(),
+        )
+        captureDeviceScreen("450-pull-on-a-backlog")
+    }
+
     // ---- helpers ---------------------------------------------------------
 
     /** The pull gesture, on the message list. */
@@ -205,6 +253,14 @@ class InboxRefreshAcceptanceTest {
 
         /** The indicator's own ceiling, which every wait here allows. */
         const val CEILING_MS = SyncScheduler.FORCED_SYNC_CEILING_MS
+
+        /**
+         * What a pull that its pass carries is given: comfortably more
+         * than the work takes and comfortably less than the ceiling, so
+         * a gesture that ends on the ceiling fails the wait rather than
+         * passing it late (issue #450).
+         */
+        const val PASS_MS = 10_000L
 
         /** What a check allows on top of the ceiling, for the gesture and the frames. */
         const val CEILING_SLACK_MS = 6_000L
