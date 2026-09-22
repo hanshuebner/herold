@@ -56,7 +56,7 @@
     background: var(--layer-02);
     color: var(--text-primary);
     border: 1px solid var(--border-subtle-01);
-    border-radius: var(--radius-pill);
+    border-radius: var(--radius-lg);
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
     font-size: var(--type-body-compact-01-size);
     line-height: var(--type-body-compact-01-line);
@@ -72,9 +72,8 @@
   }
 
   .message {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    white-space: normal;
+    overflow-wrap: break-word;
   }
 
   .undo {
