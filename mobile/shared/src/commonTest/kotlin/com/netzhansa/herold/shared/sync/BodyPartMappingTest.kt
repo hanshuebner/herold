@@ -57,6 +57,45 @@ class BodyPartMappingTest {
         assertEquals("Only text.", email.bodyText)
     }
 
+    /**
+     * The server names a text-only message's single part in BOTH body
+     * lists (RFC 8621 4.1.4 symmetric fill, issue #258), so the HTML
+     * side has to recognise that the part it was handed is the text one
+     * (issue #458).
+     */
+    @Test
+    fun aTextOnlyMessageNamedInBothListsHasNoHtmlBody() {
+        val part = WireBodyPart(partId = "1", type = "text/plain")
+        val body = "First line.\n\nSecond paragraph.\n> a quoted line\n"
+        val email = wire(
+            html = part,
+            text = part,
+            values = mapOf("1" to WireBodyValue(body)),
+        ).toStoreRow("a")
+
+        assertNull(email.bodyHtml)
+        assertEquals(body, email.bodyText)
+    }
+
+    /**
+     * A part of neither text type, named in both lists, reads as text:
+     * nothing declared its content markup, and rendering it as HTML
+     * would lose its line structure and parse whatever angle brackets
+     * it happens to carry.
+     */
+    @Test
+    fun aPartOfNeitherTextTypeReadsAsText() {
+        val part = WireBodyPart(partId = "1", type = "text/markdown")
+        val email = wire(
+            html = part,
+            text = part,
+            values = mapOf("1" to WireBodyValue("# A heading\n\nA paragraph.\n")),
+        ).toStoreRow("a")
+
+        assertNull(email.bodyHtml)
+        assertEquals("# A heading\n\nA paragraph.\n", email.bodyText)
+    }
+
     private fun wire(
         html: WireBodyPart?,
         text: WireBodyPart?,

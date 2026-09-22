@@ -82,14 +82,23 @@ internal fun WireAddress.toDomain() = MailAddress(name?.takeIf { it.isNotBlank()
 internal fun String.normaliseMessageId(): String = trim().removePrefix("<").removeSuffix(">")
 
 internal fun WireEmail.toDomain(accountId: String): Email {
-    val htmlPart = htmlBody?.firstOrNull { it.type == "text/html" } ?: htmlBody?.firstOrNull()
+    val declaredHtml = htmlBody?.firstOrNull { it.type == "text/html" }
     // `textBody` names the HTML part itself for a message that carries no
     // text/plain (RFC 8621 4.1.4), so the text body is the message's own
     // text alternative only when it is one - otherwise the reading pane
     // would offer the HTML's source as the readable version of it
     // (issue #430).
     val textPart = textBody?.firstOrNull { it.type == "text/plain" }
-        ?: textBody?.firstOrNull()?.takeIf { it.partId != htmlPart?.partId }
+        ?: textBody?.firstOrNull()?.takeIf { it.partId != declaredHtml?.partId }
+    // The mirror image: `htmlBody` names the text part itself for a
+    // message that carries no text/html, so a part is the HTML body only
+    // when it is declared text/html, or when it is a part of its own that
+    // the text body does not already stand for. Rendering plain text
+    // through the HTML path drops its line structure - the browser reads
+    // its newlines as ordinary whitespace - and parses whatever angle
+    // brackets it happens to contain (issue #458).
+    val htmlPart = declaredHtml
+        ?: htmlBody?.firstOrNull()?.takeIf { it.partId != textPart?.partId }
     return Email(
         accountId = accountId,
         id = id,

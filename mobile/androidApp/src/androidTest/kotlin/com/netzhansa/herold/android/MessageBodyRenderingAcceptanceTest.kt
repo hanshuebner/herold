@@ -17,6 +17,7 @@ import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
 import com.netzhansa.herold.shared.domain.Email
 import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.FixMethodOrder
 import org.junit.Rule
@@ -231,7 +232,55 @@ class MessageBodyRenderingAcceptanceTest {
         backToInbox()
     }
 
+    /**
+     * A message that carries only a `text/plain` part reads as text:
+     * its lines each stand on their own (issue #458). The server names
+     * that one part in both body lists (RFC 8621 4.1.4), and read as
+     * HTML its newlines are whitespace, which runs the whole message
+     * into one block.
+     */
+    @Test
+    fun t40_aTextOnlyBodyKeepsItsLineBreaks() {
+        val message = seedPlainMessage("Plain", PLAIN_BODY)
+        openSeededThread(message)
+        awaitBody(message, PLAIN_FIRST_MARKER)
+
+        val stored = runBlocking { app.container.store.email(message.accountId, message.id) }
+        val body = bodySurface()
+        val lines = textLineCount(deviceScreen(), body)
+        Log.i(TAG, "plain body=$body lines=$lines")
+        compose.captureScreen("m4-body-plain-text")
+
+        assertNull(
+            "the text-only message was cached with an HTML body: ${stored?.bodyHtml}",
+            stored?.bodyHtml,
+        )
+        assertTrue(
+            "the message's last line never rendered",
+            device.hasObject(By.textContains(PLAIN_LAST_MARKER)),
+        )
+        assertTrue(
+            "the body drew $lines lines where the message has $PLAIN_LINES, so its " +
+                "line breaks ran together",
+            lines >= PLAIN_MIN_LINES,
+        )
+        backToInbox()
+    }
+
     // ---- helpers ---------------------------------------------------------
+
+    /** Delivers one text/plain message and waits for the store to hold it. */
+    private fun seedPlainMessage(tag: String, body: String): Email {
+        signInAndSync()
+        val subject = "$tag ${System.currentTimeMillis()}"
+        DevInstance.deliverMail(
+            subject = subject,
+            from = "Bob Example <bob@example.local>",
+            headers = "MIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n",
+            body = body,
+        )
+        return awaitInbox(subject)
+    }
 
     /** Delivers one HTML message and waits for the store to hold it. */
     private fun seedHtmlMessage(tag: String, body: String): Email {
@@ -416,6 +465,39 @@ class MessageBodyRenderingAcceptanceTest {
             "<p>$TB_QUOTED_MARKER, which the reader should not have to scroll " +
             "through.</p></blockquote>" +
             "</body></html>\r\n"
+
+        const val PLAIN_FIRST_MARKER = "Hello Bob,"
+        const val PLAIN_LAST_MARKER = "Anna Example"
+
+        /** A plain-text mail written one short line at a time. */
+        val PLAIN_BODY = (
+            listOf(
+                PLAIN_FIRST_MARKER,
+                "",
+                "Item one.",
+                "Item two.",
+                "Item three.",
+                "Item four.",
+                "Item five.",
+                "Item six.",
+                "Item seven.",
+                "Item eight.",
+                "",
+                "Regards",
+                PLAIN_LAST_MARKER,
+            ).joinToString("\r\n")
+            ) + "\r\n"
+
+        /** How many lines of text [PLAIN_BODY] puts on screen. */
+        const val PLAIN_LINES = 11
+
+        /**
+         * How many the check insists on: every line of the message but
+         * the last one or two, which a shorter screen cuts off. The
+         * same words rendered as HTML fill the card's width instead and
+         * come to four lines or so.
+         */
+        const val PLAIN_MIN_LINES = 10
 
         const val TIMEOUT_MS = 30_000L
         const val POLL_MS = 500L

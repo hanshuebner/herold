@@ -135,3 +135,57 @@ fun nearColor(seen: Int, expected: Int): Boolean =
 
 fun hexColor(color: Int): String =
     "#%02x%02x%02x".format(Color.red(color), Color.green(color), Color.blue(color))
+
+/**
+ * How many lines of text the body drew inside [area], counted from the
+ * pixels (issue #458).
+ *
+ * A line of text is a run of scanlines carrying ink over the surface's
+ * own colour, separated from the next run by the leading between them.
+ * Counting those runs is how a check tells a body that kept its line
+ * breaks from one whose lines ran together: the same words rendered as
+ * HTML fill the card's width instead of standing one per line.
+ *
+ * @param area where the body surface is on screen
+ */
+fun textLineCount(screen: Bitmap, area: Rect): Int {
+    val box = Rect(area).also { if (!it.intersect(Rect(0, 0, screen.width, screen.height))) return 0 }
+    val surface = dominantColour(screen, box)
+    var lines = 0
+    var inLine = false
+    for (y in box.top until box.bottom) {
+        var ink = 0
+        var x = box.left
+        while (x < box.right && ink < INK_PIXELS) {
+            if (!nearColor(screen.getPixel(x, y), surface)) ink++
+            x++
+        }
+        val hasInk = ink >= INK_PIXELS
+        if (hasInk && !inLine) lines++
+        inLine = hasInk
+    }
+    Log.i(PIXELS_TAG, "body $box on ${hexColor(surface)} drew $lines lines of text")
+    return lines
+}
+
+/** The colour most of [box] is, which is the surface the text sits on. */
+private fun dominantColour(screen: Bitmap, box: Rect): Int {
+    val counts = HashMap<Int, Int>()
+    var y = box.top
+    while (y < box.bottom) {
+        var x = box.left
+        while (x < box.right) {
+            val colour = screen.getPixel(x, y)
+            counts[colour] = (counts[colour] ?: 0) + 1
+            x += SAMPLE_STEP
+        }
+        y += SAMPLE_STEP
+    }
+    return counts.maxByOrNull { it.value }?.key ?: Color.WHITE
+}
+
+/** How many off-surface pixels a scanline needs to count as text. */
+private const val INK_PIXELS = 3
+
+/** How coarsely the surface colour is sampled. */
+private const val SAMPLE_STEP = 4
