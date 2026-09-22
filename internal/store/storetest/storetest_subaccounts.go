@@ -1270,3 +1270,98 @@ func testReparentMessage_WakeMailboxDroppedWhenOutsideReparent(t *testing.T, s s
 		t.Fatalf("WakeMailboxID = %d, want nil (Archive was outside the reparent, under the old principal)", *wake)
 	}
 }
+
+// -- convenience MailboxID vs. mailbox-id ordering (issue #472) -------
+//
+// GetMessage's convenience MailboxID field names whichever membership
+// has the lowest mailbox_id; it is not guaranteed to be the principal's
+// Inbox. Sub-account promotion can create the new principal's non-Inbox
+// mailboxes before its Inbox (system mailboxes provisioned up front,
+// then per-message target mailboxes created on demand as
+// ReparentMessage's caller resolves each source mailbox), so a message
+// reparented into both can end up with a lower-numbered Sent membership
+// and a higher-numbered Inbox membership. A consumer that means the
+// Inbox must not read the convenience field for that; it must resolve
+// the Inbox explicitly -- either via ResolveInboxMailbox against the
+// principal's mailbox list, or, for a specific membership event, via
+// the mailbox id the change-feed row names in ParentEntityID.
+
+// testGetMessage_ConvenienceMailboxIDNotGuaranteedInbox pins the
+// documented, arbitrary tie-break: after a reparent that leaves the
+// Inbox membership at a higher id than a surviving membership, the
+// convenience field names the lower id, not the Inbox. This is the
+// shape that breaks a consumer reading Message.MailboxID as "the
+// Inbox" (re #472); it is not itself asserted as a bug here since the
+// field is documented as arbitrary, but the test pins the mechanism so
+// a future change to the tie-break rule is deliberate, not accidental.
+func testGetMessage_ConvenienceMailboxIDNotGuaranteedInbox(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	oldP := mustInsertPrincipal(t, s, "convenience-inbox-old@example.com")
+	newP := mustInsertPrincipal(t, s, "convenience-inbox-new@example.com")
+	oldSent := mustInsertMailbox(t, s, oldP.ID, "Sent")
+	oldInbox := mustInsertMailbox(t, s, oldP.ID, "INBOX")
+	// The new principal's Sent mailbox is created before its Inbox --
+	// the ordering sub-account promotion can produce when mailboxes are
+	// resolved per source membership rather than provisioned up front.
+	newSent := mustInsertMailbox(t, s, newP.ID, "Sent")
+	newInbox := mustInsertMailbox(t, s, newP.ID, "INBOX")
+	if newSent.ID >= newInbox.ID {
+		t.Fatalf("test setup: want new Sent (%d) < new Inbox (%d)", newSent.ID, newInbox.ID)
+	}
+
+	ref := putBlob(t, s, "convenience-inbox-body")
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{PrincipalID: oldP.ID, Blob: ref, Size: ref.Size},
+		[]store.MessageMailbox{{MailboxID: oldSent.ID}, {MailboxID: oldInbox.ID}}); err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+	id := firstMessageIDFromFeed(t, s, oldP.ID)
+
+	moves := map[store.MailboxID]store.MailboxID{
+		oldSent.ID:  newSent.ID,
+		oldInbox.ID: newInbox.ID,
+	}
+	if err := s.Meta().ReparentMessage(ctx, id, newP.ID, moves); err != nil {
+		t.Fatalf("ReparentMessage: %v", err)
+	}
+
+	got, err := s.Meta().GetMessage(ctx, id)
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	if got.PrincipalID != newP.ID {
+		t.Fatalf("PrincipalID = %d, want %d", got.PrincipalID, newP.ID)
+	}
+	if got.MailboxID != newSent.ID {
+		t.Fatalf("convenience MailboxID = %d, want %d (Sent, the lowest id) -- documents the tie-break this issue is about", got.MailboxID, newSent.ID)
+	}
+
+	// A consumer that means the Inbox resolves it via the principal's
+	// mailbox list, not the convenience field, and gets the right
+	// answer regardless of id ordering.
+	mbs, err := s.Meta().ListMailboxes(ctx, newP.ID)
+	if err != nil {
+		t.Fatalf("ListMailboxes: %v", err)
+	}
+	resolved := store.ResolveInboxMailbox(mbs)
+	if resolved == nil || resolved.ID != newInbox.ID {
+		t.Fatalf("ResolveInboxMailbox = %+v, want the new Inbox (%d)", resolved, newInbox.ID)
+	}
+
+	// The change-feed row recording the message's arrival at the new
+	// Inbox membership names that mailbox directly via ParentEntityID,
+	// independent of the convenience field's tie-break.
+	feed, err := s.Meta().ReadChangeFeed(ctx, newP.ID, 0, 100)
+	if err != nil {
+		t.Fatalf("ReadChangeFeed: %v", err)
+	}
+	var sawInboxArrival bool
+	for _, c := range feed {
+		if c.Kind == store.EntityKindEmail && c.Op == store.ChangeOpCreated &&
+			store.MessageID(c.EntityID) == id && store.MailboxID(c.ParentEntityID) == newInbox.ID {
+			sawInboxArrival = true
+		}
+	}
+	if !sawInboxArrival {
+		t.Fatalf("no Created change-feed entry named the new Inbox (%d) via ParentEntityID; feed=%+v", newInbox.ID, feed)
+	}
+}

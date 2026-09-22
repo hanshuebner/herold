@@ -548,7 +548,20 @@ func Evaluate(
 		if mErr != nil {
 			return RuleDecision{Allow: false, Reason: ReasonDroppedNotInbox, EventType: eventType}
 		}
-		mbox, mbErr := st.Meta().GetMailboxByID(ctx, msg.MailboxID)
+		// The mailbox this arrival happened into is named by the
+		// change event's ParentEntityID (set at append time to the
+		// exact mailbox the Created row was written for), not by
+		// msg.MailboxID: that convenience field resolves to whichever
+		// membership has the lowest MailboxID across the whole
+		// message, which need not be the membership this event is
+		// about (re #472 -- a reparented message can carry a
+		// surviving lower-numbered membership alongside its new,
+		// higher-numbered Inbox).
+		mailboxID := store.MailboxID(ev.ParentEntityID)
+		if mailboxID == 0 {
+			mailboxID = msg.MailboxID
+		}
+		mbox, mbErr := st.Meta().GetMailboxByID(ctx, mailboxID)
 		if mbErr != nil || !isInboxRoleMailbox(mbox) {
 			return RuleDecision{Allow: false, Reason: ReasonDroppedNotInbox, EventType: eventType}
 		}

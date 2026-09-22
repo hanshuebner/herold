@@ -683,7 +683,18 @@ type Message struct {
 	// query (ListMessages, GetMessage with a mailbox context). Do not
 	// rely on them when iterating a multi-mailbox response.
 
-	// MailboxID is the first (or only) mailbox this message belongs to.
+	// MailboxID is the first (or only) mailbox this message belongs
+	// to. For an unscoped read (GetMessage with mailboxID == 0) "first"
+	// means whichever membership has the lowest MailboxID -- an
+	// arbitrary but deterministic tie-break, NOT a guarantee that the
+	// named mailbox is the principal's Inbox (re #472). A message can
+	// carry a surviving membership in a lower-numbered mailbox after
+	// ReparentMessage (sub-account promotion, #227) while its Inbox
+	// membership sits at a higher id. A consumer that means the Inbox
+	// specifically must resolve it explicitly -- via ResolveInboxMailbox
+	// against the principal's mailbox list, or via the mailbox id named
+	// by the triggering StateChange's ParentEntityID -- rather than
+	// read this field.
 	MailboxID MailboxID
 	// UID is the IMAP UID within MailboxID.
 	UID UID

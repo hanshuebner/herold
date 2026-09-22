@@ -104,6 +104,8 @@ func Run(t *testing.T, f Factory) {
 		// reminder-ending rule follow-up).
 		{"ReparentMessage_WakeMailboxRemap", testReparentMessage_WakeMailboxRemap},
 		{"ReparentMessage_WakeMailboxDroppedWhenOutsideReparent", testReparentMessage_WakeMailboxDroppedWhenOutsideReparent},
+		// Convenience MailboxID vs. mailbox-id ordering (issue #472).
+		{"GetMessage_ConvenienceMailboxIDNotGuaranteedInbox", testGetMessage_ConvenienceMailboxIDNotGuaranteedInbox},
 		// Alias retargeting on separation/removal (issue #312, REQ-SUBACCT-07).
 		{"SubAccountMigration_SeparateRetargetsAlias_NoAliasRow", testSubAccountMigration_SeparateRetargetsAlias_NoAliasRow},
 		{"SubAccountMigration_SeparateRetargetsAlias_TwoDomains", testSubAccountMigration_SeparateRetargetsAlias_TwoDomains},

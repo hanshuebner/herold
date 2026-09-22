@@ -533,6 +533,58 @@ func TestEvaluate_MailCreated_Inbox_Allows(t *testing.T) {
 	}
 }
 
+// TestEvaluate_MailCreated_ReparentedInboxNotLowestID_Allows covers
+// #472: a message can carry a surviving membership in a lower-numbered
+// mailbox alongside its Inbox membership at a higher id (the shape
+// ReparentMessage/sub-account promotion produces). The arrival event
+// names the Inbox membership via ParentEntityID; the gate must allow
+// the push even though the message's convenience MailboxID (lowest id
+// across all memberships) resolves to the other, non-Inbox mailbox.
+func TestEvaluate_MailCreated_ReparentedInboxNotLowestID_Allows(t *testing.T) {
+	t.Parallel()
+	st := newTestStore(t)
+	pid := mustInsertPrincipal(t, st, "alice@example.test")
+	// Sent is created first (lower id); INBOX second (higher id) --
+	// mirrors sub-account promotion creating mailboxes out of the
+	// usual order.
+	sentID := mustInsertMailbox(t, st, pid, "Sent")
+	inboxID := mustInsertMailbox(t, st, pid, "INBOX")
+	if sentID >= inboxID {
+		t.Fatalf("test setup: want Sent (%d) < INBOX (%d)", sentID, inboxID)
+	}
+	uid, _, err := st.Meta().InsertMessage(context.Background(), store.Message{
+		Keywords: []string{"$category-primary"},
+		Envelope: store.Envelope{Subject: "x"},
+	}, []store.MessageMailbox{{MailboxID: sentID}, {MailboxID: inboxID}})
+	if err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+	// This is the store's first (and only) message in a fresh test
+	// store, so its MessageID coincides with the allocated UID (both
+	// start counting at 1) -- the same convention the rest of this
+	// file relies on.
+	mid := store.MessageID(uid)
+	got, err := st.Meta().GetMessage(context.Background(), mid)
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	if got.MailboxID != sentID {
+		t.Fatalf("test setup: convenience MailboxID = %d, want %d (Sent, the lowest id) -- the case this test pins", got.MailboxID, sentID)
+	}
+	// The arrival event names the Inbox membership explicitly.
+	ev := store.StateChange{
+		PrincipalID:    pid,
+		Kind:           store.EntityKindEmail,
+		EntityID:       uint64(mid),
+		ParentEntityID: uint64(inboxID),
+		Op:             store.ChangeOpCreated,
+	}
+	d := Evaluate(context.Background(), DefaultRules(), st, ev, time.Now().UTC())
+	if !d.Allow || d.EventType != EventTypeMail {
+		t.Fatalf("decision=%+v want allow/mail (arrival named the Inbox membership by ParentEntityID)", d)
+	}
+}
+
 // TestEvaluate_MailUpdate_WithReaction_ReclassifiesToReaction covers
 // re #346's "keep the reaction-on-Email path working" requirement: an
 // Email update on a message carrying a reaction reclassifies to

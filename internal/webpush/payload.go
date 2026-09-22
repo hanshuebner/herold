@@ -141,7 +141,17 @@ func buildEmailPayload(ctx context.Context, st store.Store, ev store.StateChange
 	if err != nil {
 		return buildPayloadResult{}, fmt.Errorf("webpush: get email %d: %w", msgID, err)
 	}
-	mbox, err := st.Meta().GetMailboxByID(ctx, msg.MailboxID)
+	// The mailbox this state change pertains to is named by the event's
+	// ParentEntityID (set at append time to the exact mailbox the
+	// change was recorded for), not by msg.MailboxID: that convenience
+	// field resolves to whichever membership has the lowest MailboxID
+	// across the whole message, which need not be the membership this
+	// event is about (re #472).
+	mailboxID := store.MailboxID(ev.ParentEntityID)
+	if mailboxID == 0 {
+		mailboxID = msg.MailboxID
+	}
+	mbox, err := st.Meta().GetMailboxByID(ctx, mailboxID)
 	if err != nil {
 		// A missing mailbox is not fatal — the message row carries
 		// enough envelope data on its own.
@@ -180,8 +190,8 @@ func buildEmailPayload(ctx context.Context, st store.Store, ev store.StateChange
 	} else {
 		out.ThreadID = fmt.Sprintf("t%d", msg.ID)
 	}
-	if msg.MailboxID != 0 {
-		out.InboxMailboxID = fmt.Sprintf("%d", msg.MailboxID)
+	if mailboxID != 0 {
+		out.InboxMailboxID = fmt.Sprintf("%d", mailboxID)
 	}
 	// REQ-PROTO-125 / Wave 3.8c spec resolution: build the 80-byte
 	// preview by re-walking the blob inline via mailparse. This is the
