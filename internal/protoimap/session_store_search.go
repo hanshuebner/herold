@@ -67,9 +67,21 @@ func (ses *session) handleSTORE(ctx context.Context, c *Command) error {
 		myClearKW := clearKW
 		myAddKW := addKW
 		if c.StoreFlags.Op == imap.StoreFlagsSet {
-			// Compute keywords to clear: existing minus new.
+			// Compute keywords to clear: existing minus new. $snoozed
+			// is excluded from this diff: it is the reminder's own
+			// marker, paired with SnoozedUntil and owned exclusively
+			// by SetSnooze, and a STORE FLAGS (SET) is how ordinary
+			// IMAP clients sync the standard/custom flags they know
+			// about -- they do not enumerate $snoozed, so its absence
+			// from the new set must not read as an intentional clear
+			// (re #274: a flag/keyword sync must not end a reminder
+			// it never named). An explicit "-FLAGS $snoozed" still
+			// clears it via the Del case below.
 			current := map[string]bool{}
 			for _, k := range m.Keywords {
+				if strings.EqualFold(k, "$snoozed") {
+					continue
+				}
 				current[k] = true
 			}
 			for _, k := range addKW {

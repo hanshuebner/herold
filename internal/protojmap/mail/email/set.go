@@ -1222,6 +1222,18 @@ func decodeUpdate(
 		for _, k := range newCustom {
 			newSet[strings.ToLower(k)] = struct{}{}
 		}
+		// $snoozed is the reminder's own marker, paired with
+		// snoozedUntil and owned exclusively by SetSnooze. A
+		// structural "keywords" replace cannot express "leave
+		// $snoozed alone" -- a client's desired set simply omits keys
+		// it does not track -- so treating that omission as an
+		// intentional clear would end a reminder every time an
+		// unrelated label changed (re #274: labelling must not clear
+		// a reminder). Drop it from this diff in both directions;
+		// explicit intent is still reachable through the
+		// "keywords/$snoozed" patch key below, or through snoozedUntil.
+		delete(oldSet, "$snoozed")
+		delete(newSet, "$snoozed")
 		for k := range newSet {
 			if _, has := oldSet[k]; !has {
 				addKW = append(addKW, k)
