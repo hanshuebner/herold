@@ -327,6 +327,21 @@ its accept path are actually reachable and drivable end to end. The
 `start` output's `EXTERNAL_IMAGES_MODE` line reports which mode the
 running instance is in.
 
+**How far the accept path goes locally.** With the flag, the bar
+appears and "Load images" sets the right proxied URL
+(`/proxy/image?url=...`). The fetch that follows is then refused: the
+image proxy installs its SSRF guard with no options
+(`netguard.ControlContext()` in `internal/protoimg`), unlike the
+external-image fetcher's guard, which takes `AllowPrivate` — so a
+loopback-hosted fake origin is blocked and the server logs
+`protoimg.fetch_failed ... netguard: target address is in a blocked
+range (loopback 127.0.0.1)`. The image does not render. **That
+refusal is the documented local limit, not a defect**: the proxy is
+reached with mail-supplied URLs, so it stays closed to private
+addresses. Verify the bar, the blocked attribute and the proxied URL
+locally; the rendering half of the accept path is exercisable only
+against a real remote origin.
+
 Cleanup discipline:
 
 - `scripts/dev-instance.sh list` shows every live instance.
