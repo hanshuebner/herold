@@ -1594,6 +1594,134 @@ func TestEmailSet_ClearsSnoozedAtomically(t *testing.T) {
 	}
 }
 
+// -- issue #274 (2026-09-22 update): the reminder-ending rule --------
+//
+// A reminder ends in exactly two ways: its wake time falls due, or the
+// reader cancels it deliberately. Nothing incidental -- a label change,
+// a mailbox move, a flag change -- may clear it. The tests below drive
+// each of those operations against a snoozed message through the JMAP
+// surface and assert the reminder (snoozedUntil, "$snoozed", and the
+// chosen wake destination) survives unchanged.
+
+func TestEmailSet_KeywordsReplace_DoesNotClearSnooze(t *testing.T) {
+	f := setupFixture(t)
+	body := "From: a@example.test\r\nTo: b@example.test\r\nSubject: label\r\n\r\nbody"
+	m := f.insertMessage(t, body, "label", "a@example.test", "b@example.test", nil, "")
+	archive, err := f.srv.Store.Meta().InsertMailbox(context.Background(), store.Mailbox{
+		PrincipalID: f.pid, Name: "Archive",
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox(Archive): %v", err)
+	}
+	t1 := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+	if _, err := f.srv.Store.Meta().SetSnooze(context.Background(), m.ID, f.inbox.ID, &t1, &archive.ID); err != nil {
+		t.Fatalf("SetSnooze: %v", err)
+	}
+	// A structural "keywords" replace as an unrelated label-management
+	// client would send it: it names the keywords the client itself
+	// tracks and simply does not mention "$snoozed", which it neither
+	// knows nor manages. That omission must not read as "clear it".
+	_, raw := f.invoke(t, "Email/set", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"update": map[string]any{
+			fmt.Sprintf("%d", m.ID): map[string]any{
+				"keywords": map[string]bool{"$seen": true, "work": true},
+			},
+		},
+	})
+	var resp struct {
+		Updated    map[string]any            `json:"updated"`
+		NotUpdated map[string]map[string]any `json:"notUpdated"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	if len(resp.NotUpdated) != 0 {
+		t.Fatalf("notUpdated = %v", resp.NotUpdated)
+	}
+	if !messageHasSnoozeKeyword(t, f, m.ID) {
+		t.Errorf("$snoozed keyword cleared by an unrelated keywords replace")
+	}
+	if got := messageSnoozedUntil(t, f, m.ID); got == nil || !got.Equal(t1) {
+		t.Errorf("SnoozedUntil = %v, want %v (unchanged)", got, t1)
+	}
+	if got := messageWakeMailboxID(t, f, m.ID, f.inbox.ID); got == nil || *got != archive.ID {
+		t.Errorf("WakeMailboxID = %v, want %d (unchanged)", got, archive.ID)
+	}
+	// The label itself still landed.
+	gm, err := f.srv.Store.Meta().GetMessage(context.Background(), m.ID)
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	foundWork := false
+	for _, k := range gm.Keywords {
+		if strings.EqualFold(k, "work") {
+			foundWork = true
+		}
+	}
+	if !foundWork {
+		t.Errorf("keywords = %v, want \"work\" to have been added", gm.Keywords)
+	}
+}
+
+func TestEmailSet_MailboxMove_PreservesSnoozeAndWakeDestination(t *testing.T) {
+	f := setupFixture(t)
+	sent, err := f.srv.Store.Meta().InsertMailbox(context.Background(), store.Mailbox{
+		PrincipalID: f.pid, Name: "Sent",
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox(Sent): %v", err)
+	}
+	archive, err := f.srv.Store.Meta().InsertMailbox(context.Background(), store.Mailbox{
+		PrincipalID: f.pid, Name: "Archive",
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox(Archive): %v", err)
+	}
+	body := "From: a@example.test\r\nTo: b@example.test\r\nSubject: moved\r\n\r\nbody"
+	ref := f.putBlob(t, body)
+	if _, _, err := f.srv.Store.Meta().InsertMessage(context.Background(),
+		store.Message{PrincipalID: f.pid, Blob: ref, Size: ref.Size},
+		[]store.MessageMailbox{{MailboxID: sent.ID}}); err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+	msgID := mostRecentMessageID(t, f)
+	t1 := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+	if _, err := f.srv.Store.Meta().SetSnooze(context.Background(), msgID, sent.ID, &t1, &f.inbox.ID); err != nil {
+		t.Fatalf("SetSnooze: %v", err)
+	}
+	// A single-add + single-remove mailboxIds replace is the JMAP move
+	// path (store.MoveMessage) -- moving the message to Archive must
+	// carry the reminder and its chosen wake destination across.
+	_, raw := f.invoke(t, "Email/set", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"update": map[string]any{
+			fmt.Sprintf("%d", msgID): map[string]any{
+				"mailboxIds": map[string]bool{fmt.Sprintf("%d", archive.ID): true},
+			},
+		},
+	})
+	var resp struct {
+		Updated    map[string]any            `json:"updated"`
+		NotUpdated map[string]map[string]any `json:"notUpdated"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	if len(resp.NotUpdated) != 0 {
+		t.Fatalf("notUpdated = %v", resp.NotUpdated)
+	}
+	if !messageHasSnoozeKeyword(t, f, msgID) {
+		t.Errorf("$snoozed keyword cleared by a mailbox move")
+	}
+	if got := messageSnoozedUntil(t, f, msgID); got == nil || !got.Equal(t1) {
+		t.Errorf("SnoozedUntil = %v, want %v (unchanged)", got, t1)
+	}
+	if got := messageWakeMailboxID(t, f, msgID, archive.ID); got == nil || *got != f.inbox.ID {
+		t.Errorf("WakeMailboxID after move = %v, want %d (unchanged)", got, f.inbox.ID)
+	}
+}
+
 func TestEmailSet_RejectsKeywordOnlyWithoutDate(t *testing.T) {
 	f := setupFixture(t)
 	body := "From: a@example.test\r\nTo: b@example.test\r\nSubject: rej\r\n\r\nbody"

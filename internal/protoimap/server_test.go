@@ -983,6 +983,44 @@ func TestSTORE_RemoveSnoozedKeyword_AlsoNullsColumn(t *testing.T) {
 	}
 }
 
+// TestSTORE_SetFlags_DoesNotClearSnooze exercises the reminder-ending
+// rule (re #274, 2026-09-22 update) against IMAP: a STORE FLAGS (SET)
+// op is how ordinary clients sync the standard flags they know about,
+// and does not enumerate "$snoozed" as part of that sync. Its absence
+// from the new set must not read as an intentional cancel.
+func TestSTORE_SetFlags_DoesNotClearSnooze(t *testing.T) {
+	f := newFixture(t, fxOpts{implicitTLS: true})
+	id := seedMessageID(t, f, "snooze-set-flags")
+	t1 := time.Date(2030, 6, 1, 12, 0, 0, 0, time.UTC)
+	if _, err := f.ha.Store.Meta().SetSnooze(context.Background(), id, f.inbox.ID, &t1, nil); err != nil {
+		t.Fatalf("SetSnooze: %v", err)
+	}
+	c := loggedInClient(t, f)
+	defer c.close()
+	c.send("s1", "SELECT INBOX")
+	resp := c.send("st1", `STORE 1 FLAGS (\Seen)`)
+	last := resp[len(resp)-1]
+	if !strings.Contains(last, "OK") {
+		t.Fatalf("expected OK on STORE FLAGS (SET), got: %v", resp)
+	}
+	m, err := f.ha.Store.Meta().GetMessage(context.Background(), id)
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	if m.SnoozedUntil == nil || !m.SnoozedUntil.Equal(t1) {
+		t.Errorf("SnoozedUntil = %v, want %v (unchanged by STORE FLAGS SET)", m.SnoozedUntil, t1)
+	}
+	found := false
+	for _, k := range m.Keywords {
+		if k == "$snoozed" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("$snoozed keyword cleared by STORE FLAGS (SET) that never named it")
+	}
+}
+
 func TestSEARCH_Keyword_Snoozed_FindsSnoozedMessages(t *testing.T) {
 	f := newFixture(t, fxOpts{implicitTLS: true})
 	id1 := seedMessageID(t, f, "msg-snoozed")

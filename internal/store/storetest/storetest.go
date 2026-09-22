@@ -324,6 +324,8 @@ func Run(t *testing.T, f Factory) {
 		{"Snooze_ResolveInboxMailbox_ByAttribute", testResolveInboxMailboxByAttribute},
 		{"Snooze_ResolveInboxMailbox_ByNameFallback", testResolveInboxMailboxByNameFallback},
 		{"Snooze_ResolveInboxMailbox_None", testResolveInboxMailboxNone},
+		// -- issue #274 (2026-09-22 update): reminder-ending rule ---
+		{"Snooze_SurvivesIncidentalOperations", testSnoozeSurvivesIncidentalOperations},
 		// -- REQ-FILT-200..221 LLM categorisation -----------------
 		{"CategorisationConfig_DefaultsSeededOnFirstRead", testCategorisationConfigDefaults},
 		{"CategorisationConfig_RoundTrip", testCategorisationConfigRoundtrip},
@@ -8396,6 +8398,70 @@ func testSnoozeListDueProjectsWakeMailbox(t *testing.T, s store.Store) {
 	if wake == nil || *wake != inbox.ID {
 		t.Fatalf("ListDueSnoozedMessages WakeMailboxID = %v, want %d (Inbox)", wake, inbox.ID)
 	}
+}
+
+// testSnoozeSurvivesIncidentalOperations covers the reminder-ending
+// rule added to issue #274 on 2026-09-22: a reminder ends in exactly
+// two ways, its wake time falling due or a deliberate cancel. Reading,
+// replying, labelling, and moving a snoozed message are all named as
+// operations that must NOT clear it -- neither the deadline nor the
+// wake destination chosen when the snooze was set.
+func testSnoozeSurvivesIncidentalOperations(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "snooze-incidental@example.com")
+	sent := mustInsertMailbox(t, s, p.ID, "Sent")
+	archive := mustInsertMailbox(t, s, p.ID, "Archive")
+	inbox := mustInsertMailbox(t, s, p.ID, "INBOX")
+	ref := putBlob(t, s, "snooze-incidental-body")
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{PrincipalID: p.ID, Blob: ref, Size: ref.Size}, []store.MessageMailbox{{MailboxID: sent.ID}}); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	id := firstMessageIDFromFeed(t, s, p.ID)
+	due := time.Date(2030, 3, 4, 5, 6, 7, 0, time.UTC)
+	if _, err := s.Meta().SetSnooze(ctx, id, sent.ID, &due, &inbox.ID); err != nil {
+		t.Fatalf("SetSnooze: %v", err)
+	}
+
+	assertStillSnoozed := func(step string, mailboxID store.MailboxID) {
+		t.Helper()
+		got, err := s.Meta().GetMessage(ctx, id)
+		if err != nil {
+			t.Fatalf("[%s] GetMessage: %v", step, err)
+		}
+		if got.SnoozedUntil == nil || !got.SnoozedUntil.Equal(due) {
+			t.Fatalf("[%s] SnoozedUntil = %v, want %v", step, got.SnoozedUntil, due)
+		}
+		wake := wakeMailboxIDIn(got, mailboxID)
+		if wake == nil || *wake != inbox.ID {
+			t.Fatalf("[%s] WakeMailboxID = %v, want %d", step, wake, inbox.ID)
+		}
+	}
+	assertStillSnoozed("after SetSnooze", sent.ID)
+
+	// "Opened" / "read": marks \Seen.
+	if _, err := s.Meta().UpdateMessageFlags(ctx, id, sent.ID, store.MessageFlagSeen, 0, nil, nil, 0); err != nil {
+		t.Fatalf("UpdateMessageFlags(seen): %v", err)
+	}
+	assertStillSnoozed("after read", sent.ID)
+
+	// "Replied to": marks \Answered.
+	if _, err := s.Meta().UpdateMessageFlags(ctx, id, sent.ID, store.MessageFlagAnswered, 0, nil, nil, 0); err != nil {
+		t.Fatalf("UpdateMessageFlags(answered): %v", err)
+	}
+	assertStillSnoozed("after reply", sent.ID)
+
+	// "Labelled": adds a custom keyword.
+	if _, err := s.Meta().UpdateMessageFlags(ctx, id, sent.ID, 0, 0, []string{"important"}, nil, 0); err != nil {
+		t.Fatalf("UpdateMessageFlags(label): %v", err)
+	}
+	assertStillSnoozed("after label", sent.ID)
+
+	// "Moved": a plain, non-Trash move must carry the deadline AND the
+	// chosen wake destination to the new membership.
+	if err := s.Meta().MoveMessage(ctx, id, sent.ID, archive.ID); err != nil {
+		t.Fatalf("MoveMessage: %v", err)
+	}
+	assertStillSnoozed("after move", archive.ID)
 }
 
 // testResolveInboxMailboxByAttribute covers the primary resolution
