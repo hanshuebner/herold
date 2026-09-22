@@ -445,17 +445,36 @@ func (w *accountWorker) writeBackMove(ctx context.Context, conn Conn, ms store.I
 		return
 	}
 
-	// If the herold MailboxID hasn't changed there is nothing to do.
-	if heroldMsg.MailboxID == ms.HeroldMailboxID {
-		return
+	// This state row addresses the membership at ms.HeroldMailboxID, not
+	// whichever membership GetMessage's convenience MailboxID field
+	// happens to name (the lowest-id one across ALL current
+	// memberships). A Gmail-label import can give the message several
+	// simultaneous memberships, each write-back-tracked by its own
+	// state row (re #472); comparing the convenience field against
+	// ms.HeroldMailboxID would read an unrelated, unchanged membership
+	// as a move (issuing a spurious upstream MOVE) whenever that
+	// membership's id is lower than the tracked one. Check the full
+	// membership set instead: if ms.HeroldMailboxID is still present,
+	// this row's membership has not moved, full stop.
+	for _, mm := range heroldMsg.Mailboxes {
+		if mm.MailboxID == ms.HeroldMailboxID {
+			return
+		}
 	}
 
+	// The tracked membership is gone -- it moved (or, for a
+	// single-membership message, simply became heroldMsg's one
+	// remaining membership). Mirrors applyUpstreamFlagsToHerold's
+	// fallback above: when several memberships remain, the convenience
+	// field's pick is the best available guess for the destination.
+	newMailboxID := heroldMsg.MailboxID
+
 	// Find the upstream folder that corresponds to the new herold mailbox.
-	newUpstreamFolder, err := w.reverseMapMailbox(ctx, heroldMsg.MailboxID)
+	newUpstreamFolder, err := w.reverseMapMailbox(ctx, newMailboxID)
 	if err != nil {
 		log.Debug("imapimport: write-back: move: no upstream mapping for new mailbox",
 			slog.String("account_id", account.ID),
-			slog.Uint64("mailbox_id", uint64(heroldMsg.MailboxID)),
+			slog.Uint64("mailbox_id", uint64(newMailboxID)),
 		)
 		return
 	}
@@ -504,7 +523,7 @@ func (w *accountWorker) writeBackMove(ctx context.Context, conn Conn, ms store.I
 
 	// Update message state with new folder and mailbox.
 	ms.UpstreamFolder = newUpstreamFolder
-	ms.HeroldMailboxID = heroldMsg.MailboxID
+	ms.HeroldMailboxID = newMailboxID
 	w.upsertMessageState(ctx, ms)
 }
 

@@ -165,10 +165,11 @@ func TestEvaluate_Default_AllowsMailPrimary(t *testing.T) {
 		t.Fatalf("InsertMessage: %v", err)
 	}
 	ev := store.StateChange{
-		PrincipalID: pid,
-		Kind:        store.EntityKindEmail,
-		EntityID:    uint64(mid),
-		Op:          store.ChangeOpCreated,
+		PrincipalID:    pid,
+		Kind:           store.EntityKindEmail,
+		EntityID:       uint64(mid),
+		ParentEntityID: uint64(mbid),
+		Op:             store.ChangeOpCreated,
 	}
 	d := Evaluate(context.Background(), DefaultRules(), st, ev, time.Now().UTC())
 	if !d.Allow || d.Reason != ReasonDefaultAllow {
@@ -190,10 +191,11 @@ func TestEvaluate_Default_DeniesMailPromotions(t *testing.T) {
 		t.Fatalf("InsertMessage: %v", err)
 	}
 	ev := store.StateChange{
-		PrincipalID: pid,
-		Kind:        store.EntityKindEmail,
-		EntityID:    uint64(mid),
-		Op:          store.ChangeOpCreated,
+		PrincipalID:    pid,
+		Kind:           store.EntityKindEmail,
+		EntityID:       uint64(mid),
+		ParentEntityID: uint64(mbid),
+		Op:             store.ChangeOpCreated,
 	}
 	d := Evaluate(context.Background(), DefaultRules(), st, ev, time.Now().UTC())
 	if d.Allow {
@@ -256,10 +258,11 @@ func TestEvaluate_QuietHoursDeniesUnlessOverride(t *testing.T) {
 		t.Fatalf("InsertMessage: %v", err)
 	}
 	ev := store.StateChange{
-		PrincipalID: pid,
-		Kind:        store.EntityKindEmail,
-		EntityID:    uint64(mid),
-		Op:          store.ChangeOpCreated,
+		PrincipalID:    pid,
+		Kind:           store.EntityKindEmail,
+		EntityID:       uint64(mid),
+		ParentEntityID: uint64(mbid),
+		Op:             store.ChangeOpCreated,
 	}
 	rules := DefaultRules()
 	start := 22
@@ -442,10 +445,11 @@ func TestEvaluate_NilCategoryAllowlist_PassesEveryMail(t *testing.T) {
 	rules := DefaultRules()
 	rules.MailCategoryAllowlist = nil
 	ev := store.StateChange{
-		PrincipalID: pid,
-		Kind:        store.EntityKindEmail,
-		EntityID:    uint64(mid),
-		Op:          store.ChangeOpCreated,
+		PrincipalID:    pid,
+		Kind:           store.EntityKindEmail,
+		EntityID:       uint64(mid),
+		ParentEntityID: uint64(mbid),
+		Op:             store.ChangeOpCreated,
 	}
 	if d := Evaluate(context.Background(), rules, st, ev, time.Now().UTC()); !d.Allow {
 		t.Fatalf("nil allowlist should pass all mail; got %+v", d)
@@ -496,10 +500,11 @@ func TestEvaluate_MailCreated_NotInbox_DeniesNotInbox(t *testing.T) {
 		t.Fatalf("InsertMessage: %v", err)
 	}
 	ev := store.StateChange{
-		PrincipalID: pid,
-		Kind:        store.EntityKindEmail,
-		EntityID:    uint64(mid),
-		Op:          store.ChangeOpCreated,
+		PrincipalID:    pid,
+		Kind:           store.EntityKindEmail,
+		EntityID:       uint64(mid),
+		ParentEntityID: uint64(sentID),
+		Op:             store.ChangeOpCreated,
 	}
 	d := Evaluate(context.Background(), DefaultRules(), st, ev, time.Now().UTC())
 	if d.Allow || d.Reason != ReasonDroppedNotInbox {
@@ -522,10 +527,11 @@ func TestEvaluate_MailCreated_Inbox_Allows(t *testing.T) {
 		t.Fatalf("InsertMessage: %v", err)
 	}
 	ev := store.StateChange{
-		PrincipalID: pid,
-		Kind:        store.EntityKindEmail,
-		EntityID:    uint64(mid),
-		Op:          store.ChangeOpCreated,
+		PrincipalID:    pid,
+		Kind:           store.EntityKindEmail,
+		EntityID:       uint64(mid),
+		ParentEntityID: uint64(mbid),
+		Op:             store.ChangeOpCreated,
 	}
 	d := Evaluate(context.Background(), DefaultRules(), st, ev, time.Now().UTC())
 	if !d.Allow || d.EventType != EventTypeMail {

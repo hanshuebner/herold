@@ -57,10 +57,11 @@ func TestBuildPayload_Email(t *testing.T) {
 	mid := rows[0].ID
 
 	ev := store.StateChange{
-		PrincipalID: pid,
-		Kind:        store.EntityKindEmail,
-		EntityID:    uint64(mid),
-		Op:          store.ChangeOpCreated,
+		PrincipalID:    pid,
+		Kind:           store.EntityKindEmail,
+		EntityID:       uint64(mid),
+		ParentEntityID: uint64(mbid),
+		Op:             store.ChangeOpCreated,
 	}
 	res, err := BuildPayload(ctx, st, ev)
 	if err != nil {
@@ -143,10 +144,11 @@ func TestBuildPayload_EmailWithThread(t *testing.T) {
 	}
 
 	ev := store.StateChange{
-		PrincipalID: pid,
-		Kind:        store.EntityKindEmail,
-		EntityID:    uint64(mid),
-		Op:          store.ChangeOpCreated,
+		PrincipalID:    pid,
+		Kind:           store.EntityKindEmail,
+		EntityID:       uint64(mid),
+		ParentEntityID: uint64(mbid),
+		Op:             store.ChangeOpCreated,
 	}
 	res, err := BuildPayload(ctx, st, ev)
 	if err != nil {

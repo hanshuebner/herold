@@ -146,11 +146,12 @@ func buildEmailPayload(ctx context.Context, st store.Store, ev store.StateChange
 	// change was recorded for), not by msg.MailboxID: that convenience
 	// field resolves to whichever membership has the lowest MailboxID
 	// across the whole message, which need not be the membership this
-	// event is about (re #472).
+	// event is about (re #472). Every EntityKindEmail change-feed row's
+	// ParentEntityID is a real mailbox id (storesqlite/storepg never
+	// write it zero for this kind); GetMailboxByID below already
+	// tolerates a mailbox that cannot be found by falling back to an
+	// empty name, so no separate zero-check is needed here.
 	mailboxID := store.MailboxID(ev.ParentEntityID)
-	if mailboxID == 0 {
-		mailboxID = msg.MailboxID
-	}
 	mbox, err := st.Meta().GetMailboxByID(ctx, mailboxID)
 	if err != nil {
 		// A missing mailbox is not fatal — the message row carries

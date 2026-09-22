@@ -44,10 +44,19 @@ func listMailboxesForAccount(
 	return out, nil
 }
 
-// loadMessageForPrincipal returns the message if it lives in a mailbox
-// the principal can access. ErrNotFound is mapped to errMessageMissing
-// so the JMAP wire form can render "notFound" without leaking the
-// existence of out-of-scope mailboxes.
+// loadMessageForPrincipal returns the message if pid can see it through
+// at least one of its current mailbox memberships. ErrNotFound is
+// mapped to errMessageMissing so the JMAP wire form can render
+// "notFound" without leaking the existence of out-of-scope mailboxes.
+//
+// Every membership in m.Mailboxes is checked, not just the one named by
+// GetMessage's convenience MailboxID field: that field resolves to
+// whichever membership has the lowest mailbox id, which need not be a
+// mailbox pid can see. A message can hold several current memberships
+// under the same owning principal with different ACL exposure (re
+// #472) -- a caller with Lookup rights on the higher-id mailbox only
+// must still see the message, not be told it does not exist because
+// the lower-id membership happens to be the one GetMessage picked.
 func loadMessageForPrincipal(
 	ctx context.Context,
 	meta store.Metadata,
@@ -61,29 +70,31 @@ func loadMessageForPrincipal(
 		}
 		return store.Message{}, fmt.Errorf("email: get message: %w", err)
 	}
-	mb, err := meta.GetMailboxByID(ctx, m.MailboxID)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return store.Message{}, errMessageMissing
+	for _, mm := range m.Mailboxes {
+		mb, err := meta.GetMailboxByID(ctx, mm.MailboxID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				continue
+			}
+			return store.Message{}, fmt.Errorf("email: get mailbox: %w", err)
 		}
-		return store.Message{}, fmt.Errorf("email: get mailbox: %w", err)
-	}
-	if protojmap.HasOwnerAccess(ctx, meta, pid, mb.PrincipalID) {
-		return m, nil
-	}
-	rows, err := meta.GetMailboxACL(ctx, mb.ID)
-	if err != nil {
-		return store.Message{}, fmt.Errorf("email: get mailbox acl: %w", err)
-	}
-	for _, r := range rows {
-		if r.PrincipalID == nil {
-			if r.Rights&store.ACLRightLookup != 0 {
+		if protojmap.HasOwnerAccess(ctx, meta, pid, mb.PrincipalID) {
+			return m, nil
+		}
+		rows, err := meta.GetMailboxACL(ctx, mb.ID)
+		if err != nil {
+			return store.Message{}, fmt.Errorf("email: get mailbox acl: %w", err)
+		}
+		for _, r := range rows {
+			if r.PrincipalID == nil {
+				if r.Rights&store.ACLRightLookup != 0 {
+					return m, nil
+				}
+				continue
+			}
+			if *r.PrincipalID == pid && r.Rights&store.ACLRightLookup != 0 {
 				return m, nil
 			}
-			continue
-		}
-		if *r.PrincipalID == pid && r.Rights&store.ACLRightLookup != 0 {
-			return m, nil
 		}
 	}
 	return store.Message{}, errMessageMissing

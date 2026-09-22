@@ -556,11 +556,14 @@ func Evaluate(
 		// message, which need not be the membership this event is
 		// about (re #472 -- a reparented message can carry a
 		// surviving lower-numbered membership alongside its new,
-		// higher-numbered Inbox).
+		// higher-numbered Inbox). Every EntityKindEmail Created row's
+		// ParentEntityID is a real mailbox id set at append time
+		// (storesqlite/storepg never write it zero for this kind), so
+		// a zero here means the id genuinely does not exist: GetMailboxByID
+		// below then refuses via ErrNotFound like any other unknown
+		// mailbox, which is the correct outcome for a Created row that
+		// should never occur.
 		mailboxID := store.MailboxID(ev.ParentEntityID)
-		if mailboxID == 0 {
-			mailboxID = msg.MailboxID
-		}
 		mbox, mbErr := st.Meta().GetMailboxByID(ctx, mailboxID)
 		if mbErr != nil || !isInboxRoleMailbox(mbox) {
 			return RuleDecision{Allow: false, Reason: ReasonDroppedNotInbox, EventType: eventType}
