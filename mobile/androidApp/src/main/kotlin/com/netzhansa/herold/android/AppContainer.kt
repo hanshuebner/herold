@@ -56,6 +56,7 @@ import com.netzhansa.herold.shared.sync.AndroidConnectivityMonitor
 import com.netzhansa.herold.shared.sync.SyncEngine
 import com.netzhansa.herold.shared.sync.SyncScheduler
 import com.netzhansa.herold.shared.sync.Reachability
+import com.netzhansa.herold.shared.sync.ReachabilityCoordinator
 import com.netzhansa.herold.shared.sync.offlineIndication
 import io.ktor.client.HttpClient
 import kotlinx.coroutines.CoroutineScope
@@ -274,6 +275,15 @@ class AppContainer(context: Context) {
      * (issue #370).
      */
     private val reachability = Reachability()
+
+    /**
+     * Ties what the transport meets into the platform reading (issue
+     * #479): a resolution recovery clears a stale "down" reading
+     * without waiting on a platform callback nothing here prompts, and
+     * a run of failures asks the platform to revalidate the network it
+     * still calls up.
+     */
+    private val reachabilityCoordinator = ReachabilityCoordinator(reachability, connectivity, appScope)
 
     /**
      * Whether the shell says the phone is offline. It lags the radio by

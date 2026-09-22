@@ -13,6 +13,23 @@ import kotlinx.coroutines.flow.transformLatest
  */
 interface ConnectivityMonitor {
     val online: StateFlow<Boolean>
+
+    /**
+     * The client's own traffic just reached the server (issue #479). The
+     * platform delivers a reading only on its own callback, which a
+     * resolution recovery does not itself prompt, so a request that got
+     * through is stronger evidence than a reading that predates it.
+     */
+    fun noteReachable() {}
+
+    /**
+     * A run of the client's own requests could not reach the server on
+     * a network the platform still calls validated (issue #479).
+     * Nothing here is going to change the platform's reading on its
+     * own, so this asks the platform to check the network again rather
+     * than wait on a callback nothing prompts.
+     */
+    fun noteUnreachable() {}
 }
 
 /** How long a drop is tolerated before the shell says anything about it. */

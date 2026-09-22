@@ -6,11 +6,12 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.awaitClose
-import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
 
 /**
  * The platform's view of connectivity, as a flow the shell and the sync
@@ -27,24 +28,53 @@ class AndroidConnectivityMonitor(
     private val manager =
         context.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
 
-    override val online: StateFlow<Boolean> = callbackFlow {
-        val callback = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) {
-                trySend(usable(network))
-            }
+    private val _online = MutableStateFlow(hasInternet())
+    override val online: StateFlow<Boolean> = _online.asStateFlow()
 
-            override fun onLost(network: Network) {
+    init {
+        scope.launch {
+            callbackFlow {
+                val callback = object : ConnectivityManager.NetworkCallback() {
+                    override fun onAvailable(network: Network) {
+                        trySend(usable(network))
+                    }
+
+                    override fun onLost(network: Network) {
+                        trySend(hasInternet())
+                    }
+
+                    override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
+                        trySend(usable(capabilities))
+                    }
+                }
                 trySend(hasInternet())
-            }
-
-            override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
-                trySend(usable(capabilities))
-            }
+                manager.registerDefaultNetworkCallback(callback)
+                awaitClose { runCatching { manager.unregisterNetworkCallback(callback) } }
+            }.distinctUntilChanged().collect { _online.value = it }
         }
-        trySend(hasInternet())
-        manager.registerDefaultNetworkCallback(callback)
-        awaitClose { runCatching { manager.unregisterNetworkCallback(callback) } }
-    }.distinctUntilChanged().stateIn(scope, SharingStarted.Eagerly, hasInternet())
+    }
+
+    /**
+     * The client's own traffic just reached the server (issue #479): a
+     * reading the platform delivered before this is overruled by
+     * stronger evidence, and the platform is told the network it
+     * reported is working so a validation that has gone stale is
+     * corrected rather than left for a callback that may not come.
+     */
+    override fun noteReachable() {
+        _online.value = true
+        manager.activeNetwork?.let { manager.reportNetworkConnectivity(it, true) }
+    }
+
+    /**
+     * A run of the client's own requests could not reach the server on
+     * a network the platform still calls validated (issue #479): asked
+     * to check again, rather than left to a callback nothing here
+     * prompts.
+     */
+    override fun noteUnreachable() {
+        manager.activeNetwork?.let { manager.reportNetworkConnectivity(it, false) }
+    }
 
     /**
      * The default network as the platform last reported it. The
