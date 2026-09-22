@@ -426,14 +426,15 @@ class SyncEngine(
      * Completes a thread against the server: a search result or a
      * notification for a conversation the fill never covered (issue #339),
      * or a conversation the fill partly covered because one of its
-     * messages sits in a mailbox the device does not sync (issue #461). A
-     * thread the store already holds every member of costs no
-     * `Email/get`, since the id set from `Thread/get` matches what is
-     * already cached; only the members missing locally are fetched. The
-     * store's own reconciliation is untouched: the rows land through the
-     * same mapping a sync pass uses and the per-type state strings are
-     * left alone, so the next `Email/changes` still asks for exactly what
-     * it would have asked for.
+     * messages sits in a mailbox the device does not sync (issue #461).
+     * Every open costs one `Thread/get`, so the current id set is always
+     * read back; a thread the store already holds every member of costs
+     * no further `Email/get`, since that id set then matches what is
+     * already cached, and only the members missing locally are fetched.
+     * The store's own reconciliation is untouched: the rows land through
+     * the same mapping a sync pass uses and the per-type state strings
+     * are left alone, so the next `Email/changes` still asks for exactly
+     * what it would have asked for.
      *
      * Returns true when the thread's messages are in the store afterwards.
      * A server that cannot be reached leaves the local cache as it stands,

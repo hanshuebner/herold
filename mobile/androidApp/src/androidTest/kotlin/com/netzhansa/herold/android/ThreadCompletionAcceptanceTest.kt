@@ -10,6 +10,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.netzhansa.herold.shared.auth.SignInResult
 import com.netzhansa.herold.shared.domain.MailboxRoles
+import com.netzhansa.herold.shared.sync.SyncTypes
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -46,18 +47,31 @@ class ThreadCompletionAcceptanceTest {
     fun t10_aThreadWithATrashOnlyMemberCompletesOnOpen() = runBlocking {
         grantNotificationPermission()
 
-        // The original message is delivered and moved to Trash before the
-        // device ever signs in, so the device's first email sync - whether
-        // it is this run's very first or an earlier run's - treats its
-        // existence as already-known baseline rather than as a change,
-        // the way a conversation the reader trashed long ago never
-        // reaches an inbox fill on a phone signing in for the first time.
         val client = DevInstance.serverClient()
         val accountId = client.session().mailAccountId!!
         val mailboxes = client.mailboxGet(accountId).list
         val inboxId = mailboxes.first { it.role == MailboxRoles.INBOX }.id
         val trashId = mailboxes.first { it.role == MailboxRoles.TRASH }.id
 
+        // An anchor in the Inbox, so the account's very first email fill
+        // has something to query: an empty first fill leaves no state to
+        // fold from, so the next sync repeats a full fill rather than
+        // asking Email/changes - and a full fill completes every thread
+        // it touches, papering over the incremental-fold gap this test
+        // means to reproduce.
+        val anchorSubject = "Anchor " + System.nanoTime()
+        DevInstance.deliverMail(
+            subject = anchorSubject,
+            from = "Bob Example <bob@example.local>",
+            body = "Unrelated mail, so the first fill has something to fold from.",
+        )
+        DevInstance.awaitFiled(anchorSubject)
+
+        // The original message is delivered and moved to Trash before the
+        // device's first sync, so that sync's fold treats its existence
+        // as already-known baseline rather than as a change - the way a
+        // conversation the reader trashed long ago never reaches an
+        // inbox fill on a phone signing in for the first time.
         val subject = "Trashed original " + System.nanoTime()
         val parentMessageId = "trashed-parent-" + System.nanoTime() + "@acceptance.test"
         DevInstance.deliverMail(
@@ -92,6 +106,22 @@ class ThreadCompletionAcceptanceTest {
         val session = app.container.session.value ?: error("sign-in left no session")
         session.syncEngine.syncAll()
         compose.awaitTag("inbox-list")
+        compose.awaitTag("thread-row-${app.container.store.emailList().first { it.subject == anchorSubject }.threadId}")
+
+        // The first fill folded from a real cursor and never touched the
+        // trashed original's thread; a vacuous scenario - a second full
+        // fill papering over the incremental path this test means to
+        // exercise - would already show it here.
+        assertTrue(
+            "the first sync set no Email sync state; the next sync would repeat a full " +
+                "fill instead of asking Email/changes, and the scenario would not reproduce",
+            app.container.store.syncState(accountId, SyncTypes.EMAIL) != null,
+        )
+        assertTrue(
+            "the first fill already reached the trashed original's thread; the scenario " +
+                "did not set up a partial cache to complete",
+            app.container.store.emailList().none { it.subject == subject },
+        )
 
         val replySubject = "Re: $subject"
         DevInstance.deliverMail(
