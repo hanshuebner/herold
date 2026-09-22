@@ -1061,17 +1061,48 @@ class MailStore {
    * spans multiple mailboxes — those would need a separate `calculateTotal`
    * round-trip that is not performed here to keep the folder-load fast.
    *
-   * This is a raw message count, not a thread count: the whole-mailbox bulk
-   * actions it drives (`Email/setByQuery { inMailbox }`) and the empty-trash
-   * confirmation operate on every stored message in the mailbox, including
-   * messages folded inside an already-visible collapsed thread row, so the
-   * number shown must match what those actions actually touch (re #255).
-   *
-   * Used by the SelectChooser whole-mailbox-selection banner (issue #149).
+   * This is a raw message count, not a thread count: the empty-trash and
+   * permanent-delete confirmations that read it state the true scale of a
+   * destructive `Email/setByQuery` job before it runs, so they need the
+   * number of stored messages that job actually touches, not a collapsed
+   * row count. The whole-mailbox-selection banner reads
+   * `listFolderConversationTotal` instead (re #255) — it offers and counts
+   * conversations, the unit the list itself renders.
    */
   get listFolderTotal(): number | null {
     // Delegates to the exported pure helper so the same logic is unit-testable.
     return folderTotalFromMailboxes(this.listFolder, this.mailboxes);
+  }
+
+  /**
+   * Total conversation (collapsed-thread) count for the folder currently
+   * held in the list slice, drawn from the already-cached
+   * `Mailbox.totalThreads` value (a genuine distinct-thread aggregate, re
+   * #274/#255). Returns null for virtual folders (`all`, `important`,
+   * `snoozed`) for the same reason `listFolderTotal` does.
+   *
+   * Used by the whole-mailbox-selection banner (re #255): the list renders
+   * one row per collapsed thread, so the offer ("select all N further
+   * conversations") and the "N ausgewählt" chip in whole-view mode must
+   * count in that same unit, not raw messages — comparing a thread-row
+   * count against a raw-message total under one shared word is exactly the
+   * confusion #255 reported. `Email/setByQuery` bulk actions started from
+   * this mode still touch every raw message in the mailbox, including ones
+   * folded inside an already-shown conversation; the banner's own scope
+   * microcopy (`select.wholeMailboxActive`) says so.
+   *
+   * The banner only ever reads this getter when no category tab narrows
+   * the rendered list (`MailView.showTabs` false): `Email/query`'s filter
+   * conditions take a single `hasKeyword`/`notKeyword` each
+   * (`internal/protojmap/mail/email/query.go`), enough to scope a named
+   * category but not the Primary tab (which would need to exclude every
+   * derived category keyword at once), and no round trip here computes a
+   * per-category thread total. Until that scoping exists, a category tab
+   * withholds the whole-view offer entirely rather than offering a count
+   * that spans categories the rendered list does not show.
+   */
+  get listFolderConversationTotal(): number | null {
+    return conversationTotalFromMailboxes(this.listFolder, this.mailboxes);
   }
 
   /**
@@ -6031,13 +6062,38 @@ export const mail = new MailStore();
 registerAccountResetCallback(() => mail.reset());
 
 /**
+ * Resolve the `Mailbox` backing a folder id from the already-cached
+ * mailboxes map. Returns null for virtual folders (`all`, `important`,
+ * `snoozed`), which span multiple mailboxes and have no single backing
+ * record, or when the mailbox is not found. Shared by
+ * `folderTotalFromMailboxes` and `conversationTotalFromMailboxes` so the
+ * role-vs-custom-id resolution lives in one place.
+ */
+function mailboxForFolder(
+  folder: FolderID,
+  mailboxes: ReadonlyMap<string, Mailbox>,
+): Mailbox | null {
+  if (folder === 'all' || folder === 'important' || folder === 'snoozed') return null;
+  if (ROLED_FOLDERS.has(folder)) {
+    const role = FOLDER_ROLE[folder] ?? folder;
+    for (const m of mailboxes.values()) {
+      if (m.role === role) return m;
+    }
+    return null;
+  }
+  return mailboxes.get(folder) ?? null;
+}
+
+/**
  * Derive the total raw message count for a given folder from the already-
  * cached mailboxes map. Returns null for virtual folders (`all`,
  * `important`, `snoozed`) or when the mailbox is not found.
  *
- * Reads `totalEmails`, not `totalThreads`: the whole-mailbox banner and bulk
- * actions this feeds operate on every raw message in the mailbox, not on
- * collapsed thread rows (re #255).
+ * Reads `totalEmails`, not `totalThreads`: the empty-trash and permanent-
+ * delete confirmations this feeds state the scale of an `Email/setByQuery`
+ * job that operates on every raw message in the mailbox, not on collapsed
+ * thread rows (re #255; the whole-mailbox-selection banner itself reads
+ * `conversationTotalFromMailboxes` below).
  *
  * Exported for unit testing (issue #149).
  */
@@ -6045,15 +6101,27 @@ export function folderTotalFromMailboxes(
   folder: FolderID,
   mailboxes: ReadonlyMap<string, Mailbox>,
 ): number | null {
-  if (folder === 'all' || folder === 'important' || folder === 'snoozed') return null;
-  if (ROLED_FOLDERS.has(folder)) {
-    const role = FOLDER_ROLE[folder] ?? folder;
-    for (const m of mailboxes.values()) {
-      if (m.role === role) return m.totalEmails;
-    }
-    return null;
-  }
-  return mailboxes.get(folder)?.totalEmails ?? null;
+  return mailboxForFolder(folder, mailboxes)?.totalEmails ?? null;
+}
+
+/**
+ * Derive the total conversation (collapsed-thread) count for a given
+ * folder from the already-cached mailboxes map, reading the genuine
+ * distinct-thread aggregate `Mailbox.totalThreads` (re #274). Returns null
+ * for virtual folders or when the mailbox is not found, same as
+ * `folderTotalFromMailboxes`.
+ *
+ * Drives the whole-mailbox-selection banner's offer and its "N ausgewählt"
+ * chip while whole-view mode is engaged (re #255): both count conversations,
+ * the unit the collapsed-thread list itself renders.
+ *
+ * Exported for unit testing.
+ */
+export function conversationTotalFromMailboxes(
+  folder: FolderID,
+  mailboxes: ReadonlyMap<string, Mailbox>,
+): number | null {
+  return mailboxForFolder(folder, mailboxes)?.totalThreads ?? null;
 }
 
 /** Exported purely for unit tests; not part of the public surface. */

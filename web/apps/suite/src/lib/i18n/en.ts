@@ -227,8 +227,8 @@ export const en = {
   // the raw stored-message total (messages) -- keep the two nouns distinct
   // so the numbers are never implicitly compared (re #255).
   'select.allPageSelected': 'All {count} conversations on this page are selected.',
-  'select.selectAllInFolder': 'Select all {total} messages in the mailbox',
-  'select.wholeMailboxActive': 'All {total} messages in the mailbox are selected. Actions also affect additional messages inside conversations already shown.',
+  'select.selectAllInFolder': 'Select all {total} conversations in the mailbox',
+  'select.wholeMailboxActive': 'All {total} conversations in the mailbox are selected. Actions also affect additional messages inside conversations already shown.',
   'select.clearWholeMailbox': 'Select this page only',
   // Whole-search-result-set selection banner (issue #207)
   'select.selectAllInSearch': 'Select all {total} matching messages',

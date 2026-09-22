@@ -362,7 +362,7 @@ describe('emailHtmlBody / emailTextBody (re #44)', () => {
 
 // ── folderTotalFromMailboxes (issue #149) ─────────────────────────────────────
 
-import { folderTotalFromMailboxes } from './store.svelte';
+import { folderTotalFromMailboxes, conversationTotalFromMailboxes } from './store.svelte';
 import type { Mailbox } from './types';
 
 function makeMailbox(overrides: Partial<Mailbox> & Pick<Mailbox, 'id' | 'name' | 'role'>): Mailbox {
@@ -440,5 +440,53 @@ describe('folderTotalFromMailboxes (issue #149)', () => {
       ],
     ]);
     expect(folderTotalFromMailboxes('inbox', mailboxes)).toBe(7);
+  });
+});
+
+// ── conversationTotalFromMailboxes (re #255) ──────────────────────────────────
+//
+// The whole-mailbox-selection banner offers and counts conversations, the
+// unit its collapsed-thread list renders, not raw messages -- comparing a
+// thread-row count against a raw-message total under the shared word
+// "Nachrichten"/"messages" is exactly the confusion #255 reported.
+
+describe('conversationTotalFromMailboxes (re #255)', () => {
+  it('returns null for the "all" virtual folder', () => {
+    expect(conversationTotalFromMailboxes('all', new Map())).toBeNull();
+  });
+
+  it('returns null for the "important" virtual folder', () => {
+    expect(conversationTotalFromMailboxes('important', new Map())).toBeNull();
+  });
+
+  it('returns null for the "snoozed" virtual folder', () => {
+    expect(conversationTotalFromMailboxes('snoozed', new Map())).toBeNull();
+  });
+
+  it('returns totalThreads, not totalEmails, when they diverge', () => {
+    const mailboxes = new Map([
+      [
+        'mb1',
+        makeMailbox({
+          id: 'mb1',
+          name: 'Inbox',
+          role: 'inbox',
+          totalEmails: 7,
+          totalThreads: 5,
+        }),
+      ],
+    ]);
+    expect(conversationTotalFromMailboxes('inbox', mailboxes)).toBe(5);
+  });
+
+  it('returns totalThreads for a custom mailbox looked up by id', () => {
+    const mailboxes = new Map([
+      ['custom-id', makeMailbox({ id: 'custom-id', name: 'Work', role: null, totalThreads: 9 })],
+    ]);
+    expect(conversationTotalFromMailboxes('custom-id', mailboxes)).toBe(9);
+  });
+
+  it('returns null when the role-based mailbox is absent', () => {
+    expect(conversationTotalFromMailboxes('inbox', new Map())).toBeNull();
   });
 });

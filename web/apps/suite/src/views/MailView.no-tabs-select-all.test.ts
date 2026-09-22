@@ -1,41 +1,33 @@
 /**
- * Regression coverage: the whole-mailbox-selection banner is withheld
- * while a category tab (REQ-CAT-10..14) narrows the rendered list (re
- * #255).
+ * Regression coverage for the resolved-row-aware gap in the "clear whole
+ * mailbox" control with no category tabs active (re #202, follow-up after
+ * independent verification).
  *
- * Before this fix, the active-state banner rendered regardless of
- * whether a category tab was showing: its "N ausgewählt" total and its
- * "Clear whole mailbox" button both read/wrote the raw, tab-unaware
- * folder list (`mail.listEmails` / `listEmailIds`), not the tab-filtered
- * rendered set. That let the banner offer and count a total spanning
- * every category while the list on screen showed only one category's
- * conversations, and let "Clear whole mailbox" reselect ids for rows the
- * active tab does not render (the same defect class as the original
- * #202 shift-click bug).
+ * `mail.selectAllVisible()` -- called from the whole-mailbox-selection
+ * banner's "Clear whole mailbox" button -- must receive only ids with a
+ * resolved `Email` (`effectiveListEmailIds`), not the raw `listEmailIds`:
+ * an id can be present in `mail.listEmailIds` (from the `Email/query`
+ * result) before its `Email/get` companion lands, and such an id renders
+ * no row. Handing it to `selectAllVisible` would desync the toolbar's
+ * selection count from the rendered checked rows (re #202).
  *
- * The fix withholds the whole banner -- offer and active state alike --
- * whenever category tabs are showing: no per-category conversation total
- * or category-scoped `Email/setByQuery` filter exists yet to honour a
- * category-scoped offer, so the UI never presents one it cannot back.
- * `MailView.no-tabs-select-all.test.ts` covers the still-reachable
- * no-category-tabs path, including the resolved-row-aware id filtering
- * this test's predecessor pinned.
+ * `MailView.tab-aware-select-all.test.ts` covers the companion case where
+ * a category tab is active -- the whole banner is withheld there (re
+ * #255), so this file exercises only the no-category-tabs configuration
+ * where the banner (and this button) remain reachable.
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/svelte';
+import { render, screen, fireEvent } from '@testing-library/svelte';
 import type { Email } from '../lib/mail/types';
 
 const { emails, selectAllVisible } = vi.hoisted(() => {
-  const makeEmail = (id: string, categoryKeywordName?: string) =>
+  const makeEmail = (id: string) =>
     ({
       id,
       threadId: `thread-${id}`,
       mailboxIds: { 'mbx-inbox': true },
-      keywords: {
-        $seen: true,
-        ...(categoryKeywordName ? { [categoryKeywordName]: true } : {}),
-      },
+      keywords: { $seen: true },
       subject: `Subject ${id}`,
       preview: 'preview text',
       receivedAt: '2026-01-01T00:00:00Z',
@@ -48,13 +40,11 @@ const { emails, selectAllVisible } = vi.hoisted(() => {
       cc: null,
       'header:List-ID:asText': null,
     }) as unknown as Email;
-  // e1, e2: Primary (no $category-* keyword). e3: tagged "Updates" --
-  // present and resolved in `emails`, but excluded from the Primary tab's
-  // render.
+  // e1, e2 are resolved; e3 is listed by the folder query but its
+  // Email/get companion has not landed, so it is absent from `emails`.
   const emails = new Map<string, Email>([
     ['e1', makeEmail('e1')],
     ['e2', makeEmail('e2')],
-    ['e3', makeEmail('e3', '$category-updates')],
   ]);
   return { emails, selectAllVisible: vi.fn() };
 });
@@ -66,7 +56,7 @@ vi.mock('../lib/mail/store.svelte', () => ({
     listLoadStatus: 'ready',
     listError: null,
     listFocusedIndex: -1,
-    listEmails: [emails.get('e1'), emails.get('e2'), emails.get('e3')],
+    listEmails: [emails.get('e1'), emails.get('e2')],
     listFolder: 'inbox',
     listFolderTotal: 10,
     listFolderConversationTotal: 10,
@@ -128,7 +118,6 @@ vi.mock('../lib/router/router.svelte', () => {
         return prefix.every((seg, i) => parts[i] === seg);
       },
       navigate: vi.fn(),
-      // No `?tab=` param -- the active tab is Primary (null).
       getParam: vi.fn().mockReturnValue(null),
       setParam: vi.fn(),
     },
@@ -166,9 +155,7 @@ vi.mock('../lib/mail/category-picker.svelte', () => ({
   categoryPicker: { open: vi.fn() },
 }));
 
-// Real emailMatchesTab / categoryKeyword logic; only categorySettings
-// itself (the reactive singleton) is replaced, with category tabs enabled
-// and a single derived category "Updates".
+// Category tabs disabled -- the no-tabs configuration this file targets.
 vi.mock('../lib/settings/category-settings.svelte', async () => {
   const actual = await vi.importActual<
     typeof import('../lib/settings/category-settings.svelte')
@@ -176,8 +163,8 @@ vi.mock('../lib/settings/category-settings.svelte', async () => {
   return {
     ...actual,
     categorySettings: {
-      available: true,
-      derivedCategories: ['Updates'],
+      available: false,
+      derivedCategories: [],
       loadStatus: 'idle',
       load: vi.fn().mockResolvedValue(undefined),
     },
@@ -213,13 +200,16 @@ vi.mock('../lib/mail/search-query', () => ({
 
 import MailView from './MailView.svelte';
 
-describe('MailView whole-mailbox banner withheld on a category-scoped view (re #255)', () => {
-  it('renders no whole-mailbox banner and no "Clear whole mailbox" button while a category tab is active, even though listWholeMailboxSelected is true', () => {
-    const { container } = render(MailView);
+describe('MailView "clear whole mailbox" is resolved-row-aware (re #202)', () => {
+  it("passes only ids with a resolved Email to selectAllVisible, excluding an id not yet resolved", () => {
+    render(MailView);
 
-    expect(container.querySelector('.whole-mailbox-banner')).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Clear whole mailbox' })).toBeNull();
-    expect(screen.queryByText(/auswaehlen/)).toBeNull();
-    expect(selectAllVisible).not.toHaveBeenCalled();
+    const btn = screen.getByRole('button', { name: 'Clear whole mailbox' });
+    fireEvent.click(btn);
+
+    expect(selectAllVisible).toHaveBeenCalledTimes(1);
+    const [visibleIds] = selectAllVisible.mock.calls[0] as [string[]];
+    expect(visibleIds).toEqual(['e1', 'e2']);
+    expect(visibleIds).not.toContain('e3');
   });
 });

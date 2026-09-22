@@ -1342,9 +1342,10 @@
       {#if mail.listSelectedIds.size > 0}
         <span class="bulk-count">
           {t('bulk.selected', {
-            count: mail.listWholeMailboxSelected && mail.listFolderTotal !== null
-              ? mail.listFolderTotal
-              : mail.listSelectedIds.size,
+            count:
+              mail.listWholeMailboxSelected && mail.listFolderConversationTotal !== null
+                ? mail.listFolderConversationTotal
+                : mail.listSelectedIds.size,
           })}
         </span>
         {#if folder === 'inbox'}
@@ -1450,33 +1451,42 @@
 
     <!-- Whole-mailbox selection banner (issue #149). Shown below the toolbar
          as a dedicated row so it does not compete for space with the bulk
-         action buttons. Offer state: appears when all currently-loaded rows
-         are selected and the folder contains more messages than are loaded
-         (the loaded count grows via infinite scroll, issue #161, so this is
-         not tied to the 50-row initial page). Active state: appears while
+         action buttons. Offer state: appears when every rendered row of
+         the current view is selected and that view holds more
+         conversations than the page shows (mail.listHasMore -- the loaded
+         count grows via infinite scroll, issue #161, so this is not tied
+         to the 50-row initial page). Active state: appears while
          whole-mailbox mode is engaged. Selecting is free (no query, no
          size cap); executing a bulk action while active is a separate
-         question -- see wholeMailboxActionUnavailable in store.svelte.ts. -->
-    {#if mail.listSelectedIds.size > 0 && mail.listFolderTotal !== null && mail.listEmails.length > 0}
-      {@const folderTotal = mail.listFolderTotal}
-      {@const folderVisibleIds = mail.listEmails.map((e) => e.id)}
-      {#if !mail.listWholeMailboxSelected && shouldOfferWholeSet(folderVisibleIds, mail.listSelectedIds, folderTotal)}
+         question -- see wholeMailboxActionUnavailable in store.svelte.ts.
+
+         Scoped to `effectiveListEmailIds`/`effectiveListEmails` (the
+         tab-filtered rendered set, same as SelectChooser above) and gated
+         on `!showTabs`, not merely on the raw folder load (re #255): a
+         category tab (REQ-CAT-10..14) renders a subset of the loaded
+         folder, and neither a per-category conversation total nor a
+         category-scoped `Email/setByQuery` filter exists yet, so a
+         category view never offers or acts on a "whole mailbox" count it
+         cannot honor for what is actually on screen. -->
+    {#if !showTabs && mail.listSelectedIds.size > 0 && mail.listFolderConversationTotal !== null && effectiveListEmails.length > 0}
+      {@const conversationTotal = mail.listFolderConversationTotal}
+      {#if !mail.listWholeMailboxSelected && mail.listHasMore && shouldOfferWholeSet(effectiveListEmailIds, mail.listSelectedIds, conversationTotal)}
         <div class="whole-mailbox-banner" role="status" aria-live="polite">
           <span class="banner-text">
-            {t('select.allPageSelected', { count: String(mail.listEmails.length) })}
+            {t('select.allPageSelected', { count: String(effectiveListEmails.length) })}
           </span>
           <button
             type="button"
             class="banner-btn"
             onclick={() => mail.selectWholeMailbox()}
           >
-            {t('select.selectAllInFolder', { total: String(folderTotal) })}
+            {t('select.selectAllInFolder', { total: String(conversationTotal) })}
           </button>
         </div>
       {:else if mail.listWholeMailboxSelected}
         <div class="whole-mailbox-banner whole-mailbox-banner--active" role="status" aria-live="polite">
           <span class="banner-text">
-            {t('select.wholeMailboxActive', { total: String(folderTotal) })}
+            {t('select.wholeMailboxActive', { total: String(conversationTotal) })}
           </span>
           <button
             type="button"

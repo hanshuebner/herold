@@ -228,8 +228,8 @@ export const de = {
   // the raw stored-message total (Nachrichten) -- keep the two nouns
   // distinct so the numbers are never implicitly compared (re #255).
   'select.allPageSelected': 'Alle {count} Konversationen auf dieser Seite sind ausgewählt.',
-  'select.selectAllInFolder': 'Alle {total} Nachrichten im Postfach auswählen',
-  'select.wholeMailboxActive': 'Alle {total} Nachrichten im Postfach sind ausgewählt. Aktionen wirken auch auf zusätzliche Nachrichten in bereits angezeigten Konversationen.',
+  'select.selectAllInFolder': 'Alle {total} Konversationen im Postfach auswählen',
+  'select.wholeMailboxActive': 'Alle {total} Konversationen im Postfach sind ausgewählt. Aktionen wirken auch auf zusätzliche Nachrichten in bereits angezeigten Konversationen.',
   'select.clearWholeMailbox': 'Nur diese Seite auswählen',
   // Whole-search-result-set selection banner (issue #207)
   'select.selectAllInSearch': 'Alle {total} passenden Nachrichten auswählen',
