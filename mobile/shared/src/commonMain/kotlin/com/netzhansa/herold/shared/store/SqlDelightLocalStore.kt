@@ -69,6 +69,11 @@ class SqlDelightLocalStore(
      * still on their way in (issue #371).
      */
     private val tombstones: Tombstones = Tombstones(now),
+    /**
+     * The rows an optimistic action changed, held against the fetches
+     * still on their way in (issue #473).
+     */
+    private val membershipHolds: MembershipHolds = MembershipHolds(now),
 ) : LocalStore {
 
     override fun accounts(): Flow<List<DomainAccount>> =
@@ -178,9 +183,14 @@ class SqlDelightLocalStore(
         // read it before the delete is carrying (issue #371).
         val writable = writable(rows)
         if (writable.isEmpty()) return
+        // A row an action changed keeps that membership until the
+        // action's outbox entry drains, whatever a response in flight
+        // before the action is carrying (issue #473).
+        val held = heldForMembership(writable)
         withContext(dispatcher) {
             database.transaction {
-                writable.forEach { email ->
+                writable.forEach { incoming ->
+                    val email = if (incoming.id in held.getValue(incoming.accountId)) frozen(incoming) else incoming
                     database.emailQueries.insertIfAbsent(email.accountId, email.id, email.threadId)
                     database.emailQueries.updateMeta(
                         threadId = email.threadId,
@@ -221,6 +231,38 @@ class SqlDelightLocalStore(
             tombstones.heldOf(accountId, accountRows.map { it.id })
         }
         return rows.filterNot { it.id in held.getValue(it.accountId) }
+    }
+
+    /** Of [rows], the ids an action still in flight is holding (issue #473). */
+    private suspend fun heldForMembership(rows: List<DomainEmail>): Map<String, Set<String>> {
+        val byAccount = rows.groupBy { it.accountId }
+        return byAccount.mapValues { (accountId, accountRows) ->
+            membershipHolds.heldOf(accountId, accountRows.map { it.id })
+        }
+    }
+
+    /**
+     * [incoming] with its membership, keywords and `snoozedUntil` replaced
+     * by what the store currently holds, so an action still in flight is
+     * not undone by this response (issue #473). Everything else of
+     * [incoming] - subject, preview, a refreshed body - still applies.
+     */
+    private fun frozen(incoming: DomainEmail): DomainEmail {
+        val current = database.emailQueries.selectById(incoming.accountId, incoming.id).executeAsOneOrNull()
+            ?: return incoming
+        return incoming.copy(
+            keywords = current.keywords.splitTokens(),
+            mailboxIds = current.mailboxIds.splitTokens(),
+            snoozedUntil = current.snoozedUntil,
+        )
+    }
+
+    override suspend fun holdMembership(accountId: String, ids: Collection<String>) {
+        membershipHolds.mark(accountId, ids)
+    }
+
+    override suspend fun releaseMembershipHold(accountId: String, ids: Collection<String>) {
+        membershipHolds.forget(accountId, ids)
     }
 
     override suspend fun deleteEmails(accountId: String, ids: List<String>) {
@@ -560,6 +602,7 @@ class SqlDelightLocalStore(
         }
         blobFiles.deleteAll()
         tombstones.clear()
+        membershipHolds.clear()
         dropped
     }
 

@@ -13,6 +13,7 @@ import com.netzhansa.herold.shared.outbox.OutboxEntry
 import com.netzhansa.herold.shared.outbox.OutboxState
 import com.netzhansa.herold.shared.store.CachedBlob
 import com.netzhansa.herold.shared.store.LocalStore
+import com.netzhansa.herold.shared.store.MembershipHolds
 import com.netzhansa.herold.shared.store.PushRegistration
 import com.netzhansa.herold.shared.store.Tombstones
 import kotlinx.coroutines.flow.Flow
@@ -28,6 +29,8 @@ import kotlinx.coroutines.flow.map
 class FakeLocalStore(
     /** What a local delete holds away from a fetch in flight (issue #371). */
     private val tombstones: Tombstones = Tombstones(),
+    /** What an optimistic action holds away from a fetch in flight (issue #473). */
+    private val membershipHolds: MembershipHolds = MembershipHolds(),
 ) : LocalStore {
     private val accountRows = MutableStateFlow<List<Account>>(emptyList())
     private val mailboxRows = MutableStateFlow<List<Mailbox>>(emptyList())
@@ -126,10 +129,23 @@ class FakeLocalStore(
         }
         writable.forEach { incoming ->
             val existing = byKey[incoming.accountId to incoming.id]
-            byKey[incoming.accountId to incoming.id] = incoming.copy(
-                bodyHtml = incoming.bodyHtml ?: existing?.bodyHtml,
-                bodyText = incoming.bodyText ?: existing?.bodyText,
-                attachments = incoming.attachments.ifEmpty { existing?.attachments ?: emptyList() },
+            // An action still in flight keeps its membership, keywords and
+            // snoozedUntil against this response; the rest of it lands
+            // (issue #473).
+            val held = membershipHolds.heldOf(incoming.accountId, listOf(incoming.id)).isNotEmpty()
+            val frozen = if (held && existing != null) {
+                incoming.copy(
+                    keywords = existing.keywords,
+                    mailboxIds = existing.mailboxIds,
+                    snoozedUntil = existing.snoozedUntil,
+                )
+            } else {
+                incoming
+            }
+            byKey[incoming.accountId to incoming.id] = frozen.copy(
+                bodyHtml = frozen.bodyHtml ?: existing?.bodyHtml,
+                bodyText = frozen.bodyText ?: existing?.bodyText,
+                attachments = frozen.attachments.ifEmpty { existing?.attachments ?: emptyList() },
             )
         }
         emailRows.value = byKey.values.toList()
@@ -158,6 +174,14 @@ class FakeLocalStore(
                 row
             }
         }
+    }
+
+    override suspend fun holdMembership(accountId: String, ids: Collection<String>) {
+        membershipHolds.mark(accountId, ids)
+    }
+
+    override suspend fun releaseMembershipHold(accountId: String, ids: Collection<String>) {
+        membershipHolds.forget(accountId, ids)
     }
 
     override suspend fun storeBody(
@@ -326,6 +350,7 @@ class FakeLocalStore(
         outboxRows.value = emptyList()
         pushRow = null
         tombstones.clear()
+        membershipHolds.clear()
         return dropped
     }
 }

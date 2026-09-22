@@ -117,6 +117,17 @@ interface LocalStore {
         snoozedUntil: String?,
     )
 
+    /**
+     * Holds [ids] of [accountId]'s membership and keywords against server
+     * state until [releaseMembershipHold] releases them (issue #473): what
+     * an optimistic action's write needs protected while its `Email/set`
+     * is still in flight.
+     */
+    suspend fun holdMembership(accountId: String, ids: Collection<String>)
+
+    /** Releases a hold [holdMembership] placed, once its outbox entry has drained. */
+    suspend fun releaseMembershipHold(accountId: String, ids: Collection<String>)
+
     suspend fun storeBody(
         accountId: String,
         id: String,

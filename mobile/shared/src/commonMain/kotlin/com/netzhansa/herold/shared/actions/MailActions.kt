@@ -311,6 +311,9 @@ class MailActions(
     }
 
     private suspend fun write(email: Email) {
+        // Held until the outbox entry this write is queued behind drains,
+        // so a response already in flight cannot undo it (issue #473).
+        store.holdMembership(email.accountId, listOf(email.id))
         store.updateMembership(
             accountId = email.accountId,
             id = email.id,
