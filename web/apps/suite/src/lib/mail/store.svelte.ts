@@ -15,7 +15,8 @@ import { auth, registerAccountResetCallback } from '../auth/auth.svelte';
 import { accountKey } from '../storage/account-scoped';
 import { sync } from '../jmap/sync.svelte';
 import { toast } from '../toast/toast.svelte';
-import { i18n, localeTag } from '../i18n/i18n.svelte';
+import { i18n } from '../i18n/i18n.svelte';
+import { formatWakeTime } from './snooze-format';
 import { Capability, type Invocation } from '../jmap/types';
 import {
   EMAIL_BODY_PROPERTIES,
@@ -205,6 +206,15 @@ class MailStore {
   listFolder = $state<FolderID>('inbox');
   /** Ordered (most-recent first) email ids visible in the current list view. */
   listEmailIds = $state<string[]>([]);
+  /**
+   * Total count of currently-snoozed messages (Junk/Trash-excluded), for
+   * the sidebar badge (re #471). Unlike `mail.inbox?.unreadThreads`,
+   * there is no cached `Mailbox.totalEmails` this can read from -- the
+   * Snoozed virtual folder spans every mailbox -- so it is refreshed via
+   * its own `Email/query { calculateTotal: true }` round trip in
+   * `refreshSnoozedCount()`. Null until that first resolves.
+   */
+  snoozedCount = $state<number | null>(null);
   listLoadStatus = $state<LoadStatus>('idle');
   listError = $state<string | null>(null);
   /**
@@ -708,6 +718,10 @@ class MailStore {
         delta.destroyed.size > 0)
     ) {
       this.#refreshMailboxesSoon();
+      // The sidebar's Snoozed badge (re #471) has no per-mailbox counter
+      // to piggyback on -- refresh it on the same signal, including the
+      // wake-up worker clearing $snoozed off a message on its own.
+      this.#refreshSnoozedCountSoon();
     }
 
     // Process fresh arrivals in the currently-open thread. Self-sent
@@ -2190,7 +2204,14 @@ class MailStore {
       // Message-ID without a separate round-trip (re #88).
       for (const e of memberGetResult.list) next.set(e.id, mergeEmailListFetch(next.get(e.id), e));
       this.emails = next;
-      this.listEmailIds = queryResult.ids;
+      // Snoozed is soonest-wake-first, not receivedAt order (re #471) --
+      // see sortIdsBySnoozedUntilAscending's docstring for the server-
+      // side sort limitation and the paging consequence of reordering
+      // client-side.
+      this.listEmailIds =
+        folder === 'snoozed'
+          ? sortIdsBySnoozedUntilAscending(queryResult.ids, next)
+          : queryResult.ids;
       this.listHasMore = queryResult.ids.length === FOLDER_PAGE_SIZE;
       if (typeof getResult.state === 'string') this.emailState = getResult.state;
 
@@ -2560,7 +2581,11 @@ class MailStore {
       // sees a partial state where listEmailIds refers to email ids that
       // are not yet in the emails map.
       this.emails = next;
-      this.listEmailIds = queryResult.ids;
+      // See loadFolder's matching comment (re #471).
+      this.listEmailIds =
+        folder === 'snoozed'
+          ? sortIdsBySnoozedUntilAscending(queryResult.ids, next)
+          : queryResult.ids;
       this.listHasMore = queryResult.ids.length === requestedLimit;
       if (typeof getResult.state === 'string') this.emailState = getResult.state;
 
@@ -2679,7 +2704,11 @@ class MailStore {
         pageSize: FOLDER_PAGE_SIZE,
         idOf: (id) => id,
       });
-      this.listEmailIds = items;
+      // Re-sort the full accumulated window on every page, not just the
+      // new page, so the soonest-first order keeps converging as more
+      // snoozed messages load in (re #471; see loadFolder's comment).
+      this.listEmailIds =
+        folder === 'snoozed' ? sortIdsBySnoozedUntilAscending(items, next) : items;
       this.listHasMore = hasMore;
       if (typeof getResult.state === 'string') this.emailState = getResult.state;
 
@@ -4534,12 +4563,14 @@ class MailStore {
     if (this.listFolder === 'inbox') this.#removeFromList(emailId);
     try {
       await this.#emailSetUpdate(emailId, patch);
+      this.#refreshSnoozedCountSoon();
       toast.show({
-        message: `Snoozed until ${formatSnoozeTarget(until)}`,
+        message: `Snoozed until ${formatWakeTime(until)}`,
         undo: async () => {
           try {
             await this.#emailSetUpdate(emailId, { snoozedUntil: null });
             this.#patchEmail(emailId, { snoozedUntil: null });
+            this.#refreshSnoozedCountSoon();
           } catch (err) {
             toast.show({
               message: errMessage(err, 'Undo failed'),
@@ -4571,6 +4602,7 @@ class MailStore {
     if (this.listFolder === 'snoozed') this.#removeFromList(emailId);
     try {
       await this.#emailSetUpdate(emailId, { snoozedUntil: null });
+      this.#refreshSnoozedCountSoon();
     } catch (err) {
       this.#patchEmail(emailId, { snoozedUntil: prev });
       toast.show({
@@ -5108,6 +5140,53 @@ class MailStore {
   }
 
   /**
+   * Refresh `snoozedCount` (re #471) via a zero-limit
+   * `Email/query { calculateTotal: true }` over the same
+   * Junk/Trash-excluded `$snoozed` filter the Snoozed virtual folder
+   * itself queries with. Errors are swallowed: a stale badge count is
+   * cosmetic, and the next state-change push retries it.
+   */
+  async refreshSnoozedCount(): Promise<void> {
+    const accountId = this.mailAccountId;
+    if (!accountId) return;
+    try {
+      const { responses } = await jmap.batch((b) => {
+        b.call(
+          'Email/query',
+          {
+            accountId,
+            filter: applyTrashJunkExclusion({ hasKeyword: '$snoozed' }, this.mailboxes),
+            limit: 0,
+            calculateTotal: true,
+          },
+          [Capability.Mail],
+        );
+      });
+      strict(responses);
+      const result = invocationArgs<{ total?: number }>(responses[0]);
+      this.snoozedCount = result.total ?? 0;
+    } catch (err) {
+      console.warn('snoozed count refresh failed', err);
+    }
+  }
+
+  /**
+   * Coalesce `snoozedCount` refreshes the same way `#refreshMailboxesSoon`
+   * coalesces mailbox counts: a burst of Email state-change pushes (an
+   * IMAP import, the wake-up worker firing several reminders at once)
+   * triggers one round trip instead of one per push.
+   */
+  #refreshSnoozedCountPending = false;
+  #refreshSnoozedCountSoon(): void {
+    if (this.#refreshSnoozedCountPending) return;
+    this.#refreshSnoozedCountPending = true;
+    queueMicrotask(() => {
+      this.#refreshSnoozedCountPending = false;
+      void this.refreshSnoozedCount();
+    });
+  }
+
+  /**
    * Coalesce folder-list refreshes during rapid Email state-change bursts
    * (e.g. an IMAP import or bulk server-side operation) into a single
    * #refreshFolderInPlace() call per 300 ms quiet window.
@@ -5287,11 +5366,6 @@ function invocationArgs<T>(inv: Invocation | undefined): T {
 }
 
 /**
- * Format a snooze target relative to now: "3:00 pm tomorrow",
- * "Mon May 12 8:00 am". Used by the snooze toast's confirmation
- * message.
- */
-/**
  * Role values JMAP defines for system-purpose mailboxes (RFC 8621
  * §2.1.4) plus the suite-side virtual "snooze" / "important" role.
  * Mailboxes carrying any of these are system mailboxes and the
@@ -5470,25 +5544,44 @@ export function buildHiddenJunkTrashCountFilters(
   };
 }
 
-function formatSnoozeTarget(d: Date): string {
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const target = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-  const dayDiff = Math.round((target.getTime() - today.getTime()) / 86400000);
-  const tag = localeTag();
-  const time = d.toLocaleTimeString(tag, {
-    hour: 'numeric',
-    minute: '2-digit',
-  });
-  if (dayDiff === 0) return time;
-  if (dayDiff === 1) return `${time} tomorrow`;
-  if (dayDiff < 7 && dayDiff > 0) {
-    return `${d.toLocaleDateString(tag, { weekday: 'long' })}, ${time}`;
-  }
-  return `${d.toLocaleDateString(tag, {
-    month: 'short',
-    day: 'numeric',
-  })}, ${time}`;
+/**
+ * Reorder `ids` by ascending `Email.snoozedUntil` -- the soonest wake
+ * time first -- for the Snoozed virtual folder (re #471, REQ-MAIL-*).
+ *
+ * The server's `Email/query` has no `snoozedUntil` sort property:
+ * `compareMessage` in `internal/protojmap/mail/email/query.go` falls
+ * through its switch for any property it does not recognise and
+ * returns 0 for every pair, so requesting that sort on the wire is a
+ * silent no-op, not an error. This function instead reorders, on the
+ * client, the ids the (still receivedAt-sorted) server query already
+ * returned, once their `Email` objects -- and therefore their
+ * `snoozedUntil` values -- are available in `emails`.
+ *
+ * An id missing from `emails` (its Email/get response has not landed
+ * yet) or carrying no `snoozedUntil` sorts after every dated id and
+ * keeps its relative order among such ids, via a stable sort with
+ * those ids valued at +Infinity.
+ *
+ * Paging consequence: because the fetch itself is still ordered by
+ * receivedAt descending, only the ids already loaded into
+ * `listEmailIds` are reordered here. An account with more snoozed
+ * messages than one page (`FOLDER_PAGE_SIZE`) can show a soonest-first
+ * order that is correct only within the loaded window until "load
+ * more" has pulled in the rest; each additional page re-sorts the
+ * full accumulated window, so the order keeps converging as more
+ * pages load.
+ */
+export function sortIdsBySnoozedUntilAscending(
+  ids: string[],
+  emails: Map<string, Email>,
+): string[] {
+  const wakeTimeOf = (id: string): number => {
+    const iso = emails.get(id)?.snoozedUntil;
+    if (!iso) return Number.POSITIVE_INFINITY;
+    const parsed = Date.parse(iso);
+    return Number.isNaN(parsed) ? Number.POSITIVE_INFINITY : parsed;
+  };
+  return [...ids].sort((a, b) => wakeTimeOf(a) - wakeTimeOf(b));
 }
 
 /**

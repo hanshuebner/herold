@@ -8,7 +8,8 @@
   import { snoozePicker, snoozeQuickOptions } from './snooze-picker.svelte';
   import { computeMoveCandidates } from './move-picker.svelte';
   import { keyboard } from '../keyboard/engine.svelte';
-  import { localeTag, t } from '../i18n/i18n.svelte';
+  import { t } from '../i18n/i18n.svelte';
+  import { formatWakeTime } from './snooze-format';
   import type { Mailbox } from './types';
 
   let options = $derived(snoozeQuickOptions());
@@ -60,27 +61,6 @@
     commit(d);
   }
 
-  function fmt(d: Date): string {
-    const tag = localeTag();
-    const time = d.toLocaleTimeString(tag, {
-      hour: 'numeric',
-      minute: '2-digit',
-    });
-    const dayDiff = Math.round(
-      (new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() -
-        new Date().setHours(0, 0, 0, 0)) /
-        86400000,
-    );
-    if (dayDiff === 0) return time;
-    if (dayDiff === 1) return `${time} ${t('mail.snooze.tomorrow')}`;
-    if (dayDiff > 0 && dayDiff < 7) {
-      return `${d.toLocaleDateString(tag, { weekday: 'long' })}, ${time}`;
-    }
-    return `${d.toLocaleDateString(tag, {
-      month: 'short',
-      day: 'numeric',
-    })}, ${time}`;
-  }
 </script>
 
 {#if snoozePicker.isOpen}
@@ -108,7 +88,7 @@
         <li>
           <button type="button" onclick={() => commit(o.at)}>
             <span class="label">{t(o.key)}</span>
-            <span class="when">{fmt(o.at)}</span>
+            <span class="when">{formatWakeTime(o.at)}</span>
           </button>
         </li>
       {/each}

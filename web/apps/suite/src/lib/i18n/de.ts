@@ -144,6 +144,9 @@ export const de = {
   'mail.row.unstarAria': 'Markierung aufheben',
   'mail.row.threadCountAria': '{count} Nachricht',
   'mail.row.threadCountAria.other': '{count} Nachrichten',
+  // Weckzeit einer zurückgestellten Nachricht (re #471): erscheint in
+  // der Datumsspalte anstelle des Eingangsdatums.
+  'mail.row.snoozedUntil': 'Bis {time}',
   // Label-Route Platzhalter (Label-Ansicht-Abfragen kommen nach dem
   // Posteingang).
   'mail.label.heading': 'Label: {name}',

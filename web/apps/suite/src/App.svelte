@@ -111,6 +111,15 @@
             console.error('initial mailbox load failed', err);
           });
         }
+        // Prime the sidebar's Snoozed badge (re #471): the virtual
+        // folder has no cached Mailbox.totalEmails to read a count from,
+        // so this is its own round trip, run once at boot alongside the
+        // mailbox prime above.
+        if (mail.snoozedCount === null) {
+          mail.refreshSnoozedCount().catch((err) => {
+            console.error('initial snoozed count refresh failed', err);
+          });
+        }
         // Prime identities at boot too, alongside mailboxes. Identity
         // is the source of "is this address mine?" — Reply / Reply-all
         // need it to detect own-sent messages and route To at the
@@ -571,6 +580,9 @@
             onclick={() => router.navigate('/mail/folder/snoozed')}
           >
             <span>{t('sidebar.snoozed')}</span>
+            {#if (mail.snoozedCount ?? 0) > 0}
+              <span class="count">{mail.snoozedCount}</span>
+            {/if}
           </button>
         </li>
         <li class:active={router.matches('mail', 'folder', 'important')}>

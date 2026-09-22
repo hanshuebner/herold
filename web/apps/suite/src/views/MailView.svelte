@@ -23,6 +23,7 @@
   import { shouldOfferWholeSet } from '../lib/list-selection/whole-set-selection';
   import { handleRowCheckboxClick } from '../lib/list-selection/range-select';
   import { labelPicker } from '../lib/mail/label-picker.svelte';
+  import { formatWakeTime } from '../lib/mail/snooze-format';
   import { t, localeTag } from '../lib/i18n/i18n.svelte';
   import type { Email } from '../lib/mail/types';
   import { labelForeground } from '../lib/mail/label-color';
@@ -874,6 +875,20 @@
     return d.toLocaleDateString(localeTag(), opts);
   }
 
+  /**
+   * The Snoozed row's date-column content (re #471): the wake time
+   * ("Until Mon, 9:00 AM") rather than the arrival date every other
+   * folder shows there -- the one question the Snoozed view exists to
+   * answer is when a message comes back, not when it arrived. Falls
+   * back to the received date for the (should-not-happen) case of a
+   * row in the Snoozed view with no snoozedUntil, so the column is
+   * never left blank.
+   */
+  function wakeLabel(email: Email): string {
+    if (!email.snoozedUntil) return formatDate(email.receivedAt);
+    return t('mail.row.snoozedUntil', { time: formatWakeTime(new Date(email.snoozedUntil)) });
+  }
+
   function isUnread(email: Email): boolean {
     return !email.keywords.$seen;
   }
@@ -1659,7 +1674,9 @@
               <span class="attachment" aria-hidden={!email.hasAttachment}>
                 {#if email.hasAttachment}<span aria-label={t('att.headerIcon.label')}>📎</span>{/if}
               </span>
-              <span class="date">{formatDate(email.receivedAt)}</span>
+              <span class="date">
+                {folder === 'snoozed' ? wakeLabel(email) : formatDate(email.receivedAt)}
+              </span>
             </button>
           </li>
         {/each}

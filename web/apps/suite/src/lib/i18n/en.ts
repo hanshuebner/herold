@@ -145,6 +145,10 @@ export const en = {
   'mail.row.unstarAria': 'Unstar',
   'mail.row.threadCountAria': '{count} message',
   'mail.row.threadCountAria.other': '{count} messages',
+  // Snoozed row wake time (re #471): shown in the date column in place
+  // of the arrival date, since the Snoozed view exists to answer "when
+  // does this come back", not "when did this arrive".
+  'mail.row.snoozedUntil': 'Until {time}',
   // Label-route placeholder (label-view querying lands after inbox).
   'mail.label.heading': 'Label: {name}',
   'mail.label.lead': 'Label-view querying arrives after inbox.',
