@@ -5,7 +5,7 @@
  * for the JMAP client, auth, sync, and toast singletons.
  *
  * Coverage:
- *   1. Helper: categoryKeyword / emailCategory / emailMatchesTab
+ *   1. Helper: categoryKeyword / categoryLabel / emailCategory / emailMatchesTab
  *   2. Default state when the server returns an empty list
  *   3. Load: derivedCategories populated from the server response
  *   4. setSystemPrompt -- optimistic update + server persistence
@@ -20,8 +20,13 @@ import {
 } from './category-settings.svelte';
 import type { Invocation } from '../jmap/types';
 
-const { categoryKeyword, emailCategory, emailMatchesTab, DEFAULT_PROMPT } =
-  _internals_forTest;
+const {
+  categoryKeyword,
+  categoryLabel,
+  emailCategory,
+  emailMatchesTab,
+  DEFAULT_PROMPT,
+} = _internals_forTest;
 
 // ── JMAP client mock ──────────────────────────────────────────────────────
 
@@ -152,6 +157,19 @@ describe('categoryKeyword', () => {
 
   it('replaces spaces with hyphens', () => {
     expect(categoryKeyword('My Category')).toBe('$category-my-category');
+  });
+});
+
+describe('categoryLabel', () => {
+  it('capitalises the first character of the server-derived name', () => {
+    expect(categoryLabel('primary')).toBe('Primary');
+    expect(categoryLabel('promotions')).toBe('Promotions');
+    expect(categoryLabel('social-media')).toBe('Social-media');
+  });
+
+  it('leaves an already capitalised name and an empty name alone', () => {
+    expect(categoryLabel('Updates')).toBe('Updates');
+    expect(categoryLabel('')).toBe('');
   });
 });
 

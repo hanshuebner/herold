@@ -10,7 +10,11 @@
    * The `m` shortcut in MailView triggers this overlay.
    */
   import { categoryPicker } from './category-picker.svelte';
-  import { categorySettings, categoryKeyword } from '../settings/category-settings.svelte';
+  import {
+    categorySettings,
+    categoryKeyword,
+    categoryLabel,
+  } from '../settings/category-settings.svelte';
   import { mail } from './store.svelte';
   import { t } from '../i18n/i18n.svelte';
 
@@ -48,7 +52,7 @@
         {#each categorySettings.derivedCategories as name (name)}
           <li>
             <button type="button" onclick={() => pick(name)}>
-              {name}
+              {categoryLabel(name)}
             </button>
           </li>
         {/each}

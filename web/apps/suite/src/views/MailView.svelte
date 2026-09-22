@@ -12,6 +12,7 @@
     categorySettings,
     emailMatchesTab,
     categoryKeyword,
+    categoryLabel,
     PRIMARY_ROLE_NAME,
   } from '../lib/settings/category-settings.svelte';
   import { decodeChips } from '../lib/mail/search-query';
@@ -1528,7 +1529,7 @@
             aria-current={isActive ? 'page' : undefined}
             onclick={() => selectTab(tabKey)}
           >
-            {name}
+            {categoryLabel(name)}
             {#if unread > 0}
               <span class="tab-badge" aria-label={t('mail.list.tabUnreadAria', { count: unread })}>{unread}</span>
             {/if}

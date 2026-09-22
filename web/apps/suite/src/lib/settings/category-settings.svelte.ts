@@ -297,6 +297,16 @@ export function categoryKeyword(name: string): string {
 }
 
 /**
+ * A category name as the UI shows it. The server slug-normalises category
+ * names to lowercase (REQ-FILT-215), so a category's identity is its
+ * lower-cased name and presentation capitalises it -- the same rule the
+ * mobile client applies (`Keywords.categoryLabel`).
+ */
+export function categoryLabel(name: string): string {
+  return name.charAt(0).toUpperCase() + name.slice(1);
+}
+
+/**
  * Given an email's keywords map, return the category name it belongs to,
  * or null if no `$category-*` keyword is present (treated as Primary per
  * REQ-CAT-03/REQ-FILT-202).
@@ -334,6 +344,7 @@ export function emailMatchesTab(
 
 export const _internals_forTest = {
   categoryKeyword,
+  categoryLabel,
   emailCategory,
   emailMatchesTab,
   DEFAULT_PROMPT,

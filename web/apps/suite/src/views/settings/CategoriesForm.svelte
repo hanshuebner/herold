@@ -17,7 +17,7 @@
    * server-side and shown here read-only.
    */
   import { untrack } from 'svelte';
-  import { categorySettings } from '../../lib/settings/category-settings.svelte';
+  import { categorySettings, categoryLabel } from '../../lib/settings/category-settings.svelte';
   import { llmTransparency } from '../../lib/llm/transparency.svelte';
   import { t } from '../../lib/i18n/i18n.svelte';
   import Button from '@herold/design-system/Button.svelte';
@@ -136,7 +136,7 @@
     {#if categorySettings.derivedCategories.length > 0}
       <ul class="chip-list" aria-label={t('cat.currentCategories')}>
         {#each categorySettings.derivedCategories as name (name)}
-          <li class="chip">{name}</li>
+          <li class="chip">{categoryLabel(name)}</li>
         {/each}
       </ul>
     {:else}
