@@ -2293,12 +2293,12 @@ func (m *metadata) MoveMessage(ctx context.Context, msgID store.MessageID, fromM
 		// Verify source membership exists.
 		var srcUID, srcModSeq, srcFlags int64
 		var srcKeywords string
-		var snoozedUs sql.NullInt64
+		var snoozedUs, wakeMB sql.NullInt64
 		var srcReceivedTo string
 		err := tx.QueryRowContext(ctx, `
-			SELECT uid, modseq, flags, keywords_csv, snoozed_until_us, received_to
+			SELECT uid, modseq, flags, keywords_csv, snoozed_until_us, wake_mailbox_id, received_to
 			  FROM message_mailboxes WHERE message_id = ? AND mailbox_id = ?`,
-			int64(msgID), int64(fromMailboxID)).Scan(&srcUID, &srcModSeq, &srcFlags, &srcKeywords, &snoozedUs, &srcReceivedTo)
+			int64(msgID), int64(fromMailboxID)).Scan(&srcUID, &srcModSeq, &srcFlags, &srcKeywords, &snoozedUs, &wakeMB, &srcReceivedTo)
 		if errors.Is(err, sql.ErrNoRows) {
 			return store.ErrNotFound
 		}
@@ -2328,34 +2328,39 @@ func (m *metadata) MoveMessage(ctx context.Context, msgID store.MessageID, fromM
 		}
 
 		// A snooze deadline active on the source membership must not
-		// survive a move into Trash. wake_mailbox_id is never carried
-		// across a move (the INSERT below omits the column), so a
-		// carried-over snoozed_until_us left the Trash row "due" with
-		// no recorded destination. When that deadline later elapsed,
-		// the snooze wake worker (internal/snooze) resolved the
-		// account's Inbox as the fallback destination and added that
-		// membership while leaving the untouched Trash one in place --
-		// a trashed message gaining an Inbox membership without ever
-		// losing Trash (re #460). Clearing both the column and the
+		// survive a move into Trash: leaving it live would let the
+		// wake worker later add a second, non-Trash membership behind
+		// the user's back (re #460). Clearing both the column and the
 		// "$snoozed" keyword here keeps the (SnoozedUntil != nil) iff
 		// (has "$snoozed") invariant intact on the new row.
+		//
+		// Outside that Trash case, moving a message is one of the
+		// operations the reminder-ending rule (re #274) names
+		// explicitly as NOT ending a reminder: a snooze set with a
+		// chosen wake destination must carry both the deadline and the
+		// destination across the move unchanged, not just the
+		// deadline.
 		if isToTrash {
 			snoozedUs = sql.NullInt64{}
+			wakeMB = sql.NullInt64{}
 			srcKeywords = stripKeywordCSV(srcKeywords, "$snoozed")
 		}
-		var snoozedArg any
+		var snoozedArg, wakeArg any
 		if snoozedUs.Valid {
 			snoozedArg = snoozedUs.Int64
+		}
+		if wakeMB.Valid {
+			wakeArg = wakeMB.Int64
 		}
 		// Insert new membership in target. REQ-FLOW-33: preserve the
 		// envelope received_to from the source membership so a move
 		// keeps the per-recipient render annotation.
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO message_mailboxes
-			  (message_id, mailbox_id, uid, modseq, flags, keywords_csv, snoozed_until_us, received_to)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			  (message_id, mailbox_id, uid, modseq, flags, keywords_csv, snoozed_until_us, wake_mailbox_id, received_to)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			int64(msgID), int64(targetMailboxID), newUID, newModSeq,
-			srcFlags, srcKeywords, snoozedArg, srcReceivedTo); err != nil {
+			srcFlags, srcKeywords, snoozedArg, wakeArg, srcReceivedTo); err != nil {
 			return mapErr(err)
 		}
 		// Delete source membership.

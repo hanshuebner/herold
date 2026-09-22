@@ -217,12 +217,12 @@ func (m *metadata) ReparentMessage(ctx context.Context, msgID store.MessageID, n
 		for fromMB, toMB := range mailboxMoves {
 			var flags int64
 			var keywords string
-			var snoozedUs sql.NullInt64
+			var snoozedUs, wakeMB sql.NullInt64
 			var receivedTo string
 			err := tx.QueryRowContext(ctx, `
-				SELECT flags, keywords_csv, snoozed_until_us, received_to
+				SELECT flags, keywords_csv, snoozed_until_us, wake_mailbox_id, received_to
 				  FROM message_mailboxes WHERE message_id = ? AND mailbox_id = ?`,
-				int64(msgID), int64(fromMB)).Scan(&flags, &keywords, &snoozedUs, &receivedTo)
+				int64(msgID), int64(fromMB)).Scan(&flags, &keywords, &snoozedUs, &wakeMB, &receivedTo)
 			if err == sql.ErrNoRows {
 				// Nothing to move here (already moved by an earlier partial
 				// run, or the caller passed a stale mapping); tolerate.
@@ -241,15 +241,29 @@ func (m *metadata) ReparentMessage(ctx context.Context, msgID store.MessageID, n
 			newUID := tgtUIDNext
 			newModSeq := tgtHighest + 1
 
-			var snoozedArg any
+			var snoozedArg, wakeArg any
 			if snoozedUs.Valid {
 				snoozedArg = snoozedUs.Int64
 			}
+			// A stored wake destination names a mailbox belonging to
+			// the OLD principal. If that mailbox is itself part of
+			// this reparent, remap the reference to its new-principal
+			// id so a snooze set with an explicit destination keeps
+			// working after promotion; otherwise the old id would
+			// point at a mailbox under a different principal, so drop
+			// it (NULL degrades to the documented Inbox-at-wake-time
+			// resolution rather than a dangling cross-principal
+			// reference).
+			if wakeMB.Valid {
+				if newWake, ok := mailboxMoves[store.MailboxID(wakeMB.Int64)]; ok {
+					wakeArg = int64(newWake)
+				}
+			}
 			if _, err := tx.ExecContext(ctx, `
 				INSERT INTO message_mailboxes
-				  (message_id, mailbox_id, uid, modseq, flags, keywords_csv, snoozed_until_us, received_to)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-				int64(msgID), int64(toMB), newUID, newModSeq, flags, keywords, snoozedArg, receivedTo); err != nil {
+				  (message_id, mailbox_id, uid, modseq, flags, keywords_csv, snoozed_until_us, wake_mailbox_id, received_to)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				int64(msgID), int64(toMB), newUID, newModSeq, flags, keywords, snoozedArg, wakeArg, receivedTo); err != nil {
 				return mapErr(err)
 			}
 			if _, err := tx.ExecContext(ctx,
