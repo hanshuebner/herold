@@ -1189,6 +1189,113 @@ func TestEmail_Query_ThreadKeywordFilter_Refused(t *testing.T) {
 	}
 }
 
+// TestEmail_Query_UnsupportedSort_Rejected asserts that a sort naming
+// a property the server cannot sort by is rejected with
+// unsupportedSort per RFC 8620 section 5.5, rather than silently
+// returning results in an arbitrary order (re #474).
+func TestEmail_Query_UnsupportedSort_Rejected(t *testing.T) {
+	f := setupFixture(t)
+	_ = f.insertMessage(t, "From: a@example.test\r\nTo: b@example.test\r\nSubject: s\r\n\r\nbody",
+		"s", "a@example.test", "b@example.test", nil, "")
+
+	name, raw := f.invoke(t, "Email/query", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"sort": []any{
+			map[string]any{"property": "bogusProperty"},
+		},
+	})
+	if name != "error" {
+		t.Fatalf("sort on bogusProperty: expected method-level error, got %q (raw=%s)", name, raw)
+	}
+	var got struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	if got.Type != "unsupportedSort" {
+		t.Fatalf("type = %q, want unsupportedSort (raw=%s)", got.Type, raw)
+	}
+}
+
+// TestEmail_Query_SortBySnoozedUntil_PagesInWakeOrder pins the
+// server-side sort the Snoozed view (#471) needs to page correctly: a
+// query sorted on snoozedUntil returns messages in wake-time order,
+// and that order holds across more than one page.
+func TestEmail_Query_SortBySnoozedUntil_PagesInWakeOrder(t *testing.T) {
+	testEmail_Query_SortBySnoozedUntil_PagesInWakeOrder(t, setupFixture(t))
+}
+
+// TestEmail_Query_SortBySnoozedUntil_PagesInWakeOrder_Postgres is the
+// Postgres leg: snoozedUntil sorting runs entirely in the Go-side
+// comparator over store.Message rows read from Metadata.ListMessages,
+// so both backends need direct coverage. Skips when HEROLD_PG_DSN is
+// not set.
+func TestEmail_Query_SortBySnoozedUntil_PagesInWakeOrder_Postgres(t *testing.T) {
+	testEmail_Query_SortBySnoozedUntil_PagesInWakeOrder(t, setupFixturePostgres(t))
+}
+
+func testEmail_Query_SortBySnoozedUntil_PagesInWakeOrder(t *testing.T, f *fixture) {
+	ctx := context.Background()
+
+	// Three messages, snoozed to wake at three distinct times, inserted
+	// in an order that does not match the wake-time order -- a correct
+	// sort must actually reorder them, not preserve insertion order.
+	wakeOffsets := []time.Duration{3 * time.Hour, 1 * time.Hour, 2 * time.Hour}
+	ids := make([]store.MessageID, len(wakeOffsets))
+	for i, d := range wakeOffsets {
+		body := fmt.Sprintf("From: a@example.test\r\nTo: b@example.test\r\nSubject: m%d\r\n\r\nbody", i)
+		msg := f.insertMessage(t, body, fmt.Sprintf("m%d", i), "a@example.test", "b@example.test", nil, "")
+		when := f.srv.Clock.Now().Add(d)
+		if _, err := f.srv.Store.Meta().SetSnooze(ctx, msg.ID, f.inbox.ID, &when, nil); err != nil {
+			t.Fatalf("SetSnooze: %v", err)
+		}
+		ids[i] = msg.ID
+	}
+	// Wake-time ascending order is m1 (1h), m2 (2h), m0 (3h).
+	wantOrder := []string{
+		fmt.Sprintf("%d", ids[1]),
+		fmt.Sprintf("%d", ids[2]),
+		fmt.Sprintf("%d", ids[0]),
+	}
+
+	sortArgs := []any{map[string]any{"property": "snoozedUntil", "isAscending": true}}
+
+	// Page 1: position 0, limit 2 -- the two soonest wake times.
+	_, raw := f.invoke(t, "Email/query", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"sort":      sortArgs,
+		"position":  0,
+		"limit":     2,
+	})
+	var page1 struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.Unmarshal(raw, &page1); err != nil {
+		t.Fatalf("unmarshal page1: %v: %s", err, raw)
+	}
+	if len(page1.IDs) != 2 || page1.IDs[0] != wantOrder[0] || page1.IDs[1] != wantOrder[1] {
+		t.Fatalf("page1 ids = %v, want %v (raw=%s)", page1.IDs, wantOrder[:2], raw)
+	}
+
+	// Page 2: position 2, limit 2 -- the remaining, latest wake time.
+	_, raw = f.invoke(t, "Email/query", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"sort":      sortArgs,
+		"position":  2,
+		"limit":     2,
+	})
+	var page2 struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.Unmarshal(raw, &page2); err != nil {
+		t.Fatalf("unmarshal page2: %v: %s", err, raw)
+	}
+	if len(page2.IDs) != 1 || page2.IDs[0] != wantOrder[2] {
+		t.Fatalf("page2 ids = %v, want %v (raw=%s)", page2.IDs, wantOrder[2:], raw)
+	}
+}
+
 func TestEmail_Changes_FromState(t *testing.T) {
 	f := setupFixture(t)
 	// Read initial state.

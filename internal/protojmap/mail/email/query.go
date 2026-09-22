@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"sort"
 	"strings"
@@ -109,6 +110,10 @@ func (q *queryHandler) Execute(ctx context.Context, args json.RawMessage) (any, 
 			return nil, protojmap.NewMethodError("invalidArguments", err.Error())
 		}
 	}
+	if serr := validateSort(req.Sort); serr != nil {
+		return nil, serr
+	}
+
 	ownerPID, merr := resolveAccount(ctx, q.h.store.Meta(), callerPID, req.AccountID)
 	if merr != nil {
 		return nil, merr
@@ -1027,7 +1032,40 @@ func envelopeHeader(m store.Message, name string) string {
 	return ""
 }
 
-// sortMessages applies the comparator chain.
+// sortableEmailProperties is the single source of truth for which
+// Email/query sort properties the server can honour. compareMessage's
+// switch and validateSort's rejection both read this set, so a
+// property cannot be added to the comparator without also being
+// accepted at the request boundary, or vice versa.
+var sortableEmailProperties = map[string]bool{
+	"receivedAt":   true,
+	"sentAt":       true,
+	"size":         true,
+	"from":         true,
+	"to":           true,
+	"subject":      true,
+	"hasKeyword":   true,
+	"snoozedUntil": true,
+}
+
+// validateSort rejects a sort naming a property outside
+// sortableEmailProperties with unsupportedSort, per RFC 8620 section
+// 5.5. An unrecognised property must never fall through to the
+// comparator, where it would silently compare equal on every pair and
+// leave the result order undefined.
+func validateSort(comps []comparator) *protojmap.MethodError {
+	for _, c := range comps {
+		if !sortableEmailProperties[c.Property] {
+			return protojmap.NewMethodError("unsupportedSort",
+				fmt.Sprintf("cannot sort by property %q", c.Property))
+		}
+	}
+	return nil
+}
+
+// sortMessages applies the comparator chain. Callers must have already
+// rejected any comparator naming a property outside
+// sortableEmailProperties via validateSort.
 func sortMessages(xs []store.Message, comps []comparator) {
 	if len(comps) == 0 {
 		comps = []comparator{{Property: "receivedAt"}}
@@ -1076,8 +1114,27 @@ func compareMessage(a, b store.Message, c comparator) int {
 			return 1 // a is "greater"; descending puts a before b
 		}
 		return -1
+	case "snoozedUntil":
+		return compareTimePtr(a.SnoozedUntil, b.SnoozedUntil)
 	}
 	return 0
+}
+
+// compareTimePtr orders a nil deadline after any real one: snoozedUntil
+// is only meaningful for a message carrying the $snoozed keyword, so a
+// message with no snooze has nothing to compare against a wake time and
+// sorts last regardless of direction.
+func compareTimePtr(a, b *time.Time) int {
+	switch {
+	case a == nil && b == nil:
+		return 0
+	case a == nil:
+		return 1
+	case b == nil:
+		return -1
+	default:
+		return compareTime(*a, *b)
+	}
 }
 
 func compareTime(a, b time.Time) int {
@@ -1164,6 +1221,10 @@ func (qc queryChangesHandler) Execute(ctx context.Context, args json.RawMessage)
 			return nil, protojmap.NewMethodError("invalidArguments", err.Error())
 		}
 	}
+	if serr := validateSort(req.Sort); serr != nil {
+		return nil, serr
+	}
+
 	ownerPID, merr := resolveAccount(ctx, qc.h.store.Meta(), callerPID, req.AccountID)
 	if merr != nil {
 		return nil, merr
