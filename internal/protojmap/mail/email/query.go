@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -25,8 +26,14 @@ type emailFilter struct {
 	Conditions []json.RawMessage `json:"conditions"`
 
 	// FilterCondition fields (RFC 8621 §4.4.1)
-	InMailbox               *jmapID  `json:"inMailbox"`
-	InMailboxOtherThan      []jmapID `json:"inMailboxOtherThan"`
+	InMailbox          *jmapID  `json:"inMailbox"`
+	InMailboxOtherThan []jmapID `json:"inMailboxOtherThan"`
+	// NotInMailbox is herold's vendor filter condition (issue #467,
+	// capability protojmap.CapabilityEmailQueryExtensions): the message
+	// holds no membership in any listed mailbox. Unlike
+	// InMailboxOtherThan it is a plain exclusion, not RFC 8621's "in at
+	// least one mailbox outside this list" — see messageInNoneOfMailboxes.
+	NotInMailbox            []jmapID `json:"notInMailbox"`
 	Before                  *string  `json:"before"`
 	After                   *string  `json:"after"`
 	MinSize                 *int64   `json:"minSize"`
@@ -93,6 +100,52 @@ func decodeFilter(raw *json.RawMessage) (*emailFilter, error) {
 	return &f, nil
 }
 
+// collectNotInMailboxIDs walks f (recursing into AND/OR/NOT operator
+// trees) and returns every wire-form mailbox id named in a
+// notInMailbox condition.
+func collectNotInMailboxIDs(f *emailFilter) []jmapID {
+	if f == nil {
+		return nil
+	}
+	if f.Operator != "" {
+		var out []jmapID
+		for _, raw := range f.Conditions {
+			var sub emailFilter
+			if err := json.Unmarshal(raw, &sub); err == nil {
+				out = append(out, collectNotInMailboxIDs(&sub)...)
+			}
+		}
+		return out
+	}
+	return f.NotInMailbox
+}
+
+// validateNotInMailboxRefs checks every mailbox id named in a
+// notInMailbox condition against the store, mirroring the
+// "unparseable or unknown mailbox id is invalidArguments" rule other
+// mailbox-referencing JMAP calls apply (e.g. Email/set's mailboxIds).
+// inMailbox / inMailboxOtherThan are left unvalidated here (unchanged,
+// pre-existing behaviour: an unknown id there simply matches no
+// message). Returns a non-nil *MethodError for the caller to return
+// verbatim, or a non-nil error for the caller to wrap via serverFail.
+func validateNotInMailboxRefs(ctx context.Context, meta store.Metadata, f *emailFilter) (*protojmap.MethodError, error) {
+	for _, raw := range collectNotInMailboxIDs(f) {
+		id, ok := mailboxIDFromJMAP(raw)
+		if !ok {
+			return protojmap.NewMethodError("invalidArguments",
+				"notInMailbox carries an unparseable mailbox id"), nil
+		}
+		if _, err := meta.GetMailboxByID(ctx, id); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return protojmap.NewMethodError("invalidArguments",
+					"notInMailbox references a mailbox that does not exist"), nil
+			}
+			return nil, err
+		}
+	}
+	return nil, nil
+}
+
 // queryHandler implements Email/query.
 type queryHandler struct{ h *handlerSet }
 
@@ -127,6 +180,11 @@ func (q *queryHandler) Execute(ctx context.Context, args json.RawMessage) (any, 
 	filter, ferr := decodeFilter(req.Filter)
 	if ferr != nil {
 		return nil, protojmap.NewMethodError("invalidArguments", ferr.Error())
+	}
+	if merr, err := validateNotInMailboxRefs(ctx, q.h.store.Meta(), filter); merr != nil {
+		return nil, merr
+	} else if err != nil {
+		return nil, serverFail(err)
 	}
 
 	// Fast path: when the filter is fully SQL-pushable (typically the
@@ -564,6 +622,28 @@ func messageHasMailboxOutside(m store.Message, excluded map[store.MailboxID]bool
 	return false
 }
 
+// messageInNoneOfMailboxes reports whether m holds no membership in
+// any mailbox listed in excluded -- herold's notInMailbox filter
+// condition (issue #467). This is a plain membership exclusion, not
+// RFC 8621's inMailboxOtherThan semantics ("in at least one mailbox
+// outside this list"): a message in both Inbox and Junk fails this
+// check against excluded={Junk} even though it also sits in Inbox,
+// which is exactly the "hide from the inbox view" rule a Junk verdict
+// needs. Evaluated against the message's complete mailbox-membership
+// set (m.Mailboxes), same as messageInMailbox / messageHasMailboxOutside,
+// falling back to MailboxID when Mailboxes is empty.
+func messageInNoneOfMailboxes(m store.Message, excluded map[store.MailboxID]bool) bool {
+	if len(m.Mailboxes) == 0 {
+		return !excluded[m.MailboxID]
+	}
+	for _, mm := range m.Mailboxes {
+		if excluded[mm.MailboxID] {
+			return false
+		}
+	}
+	return true
+}
+
 // matchConditionWithAttachments evaluates a FilterCondition against m
 // with precomputed blob filter data.
 func matchConditionWithAttachments(m store.Message, f *emailFilter, all []store.Message, fd *filterData) bool {
@@ -581,6 +661,17 @@ func matchConditionWithAttachments(m store.Message, f *emailFilter, all []store.
 			}
 		}
 		if !messageHasMailboxOutside(m, excluded) {
+			return false
+		}
+	}
+	if len(f.NotInMailbox) > 0 {
+		excluded := make(map[store.MailboxID]bool, len(f.NotInMailbox))
+		for _, raw := range f.NotInMailbox {
+			if id, ok := mailboxIDFromJMAP(raw); ok {
+				excluded[id] = true
+			}
+		}
+		if !messageInNoneOfMailboxes(m, excluded) {
 			return false
 		}
 	}
@@ -1233,6 +1324,11 @@ func (qc queryChangesHandler) Execute(ctx context.Context, args json.RawMessage)
 	filter, ferr := decodeFilter(req.Filter)
 	if ferr != nil {
 		return nil, protojmap.NewMethodError("invalidArguments", ferr.Error())
+	}
+	if merr, err := validateNotInMailboxRefs(ctx, qc.h.store.Meta(), filter); merr != nil {
+		return nil, merr
+	} else if err != nil {
+		return nil, serverFail(err)
 	}
 
 	since, ok := parseState(req.SinceQueryState)

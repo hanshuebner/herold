@@ -208,6 +208,19 @@ const (
 	// REQ-EXTIMG-30..37). Implemented under
 	// internal/protojmap/mail/email (unsubscribe.go).
 	CapabilityEmailUnsubscribe CapabilityID = "https://netzhansa.com/jmap/unsubscribe"
+
+	// CapabilityEmailQueryExtensions is the vendor namespace for
+	// herold-specific `Email/query` / `Email/queryChanges` filter
+	// conditions that go beyond RFC 8621 §4.4.1 (issue #467). Signals
+	// that the listed conditions are honoured on both the SQL fast path
+	// and the Go-side slow path with identical semantics, so a client
+	// can rely on them for indexed queries.
+	//
+	// Conditions currently defined:
+	//   - `notInMailbox: Id[]` — the message holds no membership in any
+	//     of the listed mailboxes. Property-only extension; the
+	//     descriptor is the empty object.
+	CapabilityEmailQueryExtensions CapabilityID = "https://netzhansa.com/jmap/email-query-extensions"
 )
 
 // MethodHandler resolves and executes one method call within a JMAP

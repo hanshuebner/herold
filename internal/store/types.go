@@ -553,6 +553,15 @@ type EmailQueryFastOpts struct {
 	// InMailboxOtherThan excludes the listed mailboxes from the result
 	// set. Combined with InMailbox via AND.
 	InMailboxOtherThan []MailboxID
+	// NotInMailbox rejects a message that holds a membership in ANY of
+	// the listed mailboxes, regardless of what other mailboxes it also
+	// belongs to. This backs the JMAP layer's herold `notInMailbox`
+	// filter condition (issue #467): unlike InMailboxOtherThan, which
+	// implements RFC 8621's "in at least one mailbox outside this list"
+	// semantics, NotInMailbox is a plain membership exclusion — the
+	// predicate the suite's inbox view needs to hide Junk without
+	// re-admitting a message that also sits in Trash.
+	NotInMailbox []MailboxID
 	// Before bounds received-at strictly less than this instant.
 	Before *time.Time
 	// After bounds received-at strictly greater than this instant.

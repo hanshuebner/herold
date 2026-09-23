@@ -134,6 +134,13 @@ func RegisterWithOptions(reg *protojmap.CapabilityRegistry, st store.Store, logg
 	// and stop attempting its own (CORS-doomed) browser-side POST.
 	reg.Register(protojmap.CapabilityEmailUnsubscribe, unsubscribeHandler{h: h})
 	reg.RegisterCapabilityDescriptor(protojmap.CapabilityEmailUnsubscribe, struct{}{})
+
+	// notInMailbox Email/query filter condition (issue #467). Property-
+	// only extension of the existing Email/query and Email/queryChanges
+	// methods (both registered under CapabilityMail above), so there is
+	// no method to register here -- only the capability presence,
+	// matching CapabilityMailSnooze's pattern.
+	reg.RegisterCapabilityDescriptor(protojmap.CapabilityEmailQueryExtensions, struct{}{})
 }
 
 // WaitBackgroundWrites blocks until all background goroutines started by

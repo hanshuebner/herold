@@ -145,6 +145,14 @@ Per `docs/design/web/notes/server-contract.md` § Email reactions. Capability `h
 - **REQ-PROTO-102** Reactions advance the `Email` state string per the standard JMAP rules; pushed via the EventSource channel like other Email mutations.
 - **REQ-PROTO-103** Outbound emission of reactions to non-local recipients is herold's responsibility — see REQ-FLOW-100..108. The suite does not see the cross-server-vs-local-only distinction; it just calls `Email/set` and herold dispatches.
 
+### Email query mailbox-exclusion extension
+
+Capability `https://netzhansa.com/jmap/email-query-extensions` (issue #467). Advertised unconditionally; property-only, empty descriptor.
+
+- **REQ-PROTO-130** MUST implement the `notInMailbox: Id[]` filter condition on `Email/query` and `Email/queryChanges`, in addition to the RFC 8621 §4.4.1 conditions: the message holds no membership in any of the listed mailboxes. Distinct from `inMailboxOtherThan`, whose RFC 8621 semantics ("in at least one mailbox not in this list") a message filed in both Inbox and an excluded mailbox still satisfies; `notInMailbox` rejects that same message outright. Used by the suite and Android inbox views to hide a Junk-classified message that still carries an Inbox membership, while a Trash membership never triggers the exclusion (the store guarantees a message never sits in Trash and another mailbox at once, issue #460).
+- **REQ-PROTO-131** `notInMailbox` MUST stay on the SQL-pushable fast path (REQ-PERF-INDEX-10) for a single-level AND of `inMailbox` and `notInMailbox`, with the Go-side slow path implementing identical semantics. `inMailboxOtherThan` is unaffected: it keeps its RFC 8621 meaning on both paths.
+- **REQ-PROTO-132** A mailbox id named in `notInMailbox` that does not parse or does not reference an existing mailbox MUST fail the request with `invalidArguments`, the same rule other JMAP mailbox references apply (e.g. `Email/set`'s `mailboxIds`).
+
 ### Shortcut coach datatype
 
 Per `docs/design/web/requirements/23-shortcut-coach.md` and `docs/design/web/notes/server-contract.md` § Shortcut coach. Capability `https://netzhansa.com/jmap/shortcut-coach`. Phase 2.

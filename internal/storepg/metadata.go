@@ -3796,6 +3796,19 @@ func (m *metadata) QueryEmailFast(
 		where = append(where, "NOT EXISTS (SELECT 1 FROM message_mailboxes mm2 "+
 			"WHERE mm2.message_id = m.id AND mm2.mailbox_id IN ("+strings.Join(phs, ",")+"))")
 	}
+	if len(opts.NotInMailbox) > 0 {
+		phs := make([]string, len(opts.NotInMailbox))
+		for i, id := range opts.NotInMailbox {
+			phs[i] = ph(int64(id))
+		}
+		// notInMailbox (issue #467): reject the message when it holds a
+		// membership in any listed mailbox, checked across every
+		// message_mailboxes row for the message (not just the row the
+		// outer JOIN happened to pick), same reasoning as
+		// InMailboxOtherThan above.
+		where = append(where, "NOT EXISTS (SELECT 1 FROM message_mailboxes mm3 "+
+			"WHERE mm3.message_id = m.id AND mm3.mailbox_id IN ("+strings.Join(phs, ",")+"))")
+	}
 	if opts.Before != nil {
 		where = append(where, "m.received_at_us < "+ph(usMicros(*opts.Before)))
 	}

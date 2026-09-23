@@ -218,3 +218,86 @@ func TestMergeFilterIntoOpts_NilFilterIsNoOp(t *testing.T) {
 		t.Fatalf("nil filter must be pushable")
 	}
 }
+
+// TestMergeFilterIntoOpts_AndOfInMailboxAndNotInMailbox covers the
+// wire shape #467 introduces for the inbox view:
+// `{operator: AND, conditions: [{inMailbox}, {notInMailbox}]}`. Both
+// conjuncts are flat-pushable, so the AND stays on the indexed path
+// (REQ-PERF-INDEX-10).
+func TestMergeFilterIntoOpts_AndOfInMailboxAndNotInMailbox(t *testing.T) {
+	f := &emailFilter{
+		Operator: "AND",
+		Conditions: []json.RawMessage{
+			mustMarshal(t, emailFilter{InMailbox: strPtr("3")}),
+			mustMarshal(t, emailFilter{NotInMailbox: []jmapID{"7", "8"}}),
+		},
+	}
+
+	var opts store.EmailQueryFastOpts
+	if !mergeFilterIntoOpts(f, &opts) {
+		t.Fatalf("AND of inMailbox + notInMailbox must be pushable")
+	}
+	if opts.InMailbox == nil || *opts.InMailbox != 3 {
+		t.Fatalf("InMailbox = %v, want 3", opts.InMailbox)
+	}
+	if len(opts.NotInMailbox) != 2 || opts.NotInMailbox[0] != 7 || opts.NotInMailbox[1] != 8 {
+		t.Fatalf("NotInMailbox = %v, want [7 8]", opts.NotInMailbox)
+	}
+}
+
+// TestMergeFilterIntoOpts_FlatNotInMailbox: a bare notInMailbox
+// condition (no AND wrapper) is pushable on its own.
+func TestMergeFilterIntoOpts_FlatNotInMailbox(t *testing.T) {
+	f := &emailFilter{NotInMailbox: []jmapID{"9"}}
+
+	var opts store.EmailQueryFastOpts
+	if !mergeFilterIntoOpts(f, &opts) {
+		t.Fatalf("flat notInMailbox must be pushable")
+	}
+	if len(opts.NotInMailbox) != 1 || opts.NotInMailbox[0] != 9 {
+		t.Fatalf("NotInMailbox = %v, want [9]", opts.NotInMailbox)
+	}
+}
+
+// TestMergeFilterIntoOpts_ConflictingNotInMailbox: two conjuncts
+// setting different notInMailbox lists is a conflict -- refuse rather
+// than guess at union vs intersection, same rule as InMailboxOtherThan.
+func TestMergeFilterIntoOpts_ConflictingNotInMailbox(t *testing.T) {
+	f := &emailFilter{
+		Operator: "AND",
+		Conditions: []json.RawMessage{
+			mustMarshal(t, emailFilter{NotInMailbox: []jmapID{"7"}}),
+			mustMarshal(t, emailFilter{NotInMailbox: []jmapID{"8"}}),
+		},
+	}
+
+	var opts store.EmailQueryFastOpts
+	if mergeFilterIntoOpts(f, &opts) {
+		t.Fatalf("conflicting notInMailbox predicates must refuse the merge")
+	}
+}
+
+// TestMergeFilterIntoOpts_NotWrappedInMailboxIsNotPushable shows the
+// flat/pushable contrast #467 asks for: the flat `notInMailbox`
+// condition is pushable, but the semantically related
+// `{operator: NOT, conditions: [{inMailbox: X}]}` shape -- an operator
+// nesting, not a flat FilterCondition -- is not. Only single-level AND
+// folds into the fast path; NOT always drops to the slow path.
+func TestMergeFilterIntoOpts_NotWrappedInMailboxIsNotPushable(t *testing.T) {
+	notWrapped := &emailFilter{
+		Operator: "NOT",
+		Conditions: []json.RawMessage{
+			mustMarshal(t, emailFilter{InMailbox: strPtr("7")}),
+		},
+	}
+	var opts store.EmailQueryFastOpts
+	if mergeFilterIntoOpts(notWrapped, &opts) {
+		t.Fatalf("NOT-wrapped inMailbox must not be pushable; got opts=%+v", opts)
+	}
+
+	flat := &emailFilter{NotInMailbox: []jmapID{"7"}}
+	var flatOpts store.EmailQueryFastOpts
+	if !mergeFilterIntoOpts(flat, &flatOpts) {
+		t.Fatalf("flat notInMailbox must remain pushable")
+	}
+}

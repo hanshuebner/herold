@@ -69,6 +69,13 @@ func tryFastEmailQuery(
 			return nil, false, nil
 		}
 	}
+	for _, id := range params.opts.NotInMailbox {
+		if owned, err := mailboxOwnedByPrincipal(ctx, st.Meta(), pid, id); err != nil {
+			return nil, false, err
+		} else if !owned {
+			return nil, false, nil
+		}
+	}
 
 	if params.collapseThreads {
 		return runFastCollapsed(ctx, st.Meta(), pid, req, params, state)
@@ -278,6 +285,23 @@ func mergeFlatFilterIntoOpts(f *emailFilter, opts *store.EmailQueryFastOpts) boo
 			return false
 		}
 		opts.InMailboxOtherThan = ids
+	}
+	if len(f.NotInMailbox) > 0 {
+		ids := make([]store.MailboxID, 0, len(f.NotInMailbox))
+		for _, raw := range f.NotInMailbox {
+			id, ok := mailboxIDFromJMAP(raw)
+			if !ok {
+				return false
+			}
+			ids = append(ids, id)
+		}
+		if len(opts.NotInMailbox) > 0 {
+			// Conflicting set of excluded mailboxes -- refuse rather
+			// than guess at union vs intersection semantics, same as
+			// InMailboxOtherThan above.
+			return false
+		}
+		opts.NotInMailbox = ids
 	}
 	if f.Before != nil {
 		t, err := time.Parse(time.RFC3339, *f.Before)
