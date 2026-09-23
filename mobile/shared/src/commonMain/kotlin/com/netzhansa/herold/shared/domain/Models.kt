@@ -138,6 +138,15 @@ data class Email(
     val size: Long = 0,
     val hasAttachment: Boolean = false,
     val snoozedUntil: String? = null,
+    /**
+     * The wake marker the server stamps when a reminder falls due
+     * (issue #470): [snoozeWokeAt] is the moment of the release,
+     * [snoozeWokeFor] the deadline that fell due. The server clears both
+     * when the message gains `$seen` and when it is snoozed again, and
+     * the sync fold applies that clearing.
+     */
+    val snoozeWokeAt: String? = null,
+    val snoozeWokeFor: String? = null,
     val keywords: Set<String> = emptySet(),
     val mailboxIds: Set<String> = emptySet(),
     val bodyHtml: String? = null,
@@ -151,6 +160,13 @@ data class Email(
     val isUnread: Boolean get() = keywords.none { it.equals(Keywords.SEEN, ignoreCase = true) }
     val isFlagged: Boolean get() = keywords.any { it.equals(Keywords.FLAGGED, ignoreCase = true) }
     val isSnoozed: Boolean get() = keywords.any { it.equals(Keywords.SNOOZED, ignoreCase = true) }
+
+    /**
+     * True while the message carries the server's wake marker: it is back
+     * because a reminder fell due, and the reader has not read it yet
+     * (issue #470).
+     */
+    val wokeFromSnooze: Boolean get() = snoozeWokeFor != null
 
     /** The category this message carries, from its `$category-<name>` keyword. */
     val category: String? get() = keywords.firstNotNullOfOrNull { Keywords.categoryName(it) }

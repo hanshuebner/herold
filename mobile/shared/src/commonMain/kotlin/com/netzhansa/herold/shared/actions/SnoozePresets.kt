@@ -106,3 +106,26 @@ object SnoozeClock {
     private fun titleCase(name: String): String =
         name.take(1) + name.drop(1).lowercase()
 }
+
+/**
+ * What the client says about a reminder that has fallen due (issue #470).
+ * The server stamps `snoozeWokeFor` on release and clears it once the
+ * message is read, so these lines answer "why is this conversation here
+ * again" for exactly as long as the marker stands.
+ */
+object SnoozeWakeMessages {
+
+    /** The conversation view's banner, naming the time the reminder was set for. */
+    fun banner(wakeLabel: String): String = "Back because a reminder for $wakeLabel fell due"
+
+    /** The compact marker the conversation's inbox row carries. */
+    fun rowMarker(wakeLabel: String): String = "Reminder $wakeLabel"
+
+    /**
+     * [wakeAt] as both lines name it: phrased the way the snoozed
+     * indicator phrases a wake time, and as the wire value itself when
+     * the server sent something unparseable.
+     */
+    fun label(wakeAt: String, now: Instant, zone: TimeZone): String =
+        SnoozeClock.parseWake(wakeAt)?.let { SnoozeClock.describe(it, now, zone) } ?: wakeAt
+}

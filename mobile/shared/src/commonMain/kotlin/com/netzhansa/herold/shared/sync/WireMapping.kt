@@ -121,6 +121,8 @@ internal fun WireEmail.toDomain(accountId: String): Email {
         size = size,
         hasAttachment = hasAttachment,
         snoozedUntil = snoozedUntil,
+        snoozeWokeAt = snoozeWokeAt,
+        snoozeWokeFor = snoozeWokeFor,
         keywords = keywords.filterValues { it }.keys,
         mailboxIds = mailboxIds.filterValues { it }.keys,
         bodyHtml = htmlPart?.partId?.let { bodyValues?.get(it)?.value },

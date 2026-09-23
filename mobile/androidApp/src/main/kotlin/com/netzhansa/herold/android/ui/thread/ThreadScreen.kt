@@ -105,6 +105,7 @@ import com.netzhansa.herold.android.ui.common.UndoOffers
 import com.netzhansa.herold.android.ui.common.collectAsStateSafely
 import com.netzhansa.herold.shared.actions.PendingAction
 import com.netzhansa.herold.shared.actions.SnoozeClock
+import com.netzhansa.herold.shared.actions.SnoozeWakeMessages
 import com.netzhansa.herold.shared.actions.UndoMessages
 import com.netzhansa.herold.shared.compose.ComposeMode
 import com.netzhansa.herold.shared.compose.HtmlText
@@ -299,6 +300,17 @@ fun ThreadScreen(
     // the cancel.
     val snoozedUntil = conversation.firstNotNullOfOrNull { it.snoozedUntil }
 
+    // The reminder that brought the conversation back (issue #470). The
+    // server clears the marker when the conversation is read, which
+    // opening it does, so the banner is latched for the visit: the answer
+    // to "why is this here again" stays up while it is being read, and is
+    // gone the next time the conversation is opened.
+    var wokeFor by remember(accountId, threadId) { mutableStateOf<String?>(null) }
+    val wokeForOnServer = conversation.firstNotNullOfOrNull { it.snoozeWokeFor }
+    LaunchedEffect(wokeForOnServer) {
+        if (wokeForOnServer != null) wokeFor = wokeForOnServer
+    }
+
     /** The address a block and a seeded filter act on. */
     val newestSender = conversation.lastOrNull()?.fromEmail.orEmpty()
 
@@ -457,6 +469,7 @@ fun ThreadScreen(
         },
     ) { padding ->
         Column(modifier = Modifier.fillMaxSize().padding(padding)) {
+        wokeFor?.let { WokeFromSnoozeBanner(wakeAt = it) }
         snoozedUntil?.let { wakeAt ->
             SnoozedIndicator(
                 wakeAt = wakeAt,
@@ -990,6 +1003,34 @@ private fun UnsubscribeBar(busy: Boolean, onClick: () -> Unit) {
             modifier = Modifier.testTag("thread-unsubscribe"),
         ) {
             Text(UnsubscribeMessages.BUTTON)
+        }
+    }
+}
+
+/**
+ * Why the conversation is back: a reminder set for [wakeAt] fell due and
+ * the server released it into the inbox (issue #470, suite REQ-SNZ-11).
+ * The banner stands until the conversation is read, which is when the
+ * server clears the wake marker.
+ */
+@Composable
+private fun WokeFromSnoozeBanner(wakeAt: String) {
+    val label = SnoozeWakeMessages.label(wakeAt, Clock.System.now(), TimeZone.currentSystemDefault())
+    Surface(
+        color = MaterialTheme.colorScheme.tertiaryContainer,
+        modifier = Modifier.fillMaxWidth().testTag("thread-woke"),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Icon(Icons.Filled.Schedule, contentDescription = null)
+            Text(
+                text = SnoozeWakeMessages.banner(label),
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.weight(1f).testTag("thread-woke-for"),
+            )
         }
     }
 }

@@ -103,6 +103,7 @@ import com.netzhansa.herold.android.ui.common.SnoozeSheet
 import com.netzhansa.herold.android.ui.common.StatusIndicator
 import com.netzhansa.herold.android.ui.common.collectAsStateSafely
 import com.netzhansa.herold.shared.actions.SnoozeClock
+import com.netzhansa.herold.shared.actions.SnoozeWakeMessages
 import com.netzhansa.herold.shared.domain.Email
 import com.netzhansa.herold.shared.domain.Keywords
 import androidx.compose.ui.draw.clip
@@ -1066,6 +1067,28 @@ private fun ThreadRowItem(
                 overflow = TextOverflow.Ellipsis,
             )
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                // Why the conversation is in the list again: a reminder
+                // set for this time fell due (issue #470). The marker
+                // stands until the conversation is read, which is when
+                // the server clears the wake marker behind it.
+                row.wokeFor?.let { wakeAt ->
+                    val label = SnoozeWakeMessages.label(
+                        wakeAt,
+                        Clock.System.now(),
+                        TimeZone.currentSystemDefault(),
+                    )
+                    AssistChip(
+                        onClick = {},
+                        leadingIcon = { Icon(Icons.Filled.Schedule, contentDescription = null) },
+                        label = {
+                            Text(
+                                text = SnoozeWakeMessages.rowMarker(label),
+                                style = MaterialTheme.typography.labelSmall,
+                            )
+                        },
+                        modifier = Modifier.testTag("thread-woke-${row.threadId}"),
+                    )
+                }
                 if (row.hasDraft) {
                     AssistChip(
                         onClick = {},

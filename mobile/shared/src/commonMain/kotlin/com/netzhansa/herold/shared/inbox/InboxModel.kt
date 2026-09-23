@@ -24,6 +24,13 @@ data class ThreadRow(
     val emailIds: List<String>,
     /** The wake time the server holds for the conversation, when it sleeps. */
     val wakeAt: String? = null,
+    /**
+     * The reminder that brought the conversation back, when it carries
+     * the server's wake marker (issue #470): the time the reminder was
+     * set for. The row states it until the conversation is read, which
+     * is when the server clears the marker.
+     */
+    val wokeFor: String? = null,
     /** True when an unsent answer to this conversation is waiting (issue #371). */
     val hasDraft: Boolean = false,
 )
@@ -310,6 +317,8 @@ object InboxAssembler {
                     categories = ordered.flatMap { it.categories }.distinct().sorted(),
                     emailIds = ordered.map { it.id },
                     wakeAt = ordered.firstNotNullOfOrNull { it.snoozedUntil },
+                    wokeFor = ordered.filter { it.wokeFromSnooze }
+                        .firstNotNullOfOrNull { it.snoozeWokeFor },
                     hasDraft = key in draftThreads || key.second in pendingThreads,
                 )
             }

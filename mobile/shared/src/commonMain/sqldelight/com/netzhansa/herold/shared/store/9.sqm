@@ -1,0 +1,6 @@
+-- Schema 9 -> 10: the server's snooze wake marker (issue #470, server
+-- issue #469). Additive: an install keeps its synced mail, and both
+-- columns fill with the server's values on the next Email/get.
+
+ALTER TABLE email ADD COLUMN snoozeWokeAt TEXT;
+ALTER TABLE email ADD COLUMN snoozeWokeFor TEXT;

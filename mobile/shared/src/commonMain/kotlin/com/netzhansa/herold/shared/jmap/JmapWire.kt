@@ -167,6 +167,12 @@ data class WireEmail(
     val preview: String? = null,
     val hasAttachment: Boolean = false,
     val snoozedUntil: String? = null,
+    /**
+     * The wake marker the server stamps when a reminder falls due
+     * (issue #470), null once it is cleared.
+     */
+    val snoozeWokeAt: String? = null,
+    val snoozeWokeFor: String? = null,
     val htmlBody: List<WireBodyPart>? = null,
     val textBody: List<WireBodyPart>? = null,
     val attachments: List<WireBodyPart>? = null,

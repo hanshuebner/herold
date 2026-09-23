@@ -38,6 +38,9 @@ CREATE TABLE email (
     -- Appended by migration 6.sqm.
     listUnsubscribe TEXT,
     listUnsubscribePost TEXT,
+    -- Appended by migration 9.sqm: the server's snooze wake marker.
+    snoozeWokeAt TEXT,
+    snoozeWokeFor TEXT,
     PRIMARY KEY (accountId, id)
 );
 
@@ -77,6 +80,8 @@ UPDATE email SET
     size = ?,
     hasAttachment = ?,
     snoozedUntil = ?,
+    snoozeWokeAt = ?,
+    snoozeWokeFor = ?,
     keywords = ?,
     mailboxIds = ?
 WHERE accountId = ? AND id = ?;

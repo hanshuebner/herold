@@ -936,6 +936,7 @@ class JmapClient(
             "header:List-Unsubscribe:asText",
             "header:List-Unsubscribe-Post:asText",
             "subject", "receivedAt", "size", "preview", "hasAttachment", "snoozedUntil",
+            "snoozeWokeAt", "snoozeWokeFor",
         )
         private val BODY_PROPERTIES = listOf("htmlBody", "textBody", "attachments", "bodyValues")
     }

@@ -50,6 +50,7 @@ presentation-level and not yet built.
 | `06-snooze` — custom date-and-time preset (`REQ-SNZ-05`) | presentation | done (#350); the Material date picker then time picker, opening on the next full hour | #350 |
 | `06-snooze` — the open conversation states its wake time, with edit and cancel (`REQ-SNZ-12`) | presentation | done (#350) | #350 |
 | `06-snooze` — snoozed threads leave the inbox and list under a Snoozed destination with their wake time (`REQ-SNZ-10/11/14`) | presentation | done (#353) | #353 |
+| `06-snooze` — a woken conversation says why it is back (`REQ-SNZ-11`) | presentation | done (#470); the server stamps `Email.snoozeWokeAt`/`snoozeWokeFor` when its snooze worker releases a reminder (server #469), the fold keeps both in the local store, the conversation carries a banner naming the reminder that fell due and its inbox row a compact marker, and both end when the conversation is read - which is when the server clears the marker and the fold applies the clearing | #470 |
 | `07-search` — JMAP `Email/query` + FTS | protocol | n/a | — |
 | `07-search` — search field, thread results, `SearchSnippet` highlights (`REQ-SRC-01..06`, `30..32`) | presentation | done (milestone 1c); a result outside the synced set is fetched on open and the search screen is restored on back (#339, #340) | #329 |
 | `07-search` — fielded operators, autocomplete, recent searches (`REQ-SRC-10/11/22`) | presentation | todo | — |
