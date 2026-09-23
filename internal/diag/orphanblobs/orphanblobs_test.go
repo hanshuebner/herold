@@ -14,6 +14,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -336,6 +338,134 @@ func TestRestore_WithLabel(t *testing.T) {
 			}
 			if len(restored.Mailboxes) != 2 {
 				t.Errorf("restored.Mailboxes = %+v; want exactly [Archive, label]", restored.Mailboxes)
+			}
+		})
+	}
+}
+
+// countingBlobs wraps a store.Blobs and records the total number of bytes
+// any caller has Read from a blob it opened via Get, so a test can prove a
+// bound on how much of a blob's content a code path actually consumes.
+type countingBlobs struct {
+	store.Blobs
+	bytesRead atomic.Int64
+}
+
+func (c *countingBlobs) Get(ctx context.Context, hash string) (store.BlobReader, error) {
+	r, err := c.Blobs.Get(ctx, hash)
+	if err != nil {
+		return nil, err
+	}
+	return &countingBlobReader{BlobReader: r, counter: c}, nil
+}
+
+// countingBlobReader tallies bytes returned by Read onto its counter. Seek
+// and ReadAt are passed straight through untallied: readBlobHeaders (the
+// code under test) only calls Read, and the tally exists to bound that
+// path, not every possible blob access pattern.
+type countingBlobReader struct {
+	store.BlobReader
+	counter *countingBlobs
+}
+
+func (r *countingBlobReader) Read(p []byte) (int, error) {
+	n, err := r.BlobReader.Read(p)
+	r.counter.bytesRead.Add(int64(n))
+	return n, err
+}
+
+// countingStore wraps a store.Store, substituting a *countingBlobs for its
+// blob store while leaving Meta/FTS/Close on the wrapped store untouched.
+type countingStore struct {
+	store.Store
+	blobs *countingBlobs
+}
+
+func (s *countingStore) Blobs() store.Blobs { return s.blobs }
+
+// TestList_BoundsBytesReadPerOrphan proves the #487 follow-up fix: List
+// must describe an orphan from its header section alone, never its body.
+// A blob with a multi-megabyte body is described by List after reading no
+// more than a small multiple of orphanblobs.MaxOrphanHeaderBytes -- nowhere
+// near the body's actual size -- on every backend.
+func TestList_BoundsBytesReadPerOrphan(t *testing.T) {
+	for _, be := range backends(t) {
+		t.Run(be.name, func(t *testing.T) {
+			st := be.open(t)
+			ctx := context.Background()
+			pid, inbox := setUpPrincipal(t, st, "bigbody@example.test")
+
+			d := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+			const bodySize = 8 * 1024 * 1024 // 8 MiB, far larger than any header cap.
+			raw := fmt.Sprintf("Message-ID: <big@test>\r\nSubject: Big body\r\nFrom: someone@example.test\r\nDate: %s\r\n\r\n",
+				d.Format("Mon, 02 Jan 2006 15:04:05 -0700"))
+			raw += strings.Repeat("x", bodySize)
+
+			blobRef, err := st.Blobs().Put(ctx, strings.NewReader(raw))
+			if err != nil {
+				t.Fatalf("Blobs.Put: %v", err)
+			}
+			storeMsg := store.Message{
+				PrincipalID:  pid,
+				Size:         int64(len(raw)),
+				Blob:         blobRef,
+				InternalDate: d,
+				ReceivedAt:   d,
+				Envelope: store.Envelope{
+					Subject:   "Big body",
+					From:      "someone@example.test",
+					MessageID: "<big@test>",
+					Date:      d,
+				},
+			}
+			uid, _, err := st.Meta().InsertMessage(ctx, storeMsg, []store.MessageMailbox{{MailboxID: inbox}})
+			if err != nil {
+				t.Fatalf("InsertMessage: %v", err)
+			}
+			msgID, err := st.Meta().GetMessageIDByMailboxUID(ctx, inbox, uid)
+			if err != nil {
+				t.Fatalf("GetMessageIDByMailboxUID: %v", err)
+			}
+			if err := st.Meta().RemoveMessageFromMailbox(ctx, msgID, inbox); err != nil {
+				t.Fatalf("RemoveMessageFromMailbox: %v", err)
+			}
+
+			blobs := &countingBlobs{Blobs: st.Blobs()}
+			counted := &countingStore{Store: st, blobs: blobs}
+
+			orphans, err := orphanblobs.List(ctx, counted)
+			if err != nil {
+				t.Fatalf("List: %v", err)
+			}
+			var found *orphanblobs.OrphanBlob
+			for i := range orphans {
+				if orphans[i].Hash == blobRef.Hash {
+					found = &orphans[i]
+				}
+			}
+			if found == nil {
+				t.Fatalf("List did not report the big-body orphan; got %d orphans", len(orphans))
+			}
+			if found.Subject != "Big body" {
+				t.Errorf("Subject = %q; want %q", found.Subject, "Big body")
+			}
+			if found.MessageID != "<big@test>" {
+				t.Errorf("MessageID = %q; want <big@test>", found.MessageID)
+			}
+			if found.ParseError != "" {
+				t.Errorf("ParseError = %q; want none", found.ParseError)
+			}
+			if found.HeadersTruncated {
+				t.Errorf("HeadersTruncated = true; this blob's headers are far under the cap")
+			}
+
+			// Generous slack over MaxOrphanHeaderBytes for bufio's internal
+			// buffering; still two orders of magnitude below bodySize, so
+			// this only passes if the body was never read.
+			const slack = 3 * orphanblobs.MaxOrphanHeaderBytes
+			if got := blobs.bytesRead.Load(); got > int64(orphanblobs.MaxOrphanHeaderBytes+slack) {
+				t.Errorf("List read %d bytes of the orphan blob; want at most %d (header cap + slack), not the %d-byte body",
+					got, orphanblobs.MaxOrphanHeaderBytes+slack, bodySize)
 			}
 		})
 	}

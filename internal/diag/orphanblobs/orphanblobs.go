@@ -13,6 +13,11 @@
 // by a live message's In-Reply-To/References (a thread the orphan's reply
 // belongs to). Writes nothing.
 //
+// List reads only each orphan's header section, bounded by
+// MaxOrphanHeaderBytes -- it never reads or MIME-parses a blob's body, so
+// its cost is independent of how large the orphaned bodies and attachments
+// are.
+//
 // Restore re-inserts one named blob as a message for a principal, through
 // the same store.Metadata.InsertMessage path live ingest uses, so it is
 // deduplicated, threaded (including #485's late-ancestor merge), and
@@ -21,6 +26,7 @@
 package orphanblobs
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -32,6 +38,14 @@ import (
 	"github.com/hanshuebner/herold/internal/mailparse"
 	"github.com/hanshuebner/herold/internal/store"
 )
+
+// MaxOrphanHeaderBytes bounds how much of an orphan blob List reads to
+// describe it. The RFC 5322 header block of ordinary mail is a few KiB at
+// most, so this generous cap catches every real message's headers while
+// keeping List's cost independent of body size -- a mass-expunge orphan set
+// can carry attachments many megabytes each, and List otherwise reads and
+// MIME-parses every one of them just to print Date/From/Subject.
+const MaxOrphanHeaderBytes = 64 * 1024
 
 // OrphanBlob is one entry in the List result: a blob on disk that no live
 // message references, plus the headers parsed directly from the blob and
@@ -62,6 +76,11 @@ type OrphanBlob struct {
 	// ParseError is non-empty when the blob's headers could not be
 	// parsed; every other field except Hash and Size is then zero.
 	ParseError string
+	// HeadersTruncated is true when the header block was cut off at
+	// MaxOrphanHeaderBytes before its terminating blank line was found.
+	// The other fields still carry whatever headers were read before the
+	// cut -- a truncation is not a ParseError.
+	HeadersTruncated bool
 }
 
 // List enumerates every blob st's blob store holds that no live message
@@ -90,17 +109,26 @@ func List(ctx context.Context, st store.Store) ([]OrphanBlob, error) {
 	return out, nil
 }
 
-// describeOrphan reads b's blob, parses its headers, and looks up its
-// duplicate/reference status. A read or parse failure is recorded on
-// ParseError rather than failing the whole List call -- one unreadable or
-// malformed blob must not hide every other orphan from the operator.
+// describeOrphan reads only b's blob's header section (bounded by
+// MaxOrphanHeaderBytes), parses those headers, and looks up the resulting
+// Message-ID's duplicate/reference status. A read or parse failure is
+// recorded on ParseError rather than failing the whole List call -- one
+// unreadable or malformed blob must not hide every other orphan from the
+// operator. Hitting the header-size cap is not a failure: HeadersTruncated
+// is set and whatever headers were read before the cut are still used.
 func describeOrphan(ctx context.Context, st store.Store, b store.BlobRef) OrphanBlob {
 	ob := OrphanBlob{Hash: b.Hash, Size: b.Size}
-	msg, err := parseBlob(ctx, st, b.Hash)
+	hdr, truncated, err := readBlobHeaders(ctx, st, b.Hash, MaxOrphanHeaderBytes)
 	if err != nil {
 		ob.ParseError = err.Error()
 		return ob
 	}
+	msg, err := mailparse.ParseHeadersOnly(hdr)
+	if err != nil {
+		ob.ParseError = err.Error()
+		return ob
+	}
+	ob.HeadersTruncated = truncated
 	ob.Date = parseDate(msg.Envelope.Date)
 	ob.From = joinAddrs(msg.Envelope.From)
 	ob.Subject = msg.Envelope.Subject
@@ -255,11 +283,61 @@ func ensureArchiveMailbox(ctx context.Context, st store.Store, pid store.Princip
 	return mb, nil
 }
 
-// parseBlob reads and parses the blob named by hash, discarding the raw
-// bytes. Used by List, which only needs the headers.
-func parseBlob(ctx context.Context, st store.Store, hash string) (mailparse.Message, error) {
-	msg, _, err := parseBlobWithBytes(ctx, st, hash)
-	return msg, err
+// readBlobHeaders opens the blob named by hash and reads only its header
+// section: full lines up to and including the first blank line (the RFC
+// 5322 header/body separator), or up to capBytes, whichever comes first.
+// Used by List (via describeOrphan) so describing an orphan never reads its
+// body -- a mass-expunge orphan set can carry attachments many megabytes
+// each, and List's cost must stay independent of body size.
+//
+// The returned bytes always end in a blank-line separator: when the true
+// separator is found before the cap, it is included verbatim; when the cap
+// is hit first (truncated == true) or the blob ends with no body at all, a
+// synthetic "\r\n" is appended so the header-only parser sees a complete,
+// terminated header block. Restore, which needs the exact stored bytes,
+// uses parseBlobWithBytes instead.
+func readBlobHeaders(ctx context.Context, st store.Store, hash string, capBytes int) ([]byte, bool, error) {
+	r, err := st.Blobs().Get(ctx, hash)
+	if err != nil {
+		return nil, false, fmt.Errorf("orphanblobs: Blobs.Get: %w", err)
+	}
+	defer r.Close()
+
+	br := bufio.NewReader(r)
+	var buf bytes.Buffer
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, false, err
+		}
+		line, rerr := br.ReadBytes('\n')
+		if len(line) > 0 {
+			if buf.Len()+len(line) > capBytes {
+				buf.WriteString("\r\n")
+				return buf.Bytes(), true, nil
+			}
+			buf.Write(line)
+			if isBlankHeaderLine(line) {
+				return buf.Bytes(), false, nil
+			}
+		}
+		if rerr != nil {
+			if rerr == io.EOF {
+				// A body-less blob, or one whose final header line
+				// has no trailing newline: terminate the header
+				// block so the header-only parser sees a complete
+				// message.
+				buf.WriteString("\r\n")
+				return buf.Bytes(), false, nil
+			}
+			return nil, false, fmt.Errorf("orphanblobs: read blob: %w", rerr)
+		}
+	}
+}
+
+// isBlankHeaderLine reports whether line, as returned by bufio.Reader.ReadBytes('\n'),
+// is the RFC 5322 header/body separator: empty once its trailing CR/LF is stripped.
+func isBlankHeaderLine(line []byte) bool {
+	return len(bytes.TrimRight(line, "\r\n")) == 0
 }
 
 // parseBlobWithBytes reads the blob named by hash, parses it, and returns

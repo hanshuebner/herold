@@ -1070,13 +1070,22 @@ func readCapped(r io.Reader, limit int64) (buf []byte, tooLarge bool, err error)
 	return buf, false, nil
 }
 
-// parseHeadersOnly extracts the RFC 5322 headers and the Envelope built
-// from them, without walking the MIME body tree. Used by Parse when the
-// full message exceeds ParseOptions.MaxSize: the header block is always
-// far smaller than the cap, so From/Subject/Message-ID survive even
-// though the body itself cannot be parsed. The returned Message's Body is
-// the zero Part and its Size is not set -- callers must key off the
-// caller-visible ErrTooLarge, not Body/Size, to detect the degraded case.
+// ParseHeadersOnly extracts the RFC 5322 headers and the Envelope built from
+// them, without walking the MIME body tree, so a caller that only needs
+// Date/From/Subject/Message-ID never has to buffer or parse a message body.
+// raw need only contain the header block terminated by a blank line (a
+// trailing body, if present, is ignored); it may also be exactly the header
+// bytes with no terminator, in which case the caller appends its own
+// blank-line separator before calling this. The returned Message's Body is
+// the zero Part and its Size is not set.
+func ParseHeadersOnly(raw []byte) (Message, error) {
+	return parseHeadersOnly(raw)
+}
+
+// parseHeadersOnly is ParseHeadersOnly's implementation, also used by Parse
+// when the full message exceeds ParseOptions.MaxSize: the header block is
+// always far smaller than the cap, so From/Subject/Message-ID survive even
+// though the body itself cannot be parsed.
 func parseHeadersOnly(raw []byte) (Message, error) {
 	nmsg, err := mail.ReadMessage(bytes.NewReader(raw))
 	if err != nil {
