@@ -71,6 +71,7 @@ class FakeLocalStore(
         val inboxIds = mailboxRows.value.filter { it.role == MailboxRoles.INBOX }
             .map { it.accountId to it.id }.toSet()
         rows.filter { email -> email.mailboxIds.any { (email.accountId to it) in inboxIds } }
+            .filterNot { isJunked(it) }
             .sortedByDescending { it.receivedAt }
             .take(limit.toInt())
     }
@@ -85,15 +86,32 @@ class FakeLocalStore(
 
     override fun mailboxEmails(mailboxIds: Collection<String>, limit: Long): Flow<List<Email>> =
         emailRows.map { rows ->
+            // Junk and Trash list what is filed there; every other
+            // destination leaves junked mail out (issue #467).
+            val filed = mailboxRows.value
+                .any { it.id in mailboxIds && (it.role == MailboxRoles.JUNK || it.role == MailboxRoles.TRASH) }
             rows.filter { email -> email.mailboxIds.any { it in mailboxIds } }
+                .filter { filed || !isJunked(it) }
                 .sortedByDescending { it.receivedAt }
                 .take(limit.toInt())
         }
 
     override fun snoozedEmails(limit: Long): Flow<List<Email>> = emailRows.map { rows ->
         rows.filter { it.snoozedUntil != null }
+            .filterNot { isJunked(it) }
             .sortedBy { it.snoozedUntil }
             .take(limit.toInt())
+    }
+
+    /**
+     * True when the message holds a membership in a junk-role mailbox:
+     * what keeps a classifier verdict out of the inbox even while the
+     * Inbox membership stands (issue #467).
+     */
+    private fun isJunked(email: Email): Boolean {
+        val junkIds = mailboxRows.value.filter { it.role == MailboxRoles.JUNK }
+            .map { it.accountId to it.id }.toSet()
+        return email.mailboxIds.any { (email.accountId to it) in junkIds }
     }
 
     override fun threadEmails(accountId: String, threadId: String): Flow<List<Email>> = emailRows.map { rows ->

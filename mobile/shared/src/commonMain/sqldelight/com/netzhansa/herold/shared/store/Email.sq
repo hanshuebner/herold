@@ -94,11 +94,25 @@ SELECT * FROM email WHERE accountId = ? AND id = ?;
 selectByThread:
 SELECT * FROM email WHERE accountId = ? AND threadId = ? ORDER BY receivedAt;
 
+-- The inbox stream (issue #467). A message the classifier filed to Junk
+-- is out of the inbox whatever else it holds, which is the rule the
+-- suite's inbox view applies through `notInMailbox`. A message in Trash
+-- and in the inbox is listed: Trash never coexists with another mailbox
+-- (issue #460), and a message that holds both is a store defect rather
+-- than something the list hides.
 selectInbox:
 SELECT email.* FROM email
 JOIN email_mailbox ON email_mailbox.accountId = email.accountId AND email_mailbox.emailId = email.id
 JOIN mailbox ON mailbox.accountId = email_mailbox.accountId AND mailbox.id = email_mailbox.mailboxId
 WHERE mailbox.role = 'inbox'
+  AND NOT EXISTS (
+    SELECT 1 FROM email_mailbox AS junkMembership
+    JOIN mailbox AS junkMailbox
+      ON junkMailbox.accountId = junkMembership.accountId AND junkMailbox.id = junkMembership.mailboxId
+    WHERE junkMembership.accountId = email.accountId
+      AND junkMembership.emailId = email.id
+      AND junkMailbox.role = 'junk'
+  )
 ORDER BY email.receivedAt DESC
 LIMIT ?;
 
@@ -114,19 +128,43 @@ LIMIT ?;
 
 -- The messages of one drawer destination: a system folder or a label,
 -- across the accounts the scope covers, newest first (suite REQ-LBL-20).
+-- A junked message is out of every destination except Junk and Trash,
+-- which list what is filed there (issue #467, suite
+-- `buildFolderViewFilter`).
 selectInMailboxes:
 SELECT email.* FROM email
 JOIN email_mailbox ON email_mailbox.accountId = email.accountId AND email_mailbox.emailId = email.id
+JOIN mailbox ON mailbox.accountId = email_mailbox.accountId AND mailbox.id = email_mailbox.mailboxId
 WHERE email_mailbox.mailboxId IN ?
+  AND (
+    mailbox.role IN ('junk', 'trash')
+    OR NOT EXISTS (
+      SELECT 1 FROM email_mailbox AS junkMembership
+      JOIN mailbox AS junkMailbox
+        ON junkMailbox.accountId = junkMembership.accountId AND junkMailbox.id = junkMembership.mailboxId
+      WHERE junkMembership.accountId = email.accountId
+        AND junkMembership.emailId = email.id
+        AND junkMailbox.role = 'junk'
+    )
+  )
 ORDER BY email.receivedAt DESC
 LIMIT ?;
 
 -- The snoozed set (suite REQ-SNZ-14): every message the server holds a
--- wake time for, next to wake first.
+-- wake time for, next to wake first, junked mail left out as in the
+-- suite's snoozed view (issue #467).
 selectSnoozed:
-SELECT * FROM email
-WHERE COALESCE(snoozedUntil, '') <> ''
-ORDER BY snoozedUntil ASC
+SELECT email.* FROM email
+WHERE COALESCE(email.snoozedUntil, '') <> ''
+  AND NOT EXISTS (
+    SELECT 1 FROM email_mailbox AS junkMembership
+    JOIN mailbox AS junkMailbox
+      ON junkMailbox.accountId = junkMembership.accountId AND junkMailbox.id = junkMembership.mailboxId
+    WHERE junkMembership.accountId = email.accountId
+      AND junkMembership.emailId = email.id
+      AND junkMailbox.role = 'junk'
+  )
+ORDER BY email.snoozedUntil ASC
 LIMIT ?;
 
 selectAll:

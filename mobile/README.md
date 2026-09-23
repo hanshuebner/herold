@@ -133,6 +133,9 @@ the wire away and gives it back through a relay in the test process, and
 pass the instance's `SMTP_ADDR` as `heroldSmtpAddr`.
 
 `UndoSendAcceptanceTest` runs online and needs no phases.
+`JunkExclusionAcceptanceTest` runs online and needs no phases: it
+delivers two messages over SMTP and files them from a second JMAP
+session, so pass the instance's `SMTP_ADDR` as `heroldSmtpAddr`.
 `t64` needs the foreign-identity seed, so start the instance with
 `HEROLD_DEV_EXTERNAL_SUBMISSION=1`.
 `InlineReplyAcceptanceTest` runs online too: it injects a push, sends a
