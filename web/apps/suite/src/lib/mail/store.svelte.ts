@@ -652,6 +652,18 @@ class MailStore {
         );
       }
     }
+    // Withdraw page-level desktop notifications for messages this delta
+    // shows read, archived, or destroyed elsewhere (re #481). Independent
+    // of push: this runs off the same Email/changes delta whenever this
+    // tab is open, whether or not a Web Push subscription exists or its
+    // mail-dismiss push was suppressed/missed.
+    if (delta !== null && this.#activeDesktopNotifications.size > 0) {
+      tasks.push(
+        this.#reconcileDesktopNotifications(delta).catch((err) => {
+          console.error('desktop notification reconcile failed', err);
+        }),
+      );
+    }
     if (tasks.length > 0) await Promise.all(tasks);
     this.emailState = newState;
 
@@ -3590,7 +3602,10 @@ class MailStore {
       this.listEmailIds = [];
       this.listFocusedIndex = -1;
     }
-    for (const id of ids) this.emails.delete(id);
+    for (const id of ids) {
+      this.emails.delete(id);
+      this.#checkDesktopNotificationStillWarranted(id);
+    }
 
     try {
       const { responses } = await jmap.batch((b) => {
@@ -4194,6 +4209,7 @@ class MailStore {
       if (e) prevEmails.set(id, e);
       this.#removeFromList(id);
       this.emails.delete(id);
+      this.#checkDesktopNotificationStillWarranted(id);
     }
     this.clearSelection();
     try {
@@ -5044,6 +5060,31 @@ class MailStore {
     const next = new Map(this.emails);
     next.set(id, { ...cur, ...patch });
     this.emails = next;
+    // Every optimistic action (mark read, archive, move, delete-to-trash,
+    // snooze, ...) routes through here, so this is also where a same-tab
+    // desktop notification is withdrawn the instant the user's own action
+    // makes it stale (re #481, #483) -- no round trip needed, the patched
+    // state is already authoritative for this tab.
+    this.#checkDesktopNotificationStillWarranted(id);
+  }
+
+  /**
+   * Close the tracked desktop notification for id if its current (patched
+   * or freshly re-fetched) state no longer warrants it: now `$seen`, no
+   * longer holding an Inbox-role membership, or gone entirely. Safe to call
+   * for any id, tracked or not -- a no-op when nothing is tracked for it.
+   */
+  #checkDesktopNotificationStillWarranted(id: string): void {
+    if (!this.#activeDesktopNotifications.has(id)) return;
+    const email = this.emails.get(id);
+    if (!email) {
+      this.#closeDesktopNotification(id);
+      return;
+    }
+    const seen = Boolean(email.keywords.$seen);
+    const inboxId = this.inbox?.id;
+    const inInbox = inboxId !== undefined && Boolean(email.mailboxIds[inboxId]);
+    if (seen || !inInbox) this.#closeDesktopNotification(id);
   }
 
   #removeFromList(emailId: string): void {
@@ -5309,6 +5350,17 @@ class MailStore {
    * registering a duplicate listener.
    */
   #visibilityUnmount: (() => void) | null = null;
+  /**
+   * Page-created desktop notifications (#fireDesktopNotification) currently
+   * showing, keyed by emailId. The service worker's `getNotifications()`
+   * only sees notifications posted via `registration.showNotification()`,
+   * never ones a page created directly via `new Notification()`, so a
+   * mail-dismiss push cannot withdraw these (re #481). This map is the
+   * page-side counterpart: #reconcileDesktopNotifications closes an entry
+   * once its message is observed seen, archived, or destroyed via the
+   * regular Email/changes state-change path this tab already runs.
+   */
+  #activeDesktopNotifications = new Map<string, Notification>();
   installVisibilitySync(): () => void {
     if (this.#visibilityUnmount !== null) return this.#visibilityUnmount;
     if (typeof document === 'undefined') return () => {};
@@ -5348,6 +5400,12 @@ class MailStore {
         body: email.preview ?? undefined,
         tag: `mail-${email.id}`,
       });
+      this.#activeDesktopNotifications.set(email.id, notification);
+      notification.onclose = (): void => {
+        if (this.#activeDesktopNotifications.get(email.id) === notification) {
+          this.#activeDesktopNotifications.delete(email.id);
+        }
+      };
       // Clicking the notification opens a chrome-less popup at the
       // thread-window route. The onclick is a user gesture so window.open
       // is not popup-blocked. A per-thread window name
@@ -5362,6 +5420,69 @@ class MailStore {
       // Browser policy (e.g. secure-context check) may reject; swallow
       // silently so the sound cue path is unaffected.
     }
+  }
+
+  /**
+   * Close any page-level desktop notification whose message the Email/changes
+   * delta reports updated or destroyed and that authoritatively is now seen,
+   * no longer in the inbox, or gone (re #481, REQ-PUSH-104). A dedicated
+   * Email/get call resolves the affected ids directly rather than relying on
+   * the folder/thread cache refreshes elsewhere in #onEmailStateChange,
+   * since a notified message need not belong to any currently-cached list
+   * or open thread. Only ids this tab currently has a live notification for
+   * are ever queried, so this is at most one small round-trip per state
+   * advance while any desktop notification is showing.
+   */
+  async #reconcileDesktopNotifications(delta: {
+    updated: Set<string>;
+    destroyed: Set<string>;
+  }): Promise<void> {
+    const candidates: string[] = [];
+    for (const id of this.#activeDesktopNotifications.keys()) {
+      if (delta.destroyed.has(id)) {
+        this.#closeDesktopNotification(id);
+      } else if (delta.updated.has(id)) {
+        candidates.push(id);
+      }
+    }
+    if (candidates.length === 0) return;
+    const accountId = this.mailAccountId;
+    if (!accountId) return;
+    const { responses } = await jmap.batch((b) => {
+      b.call(
+        'Email/get',
+        { accountId, ids: candidates, properties: ['keywords', 'mailboxIds'] },
+        [Capability.Mail],
+      );
+    });
+    strict(responses);
+    const args = invocationArgs<{
+      list: Array<{
+        id: string;
+        keywords?: Record<string, boolean>;
+        mailboxIds?: Record<string, boolean>;
+      }>;
+      notFound?: string[];
+    }>(responses[0]);
+    for (const id of args.notFound ?? []) {
+      this.#closeDesktopNotification(id);
+    }
+    for (const e of args.list) {
+      // Routes through #patchEmail so both channels (this remote-change
+      // reconcile and a same-tab action) share one warrant check
+      // (#checkDesktopNotificationStillWarranted).
+      this.#patchEmail(e.id, {
+        keywords: (e.keywords ?? {}) as Email['keywords'],
+        mailboxIds: (e.mailboxIds ?? {}) as Email['mailboxIds'],
+      });
+    }
+  }
+
+  #closeDesktopNotification(emailId: string): void {
+    const notification = this.#activeDesktopNotifications.get(emailId);
+    if (!notification) return;
+    this.#activeDesktopNotifications.delete(emailId);
+    notification.close();
   }
 }
 

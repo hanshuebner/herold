@@ -289,6 +289,11 @@ self.addEventListener('push', (event) => {
   swLog('sw.push', pushInfo);
   swRingWrite('sw', 'info', 'sw.push', pushInfo);
 
+  if (payload.kind === 'mail-dismiss') {
+    event.waitUntil(handleMailDismiss(payload).then(_flushRing));
+    return;
+  }
+
   const options = buildNotificationOptions(payload);
   if (!options) {
     event.waitUntil(_flushRing());
@@ -420,6 +425,47 @@ function buildNotificationOptions(payload) {
     default:
       return null;
   }
+}
+
+/**
+ * Handle a "mail-dismiss" push (REQ-PUSH-100..104, re #481): withdraw the
+ * notification for a message that became `$seen`, left the Inbox, or was
+ * destroyed on another client, instead of showing anything new.
+ *
+ * The arrival path tags a mail notification with `payload.threadId ??
+ * payload.emailId` (buildNotificationOptions, 'mail' case), and the browser
+ * replaces any prior notification sharing that tag, so at most one mail
+ * notification is ever showing for a given thread at a time. That single
+ * showing notification's `data.emailId` records which specific message it
+ * currently represents. Matching the dismissal's emailId against that
+ * recorded value reproduces Android's "close only when this was the last
+ * unread notified message" rule without maintaining a separate per-thread
+ * child registry: a still-unread sibling message in the same thread owns a
+ * notification whose data.emailId differs from the dismissed one, so it is
+ * left in place; the notification actually showing that message closes.
+ */
+async function handleMailDismiss(payload) {
+  const tag = payload.threadId ?? payload.emailId;
+  if (tag === undefined) return;
+  const dismissInfo = { tag, emailId: payload.emailId, reason: payload.reason };
+  const notifications = await self.registration.getNotifications({ tag });
+  let closed = 0;
+  for (const notification of notifications) {
+    const data = notification.data ?? {};
+    if (data.kind !== 'mail') continue;
+    if (
+      data.emailId !== undefined &&
+      payload.emailId !== undefined &&
+      data.emailId !== payload.emailId
+    ) {
+      // A different, still-unread message in the same thread owns this
+      // notification -- leave it showing.
+      continue;
+    }
+    notification.close();
+    closed += 1;
+  }
+  swRingWrite('sw', 'info', 'sw.push.dismiss', { ...dismissInfo, closed });
 }
 
 // ── Notification click ─────────────────────────────────────────────────────
