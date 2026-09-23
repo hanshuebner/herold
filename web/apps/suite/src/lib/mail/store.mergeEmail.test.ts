@@ -155,4 +155,21 @@ describe('mergeEmailListFetch (re #31 residual)', () => {
     // Body still preserved.
     expect(result.bodyValues).toEqual(existing.bodyValues);
   });
+
+  it('nulls snoozeWokeAt/snoozeWokeFor from an Email/changes fold that clears them (re #469)', () => {
+    // The server clears both properties, each as its own Email change-feed
+    // row, when the message gains $seen or is snoozed again. The fold that
+    // applies the resulting Email/get result must let the incoming nulls
+    // win over the cached non-null values -- otherwise the on-wake banner
+    // and its row marker would survive past the read/re-snooze that ended
+    // them.
+    const existing = makeBodyEmail({
+      snoozeWokeAt: '2026-05-09T09:00:00Z',
+      snoozeWokeFor: '2026-05-09T09:00:00Z',
+    });
+    const incoming = makeListEmail({ snoozeWokeAt: null, snoozeWokeFor: null });
+    const result = mergeEmailListFetch(existing, incoming);
+    expect(result.snoozeWokeAt).toBeNull();
+    expect(result.snoozeWokeFor).toBeNull();
+  });
 });

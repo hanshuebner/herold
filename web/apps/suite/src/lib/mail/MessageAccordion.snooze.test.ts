@@ -1,15 +1,20 @@
 /**
- * Component tests for the while-snoozed banner (issue #469, work item 1).
+ * Component tests for the snooze reader banners (issue #469).
  *
- * A message whose `Email.snoozedUntil` is set renders a banner in the
- * reading pane naming the due time, and -- only when
- * `Email.snoozeWakeMailboxId` names a mailbox other than the account's
- * Inbox -- the wake destination mailbox's name. The banner's Cancel
- * button calls `mail.unsnoozeEmail(emailId)`; no new wire data is
+ * While-snoozed banner (work item 1): a message whose `Email.snoozedUntil`
+ * is set renders a banner in the reading pane naming the due time, and --
+ * only when `Email.snoozeWakeMailboxId` names a mailbox other than the
+ * account's Inbox -- the wake destination mailbox's name. The banner's
+ * Cancel button calls `mail.unsnoozeEmail(emailId)`; no new wire data is
  * fetched, everything the banner needs is already on the Email object.
  *
  * A message that was never snoozed (`snoozedUntil` null) renders neither
  * the banner nor the Cancel button.
+ *
+ * On-wake banner (work item 3): a message whose `Email.snoozeWokeAt` is
+ * set renders a different, cancel-less banner naming the time
+ * `snoozeWokeFor` fell due. The two banners are mutually exclusive by
+ * wire contract (a woken message carries `snoozedUntil: null`).
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -156,6 +161,8 @@ function makeEmail(overrides: {
   id?: string;
   snoozedUntil?: string | null;
   snoozeWakeMailboxId?: string | null;
+  snoozeWokeAt?: string | null;
+  snoozeWokeFor?: string | null;
 }): Email {
   return {
     id: overrides.id ?? 'e1',
@@ -172,6 +179,8 @@ function makeEmail(overrides: {
     hasAttachment: false,
     snoozedUntil: overrides.snoozedUntil ?? null,
     snoozeWakeMailboxId: overrides.snoozeWakeMailboxId ?? null,
+    snoozeWokeAt: overrides.snoozeWokeAt ?? null,
+    snoozeWokeFor: overrides.snoozeWokeFor ?? null,
     'header:List-ID:asText': null,
     reactions: [],
     htmlBody: [],
@@ -239,5 +248,65 @@ describe('MessageAccordion: while-snoozed banner (issue #469)', () => {
     const email = makeEmail({ snoozedUntil: FUTURE_ISO });
     renderAccordion(email, false);
     expect(screen.queryByText(/^msg\.snooze\.banner:/)).not.toBeInTheDocument();
+  });
+});
+
+describe('MessageAccordion: on-wake banner (issue #469, work item 3)', () => {
+  it('renders the on-wake banner naming the reminder due time', () => {
+    const email = makeEmail({ snoozeWokeAt: '2026-05-01T09:00:00Z', snoozeWokeFor: '2026-05-01T09:00:00Z' });
+    renderAccordion(email);
+    const banner = screen.getByText(/^msg\.snoozeWoke\.banner:/);
+    expect(banner).toBeInTheDocument();
+  });
+
+  it('renders neither banner nor Cancel on a message that never had a reminder', () => {
+    const email = makeEmail({});
+    renderAccordion(email);
+    expect(screen.queryByText(/^msg\.snoozeWoke\.banner:/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'msg.snooze.cancel' })).not.toBeInTheDocument();
+  });
+
+  it('does not render the on-wake banner while the message is still snoozed', () => {
+    // Should not happen per the wire contract (a woken message carries
+    // snoozedUntil: null), but the while-snoozed banner still wins if the
+    // server ever sends both -- the two are mutually exclusive UI.
+    const email = makeEmail({
+      snoozedUntil: FUTURE_ISO,
+      snoozeWokeAt: '2026-05-01T09:00:00Z',
+      snoozeWokeFor: '2026-05-01T09:00:00Z',
+    });
+    renderAccordion(email);
+    expect(screen.getByText(/^msg\.snooze\.banner:/)).toBeInTheDocument();
+    expect(screen.queryByText(/^msg\.snoozeWoke\.banner:/)).not.toBeInTheDocument();
+  });
+
+  it('does not render the on-wake banner when the accordion is collapsed', () => {
+    const email = makeEmail({ snoozeWokeAt: '2026-05-01T09:00:00Z', snoozeWokeFor: '2026-05-01T09:00:00Z' });
+    renderAccordion(email, false);
+    expect(screen.queryByText(/^msg\.snoozeWoke\.banner:/)).not.toBeInTheDocument();
+  });
+
+  it('keeps showing the on-wake banner for this viewing session even after the store clears the props', async () => {
+    // The reader's own auto-read effect marks $seen the instant an unread
+    // message's accordion mounts expanded -- the common way a just-woken
+    // message gets opened -- and the store's setSeen optimistically clears
+    // snoozeWokeAt/snoozeWokeFor in that same tick (issue #469's wire
+    // contract: gaining $seen ends the indication). A banner read live off
+    // `email` would flip to hidden before a human could ever see it. The
+    // banner is snapshotted at mount instead, so it survives the `email`
+    // prop being replaced by a fresher, already-cleared object -- exactly
+    // what happens when the store's own change lands.
+    const email = makeEmail({
+      id: 'e-viewing',
+      snoozeWokeAt: '2026-05-01T09:00:00Z',
+      snoozeWokeFor: '2026-05-01T09:00:00Z',
+    });
+    const { rerender } = renderAccordion(email);
+    expect(screen.getByText(/^msg\.snoozeWoke\.banner:/)).toBeInTheDocument();
+
+    const clearedEmail = makeEmail({ id: 'e-viewing', snoozeWokeAt: null, snoozeWokeFor: null });
+    await rerender({ email: clearedEmail, expanded: true, onToggle: vi.fn() });
+
+    expect(screen.getByText(/^msg\.snoozeWoke\.banner:/)).toBeInTheDocument();
   });
 });

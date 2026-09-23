@@ -36,6 +36,7 @@
   import LabelIcon from '../lib/icons/LabelIcon.svelte';
   import CategoryIcon from '../lib/icons/CategoryIcon.svelte';
   import ImageIcon from '../lib/icons/ImageIcon.svelte';
+  import UnsnoozeIcon from '../lib/icons/UnsnoozeIcon.svelte';
 
   const ROLED_FOLDERS = new Set<FolderID>([
     'inbox',
@@ -889,6 +890,16 @@
     return t('mail.row.snoozedUntil', { time: formatWakeTime(new Date(email.snoozedUntil)) });
   }
 
+  /**
+   * Row-level wake marker (issue #469): the due time a message's
+   * reminder was set for, formatted for the marker's tooltip. Only
+   * meaningful while `email.snoozeWokeAt` is set -- the caller gates on
+   * that before reading this.
+   */
+  function wokeForLabel(email: Email): string {
+    return email.snoozeWokeFor ? formatWakeTime(new Date(email.snoozeWokeFor)) : '';
+  }
+
   function isUnread(email: Email): boolean {
     return !email.keywords.$seen;
   }
@@ -1273,6 +1284,15 @@
                       : undefined}
                   >{lbl.name}</span>
                 {/each}
+                {#if email.snoozeWokeAt}
+                  <span
+                    class="woke-badge"
+                    title={t('mail.row.woke.tooltip', { time: wokeForLabel(email) })}
+                  >
+                    <UnsnoozeIcon size={14} />
+                    <span>{t('mail.row.woke')}</span>
+                  </span>
+                {/if}
                 {#if email.internalizePending}
                   <span
                     class="internalize-pending-badge"
@@ -1671,6 +1691,15 @@
                       : undefined}
                   >{lbl.name}</span>
                 {/each}
+                {#if email.snoozeWokeAt}
+                  <span
+                    class="woke-badge"
+                    title={t('mail.row.woke.tooltip', { time: wokeForLabel(email) })}
+                  >
+                    <UnsnoozeIcon size={14} />
+                    <span>{t('mail.row.woke')}</span>
+                  </span>
+                {/if}
                 {#if email.internalizePending}
                   <span
                     class="internalize-pending-badge"
@@ -2307,6 +2336,26 @@
     align-items: center;
     margin-right: var(--spacing-02);
     color: var(--text-helper);
+    vertical-align: middle;
+  }
+
+  /* On-wake row marker (issue #469): icon plus short text next to the
+     other row badges, on a message whose reminder just fell due. Follows
+     the fold -- the server clears Email.snoozeWokeAt/snoozeWokeFor when
+     the message gains $seen, so the marker disappears without a reload
+     once the row's data refreshes via Email/changes. */
+  .woke-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    margin-right: var(--spacing-02);
+    padding: 1px var(--spacing-02);
+    background: var(--layer-03);
+    color: var(--text-secondary);
+    border-radius: var(--radius-sm);
+    font-size: var(--type-body-compact-01-size);
+    font-weight: 500;
+    white-space: nowrap;
     vertical-align: middle;
   }
 

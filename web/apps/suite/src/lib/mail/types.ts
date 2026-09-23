@@ -223,6 +223,24 @@ export interface Email {
    * always renders the resolved value once a snooze is in force.
    */
   snoozeWakeMailboxId?: string | null;
+  /**
+   * Herold extension (issue #469): the moment the snooze worker released
+   * this message's reminder into its wake mailbox, or null when no
+   * reminder has fired or the marker has been cleared. The server clears
+   * it, together with `snoozeWokeFor`, when the message gains `$seen` or
+   * is snoozed again -- each an `Email` change-feed row -- so a client
+   * that only patched `keywords` locally still converges once
+   * `Email/changes` delivers the clearing update.
+   */
+  snoozeWokeAt?: string | null;
+  /**
+   * Herold extension (issue #469): the due time the reminder that just
+   * woke this message was set for, captured at release so the on-wake
+   * banner and list-row marker can say why the message came back. Null
+   * under the same conditions as `snoozeWokeAt`, and cleared together
+   * with it.
+   */
+  snoozeWokeFor?: string | null;
   // Body properties — populated when the thread reader fetches them.
   bodyValues?: Record<string, EmailBodyValue>;
   htmlBody?: EmailBodyPart[];
@@ -393,6 +411,8 @@ export const EMAIL_LIST_PROPERTIES = [
   'hasAttachment',
   'snoozedUntil',
   'snoozeWakeMailboxId',
+  'snoozeWokeAt',
+  'snoozeWokeFor',
   'internalizePending',
   'failedImageCount',
   'retryableFailedImageCount',
@@ -418,6 +438,8 @@ export const EMAIL_BODY_PROPERTIES = [
   'hasAttachment',
   'snoozedUntil',
   'snoozeWakeMailboxId',
+  'snoozeWokeAt',
+  'snoozeWokeFor',
   'bodyValues',
   'htmlBody',
   'textBody',

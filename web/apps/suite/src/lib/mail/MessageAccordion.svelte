@@ -248,6 +248,32 @@
     }
   }
 
+  // ── On-wake banner (issue #469) ──────────────────────────────────────
+  //
+  // `Email.snoozeWokeAt` is set by the server the moment the snooze
+  // worker releases this message's reminder into the Inbox; it is
+  // cleared, together with `snoozeWokeFor`, once the message gains
+  // `$seen` or is snoozed again. By contract a woken message carries
+  // `snoozedUntil: null`, so this banner and the while-snoozed one above
+  // never render at once.
+  //
+  // Snapshotted once at mount, not read reactively off `email`: the
+  // auto-read effect below flips `$seen` -- clearing this store's local
+  // copy of both properties in the same tick -- the instant an unread
+  // message's accordion first mounts expanded, which is the common way
+  // a just-woken message gets opened. A live-reactive banner would never
+  // survive to a paint, defeating the point of telling the reader why
+  // the message came back. The snapshot means this accordion instance
+  // shows the banner for the whole viewing session; the next time this
+  // message is opened as a fresh mount, the store's copy is already
+  // cleared (server-confirmed) and no banner renders.
+  // svelte-ignore state_referenced_locally -- intentional: see comment above.
+  const mountSnoozeWokeAt = email.snoozeWokeAt;
+  // svelte-ignore state_referenced_locally -- intentional: see comment above.
+  const mountSnoozeWokeFor = email.snoozeWokeFor;
+  let hasWoken = Boolean(mountSnoozeWokeAt);
+  let wokeForLabel = mountSnoozeWokeFor ? formatWakeTime(new Date(mountSnoozeWokeFor)) : '';
+
   let senderName = $derived(
     email.from?.[0]?.name?.trim() || email.from?.[0]?.email || '(no sender)',
   );
@@ -991,6 +1017,10 @@
             {t('msg.snooze.cancel')}
           </button>
         </div>
+      {:else if hasWoken}
+        <div class="snooze-banner woke" role="status">
+          <span>{t('msg.snoozeWoke.banner', { time: wokeForLabel })}</span>
+        </div>
       {/if}
       <!-- Translation affordance: shown when the body language differs from
            the active locale; manages its own consent gate and translated
@@ -1346,6 +1376,11 @@
   .snooze-banner button:disabled {
     opacity: 0.6;
     cursor: default;
+  }
+  /* On-wake banner (issue #469) carries no button, so it left-aligns
+     instead of the while-snoozed banner's label/cancel split. */
+  .snooze-banner.woke {
+    justify-content: flex-start;
   }
 
   /* Per re #233: plain-text and HTML messages must read as one coherent

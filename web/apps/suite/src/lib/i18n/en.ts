@@ -361,6 +361,15 @@ export const en = {
   'msg.snooze.banner': 'Snoozed until {time}.',
   'msg.snooze.bannerToMailbox': 'Snoozed until {time}, returning to {mailbox}.',
   'msg.snooze.cancel': 'Cancel',
+  // On-wake banner (issue #469): shown on a message whose snoozeWokeAt
+  // is set -- it just returned to the Inbox because its reminder fell
+  // due. Cleared by the server (and this banner with it) once the
+  // message is read or snoozed again.
+  'msg.snoozeWoke.banner': 'This message is back because a reminder set for {time} fell due.',
+  // List-row wake marker (issue #469): compact chip on a woken message's
+  // row, next to the other row badges.
+  'mail.row.woke': 'Reminder',
+  'mail.row.woke.tooltip': 'Back because a reminder set for {time} fell due.',
   // Truncated body recovery banner (Forgejo #48).
   'msg.body.loadingFull': 'Loading complete message...',
   // Accessible label for the spinner shown while the iframe is rendering

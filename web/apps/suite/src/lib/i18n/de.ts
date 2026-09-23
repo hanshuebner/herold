@@ -359,6 +359,16 @@ export const de = {
   'msg.snooze.banner': 'Zurückgestellt bis {time}.',
   'msg.snooze.bannerToMailbox': 'Zurückgestellt bis {time}, kehrt zurück nach {mailbox}.',
   'msg.snooze.cancel': 'Abbrechen',
+  // Rückkehr-Banner (issue #469): erscheint bei einer Nachricht mit
+  // gesetztem snoozeWokeAt -- sie ist gerade in den Posteingang
+  // zurückgekehrt, weil ihre Erinnerung fällig wurde. Wird vom Server
+  // (und damit auch dieser Banner) gelöscht, sobald die Nachricht
+  // gelesen oder erneut zurückgestellt wird.
+  'msg.snoozeWoke.banner': 'Diese Nachricht ist zurückgekehrt, weil eine für {time} gestellte Erinnerung fällig wurde.',
+  // Kompakte Markierung in der Listenzeile (issue #469) für eine
+  // zurückgekehrte Nachricht, neben den übrigen Zeilen-Badges.
+  'mail.row.woke': 'Erinnerung',
+  'mail.row.woke.tooltip': 'Zurückgekehrt, weil eine für {time} gestellte Erinnerung fällig wurde.',
   // Abgeschnittene Nachricht wird vollständig geladen (Forgejo #48).
   'msg.body.loadingFull': 'Vollständige Nachricht wird geladen...',
   // Zugängliche Bezeichnung für den Ladespinner, während der iframe

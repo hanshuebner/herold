@@ -4404,18 +4404,22 @@ class MailStore {
     }
     if (ids.length === 0) return;
     const updates: Record<string, Record<string, unknown>> = {};
-    const prevById = new Map<string, Record<string, true | undefined>>();
+    const prevById = new Map<string, Partial<Email>>();
     for (const id of ids) {
       const e = this.emails.get(id);
       if (!e) continue;
       // Skip if already in the desired seen state; optimistic patch.
       const wasSeen = Boolean(e.keywords.$seen);
       if (wasSeen === seen) continue;
-      prevById.set(id, { ...e.keywords });
+      prevById.set(id, {
+        keywords: { ...e.keywords },
+        snoozeWokeAt: e.snoozeWokeAt ?? null,
+        snoozeWokeFor: e.snoozeWokeFor ?? null,
+      });
       const nextKeywords: Record<string, true | undefined> = { ...e.keywords };
       if (seen) nextKeywords.$seen = true;
       else delete nextKeywords.$seen;
-      this.#patchEmail(id, { keywords: nextKeywords });
+      this.#patchEmail(id, wokeClearPatch(e, seen, { keywords: nextKeywords }));
       updates[id] = { 'keywords/$seen': seen ? true : null };
     }
     if (Object.keys(updates).length === 0) return;
@@ -4429,7 +4433,7 @@ class MailStore {
       );
     } catch (err) {
       for (const [id, prev] of prevById) {
-        this.#patchEmail(id, { keywords: prev });
+        this.#patchEmail(id, prev);
       }
       toast.show({
         message: errMessage(err, 'Bulk mark failed'),
@@ -5038,13 +5042,18 @@ class MailStore {
     if (seen) nextKeywords.$seen = true;
     else delete nextKeywords.$seen;
 
-    this.#patchEmail(emailId, { keywords: nextKeywords });
+    const patch = wokeClearPatch(email, seen, { keywords: nextKeywords });
+    this.#patchEmail(emailId, patch);
     try {
       await this.#emailSetUpdate(emailId, {
         'keywords/$seen': seen ? true : null,
       });
     } catch (err) {
-      this.#patchEmail(emailId, { keywords: email.keywords });
+      this.#patchEmail(emailId, {
+        keywords: email.keywords,
+        snoozeWokeAt: email.snoozeWokeAt ?? null,
+        snoozeWokeFor: email.snoozeWokeFor ?? null,
+      });
       toast.show({
         message: errMessage(err, 'Mark read failed'),
         kind: 'error',
@@ -5828,6 +5837,24 @@ export function mergeByReceivedAt(emails: Email[]): Email[] {
     if (byDate !== 0) return byDate;
     return b.id.localeCompare(a.id);
   });
+}
+
+/**
+ * Extends an optimistic mark-read patch with the server's own side effect
+ * (issue #469): gaining `$seen` ends any pending "why is this back"
+ * indication, clearing `snoozeWokeAt`/`snoozeWokeFor` server-side in the
+ * same transaction as the flag update. `#captureEmailSetNewState`
+ * deliberately swallows the EventSource push this store's own `Email/set`
+ * call triggers (issue #127 -- a spurious refresh on a self-caused change
+ * would blank the list on a slow connection), so without this the client
+ * never learns the two properties were cleared and the on-wake banner and
+ * row marker would survive past the read that ended them. No-op when
+ * `seen` is false or neither property is set.
+ */
+function wokeClearPatch(email: Email, seen: boolean, patch: Partial<Email>): Partial<Email> {
+  if (!seen) return patch;
+  if (email.snoozeWokeAt == null && email.snoozeWokeFor == null) return patch;
+  return { ...patch, snoozeWokeAt: null, snoozeWokeFor: null };
 }
 
 export function mergeEmailListFetch(existing: Email | undefined, incoming: Email): Email {
