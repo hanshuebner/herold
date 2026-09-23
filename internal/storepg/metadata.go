@@ -1141,6 +1141,12 @@ func (m *metadata) insertMessageTx(
 				return fmt.Errorf("storepg: same-message-id thread lookup: %w", sameErr)
 			}
 		}
+		// The set of Message-IDs this message names as an ancestor, shared
+		// by the forward ancestor-lookup below and by the message_references
+		// rows written after insert (REQ-STORE-40, issue #485) so both
+		// name exactly the same set.
+		refs := mailparse.UnionReferences(msg.Envelope.InReplyTo, msg.Envelope.References)
+
 		// Thread resolution using principal_id directly (post-migration 0024).
 		// RFC 5256 sec 2.2 and RFC 8621 sec 8.1: check both In-Reply-To
 		// and References headers. References lists the full ancestry chain
@@ -1149,19 +1155,6 @@ func (m *metadata) insertMessageTx(
 		// We union them (In-Reply-To first for historical compat) and take
 		// the first match found.
 		if msg.ThreadID == 0 && !skipThreading {
-			refs := mailparse.ParseReferences(msg.Envelope.InReplyTo)
-			// Append unique References entries after InReplyTo entries so
-			// that a direct In-Reply-To match wins when both are present.
-			seen := make(map[string]struct{}, len(refs))
-			for _, r := range refs {
-				seen[r] = struct{}{}
-			}
-			for _, r := range mailparse.ParseReferences(msg.Envelope.References) {
-				if _, dup := seen[r]; !dup {
-					refs = append(refs, r)
-					seen[r] = struct{}{}
-				}
-			}
 			for _, ref := range refs {
 				var ancestorID, ancestorThread int64
 				var ancestorSubject string
@@ -1277,6 +1270,15 @@ func (m *metadata) insertMessageTx(
 		if err := incRef(ctx, tx, msg.Blob.Hash, msg.Blob.Size, now); err != nil {
 			return err
 		}
+		// Record this message's outgoing ancestor references (REQ-STORE-40,
+		// issue #485) regardless of skipThreading: a bulk-imported message
+		// (SkipThreading=true, RethreadPrincipal finishes its own threading
+		// separately) can still be the pre-existing "child" a later,
+		// individually-inserted message's late-arriving-ancestor merge
+		// needs to find.
+		if err := writeMessageReferences(ctx, tx, pid, newID, refs); err != nil {
+			return err
+		}
 		if !skipThreading && msg.Envelope.MessageID != "" {
 			if err := mergeLateAncestorThreads(ctx, tx, pid, newID, msg, now); err != nil {
 				return err
@@ -1311,20 +1313,21 @@ func mergeLateAncestorThreads(
 ) error {
 	normalizedID := msg.Envelope.MessageID
 
-	// Candidate rows: other messages of this principal whose raw
-	// In-Reply-To/References text contains the new message's id. This is
-	// a case-folded substring prefilter over unparsed header text (there
-	// is no reverse reference index); mailparse.LateAncestorMergeKeys
-	// below confirms genuine membership by actually parsing each
-	// candidate's headers, so a coincidental substring hit is harmless.
+	// Candidate rows: other messages of this principal whose own
+	// message_references row names the new message's id as an ancestor
+	// (REQ-STORE-40 reverse index, migration 0115). A single index scan
+	// on idx_message_references_principal_referenced(principal_id,
+	// referenced_message_id) followed by a primary-key join, versus the
+	// LOWER(...) LIKE '%...%' scan of every message row for the principal
+	// this replaced.
 	rows, err := tx.Query(ctx, `
-		SELECT id, env_message_id, env_in_reply_to, env_references, env_subject, thread_id
-		  FROM messages
-		 WHERE principal_id = $1
-		   AND id != $2
-		   AND (LOWER(env_in_reply_to) LIKE '%' || LOWER($3) || '%'
-		        OR LOWER(env_references) LIKE '%' || LOWER($3) || '%')`,
-		pid, int64(newID), normalizedID)
+		SELECT m.id, m.env_message_id, m.env_in_reply_to, m.env_references, m.env_subject, m.thread_id
+		  FROM message_references r
+		  JOIN messages m ON m.id = r.message_id
+		 WHERE r.principal_id = $1
+		   AND r.referenced_message_id = $2
+		   AND m.id != $3`,
+		pid, normalizedID, int64(newID))
 	if err != nil {
 		return mapErr(err)
 	}
@@ -1433,6 +1436,27 @@ func mergeLateAncestorThreads(
 				store.EntityKindEmail, uint64(u.ID), uint64(mb), store.ChangeOpUpdated, now); err != nil {
 				return err
 			}
+		}
+	}
+	return nil
+}
+
+// writeMessageReferences records msgID's outgoing ancestor references
+// (already deduplicated by mailparse.UnionReferences) in the
+// message_references reverse index (REQ-STORE-40, issue #485), so a
+// later insert of one of those ancestors can find msgID with a single
+// indexed lookup instead of a per-principal scan. A no-op when refs is
+// empty (most messages carry no In-Reply-To/References at all).
+func writeMessageReferences(ctx context.Context, tx pgx.Tx, pid int64, msgID store.MessageID, refs []string) error {
+	if len(refs) == 0 {
+		return nil
+	}
+	for _, ref := range refs {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO message_references (principal_id, message_id, referenced_message_id)
+			VALUES ($1, $2, $3)`,
+			pid, int64(msgID), ref); err != nil {
+			return mapErr(err)
 		}
 	}
 	return nil
@@ -1590,6 +1614,19 @@ func (m *metadata) ReplaceMessageBody(
 			int64(id),
 		); err != nil {
 			return mapErr(err)
+		}
+		// The rewrite can change In-Reply-To/References (a draft's body
+		// rebuild allows editing them, internal/protojmap/mail/email/set.go).
+		// Refresh this row's message_references (REQ-STORE-40, issue #485)
+		// so the reverse index used by the late-ancestor merge never goes
+		// stale relative to the columns it derives from.
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM message_references WHERE message_id = $1`, int64(id)); err != nil {
+			return mapErr(err)
+		}
+		if err := writeMessageReferences(ctx, tx, pid, id,
+			mailparse.UnionReferences(env.InReplyTo, env.References)); err != nil {
+			return err
 		}
 		if _, err := tx.Exec(ctx, `
 			UPDATE principals SET used_bytes = used_bytes + $1, updated_at_us = $2 WHERE id = $3`,

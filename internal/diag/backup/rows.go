@@ -919,6 +919,18 @@ type EmailReactionRow struct {
 	CreatedAtUs int64  `json:"created_at_us"`
 }
 
+// MessageReferenceRow mirrors the message_references table introduced in
+// migration 0115 (issue #485, REQ-STORE-40): one row per Message-ID a
+// message names in its own In-Reply-To or References header, keyed so
+// the late-ancestor thread-merge lookup can find every already-stored
+// message that names a given (not-yet-inserted) ancestor without
+// scanning the principal's whole message set.
+type MessageReferenceRow struct {
+	PrincipalID         int64  `json:"principal_id"`
+	MessageID           int64  `json:"message_id"`
+	ReferencedMessageID string `json:"referenced_message_id"`
+}
+
 // CoachEventRow mirrors the coach_events table introduced in migration
 // 0020 (Phase 3 Wave 3.10, REQ-PROTO-110..112). One row per invocation
 // batch flushed by the suite.

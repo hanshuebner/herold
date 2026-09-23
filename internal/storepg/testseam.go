@@ -39,6 +39,9 @@ func (s *Store) TruncateAll(ctx context.Context) error {
 		"coach_events",
 		// Phase 3 Wave 3.9 — email reactions (FK to messages).
 		"email_reactions",
+		// REQ-STORE-40 late-ancestor thread-merge reverse index (issue
+		// #485; FK to principals and messages).
+		"message_references",
 		// Phase 3 Wave 3.2 — SES inbound dedup (no FK).
 		"ses_seen_messages",
 		// Phase 3 Wave 3.8a — Web Push subscriptions.

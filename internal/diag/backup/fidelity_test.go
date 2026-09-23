@@ -285,6 +285,14 @@ func seedFidelityRows(t *testing.T, db *sql.DB) {
 	      VALUES (?, ?, ?, ?)`,
 		1, "👍", 1, int64(1000000))
 
+	// message_references (issue #485, REQ-STORE-40): message 1's own
+	// In-Reply-To names an ancestor that does not exist as a row in this
+	// corpus, exercising the no-FK-on-referenced_message_id design (the
+	// referenced message frequently has not arrived yet).
+	exec(`INSERT INTO message_references (principal_id, message_id, referenced_message_id)
+	      VALUES (?, ?, ?)`,
+		1, 1, "ancestor-not-yet-ingested@example.test")
+
 	// grants: one mailbox-kind grant carrying the RFC 4314 letter-set
 	// (epic #210) and one "anyone"-subject mailbox grant (nullable
 	// last_asserted_at_us left NULL, as for every local/acl-migration row).

@@ -916,7 +916,17 @@ const CurrentBackupVersion = 1
 //	scheduler and EmailSubmission/set destroy can race a single atomic
 //	compare-and-set to decide whether the row is relayed or canceled.
 //	No new table; EmailSubmissionRow gains the one field.
-const CurrentSchemaVersion = 114
+//
+// 115 — 0115_message_references.sql (issue #485, REQ-STORE-40). Adds
+//
+//	message_references (principal_id, message_id, referenced_message_id),
+//	one row per Message-ID a message names in its own In-Reply-To or
+//	References header, indexed on (principal_id, referenced_message_id).
+//	Turns "which stored messages of this principal name the message
+//	being inserted right now as an ancestor" -- the late-ancestor
+//	thread-merge lookup -- into a single indexed lookup instead of a
+//	per-principal LIKE scan. New table; MessageReferenceRow.
+const CurrentSchemaVersion = 115
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can
@@ -1035,6 +1045,10 @@ var TableNames = []string{
 	// REQ-FLOW-100..108, migration 0019). FK to messages(id); restored
 	// after messages are in place.
 	"email_reactions",
+	// REQ-STORE-40 late-ancestor thread-merge reverse index (issue #485,
+	// migration 0115). FK to principals(id) and messages(id); restored
+	// after both.
+	"message_references",
 	"state_changes",
 	"audit_log",
 	"cursors",

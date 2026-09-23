@@ -63,3 +63,26 @@ func ParseReferences(s string) []string {
 	}
 	return out
 }
+
+// UnionReferences returns the deduplicated, normalised Message-IDs named
+// by inReplyTo and references together, In-Reply-To entries first (RFC
+// 8621 sec 8.1's single-hop shortcut takes precedence over the full
+// References ancestry chain when both are present and a caller only
+// wants the first match). Used both to seed the ancestor-lookup walk at
+// insert time and to record a message's outgoing edges in
+// message_references (REQ-STORE-40, issue #485), so both call sites
+// name the exact same set of ancestors for a given message.
+func UnionReferences(inReplyTo, references string) []string {
+	refs := ParseReferences(inReplyTo)
+	seen := make(map[string]struct{}, len(refs))
+	for _, r := range refs {
+		seen[r] = struct{}{}
+	}
+	for _, r := range ParseReferences(references) {
+		if _, dup := seen[r]; !dup {
+			refs = append(refs, r)
+			seen[r] = struct{}{}
+		}
+	}
+	return refs
+}
