@@ -37,7 +37,15 @@ vi.mock('../jmap/sync.svelte', () => ({
 
 const batch = vi.fn();
 vi.mock('../jmap/client', () => ({
-  jmap: { batch, session: null, uploadBlob: vi.fn(), downloadUrl: vi.fn() },
+  jmap: {
+    batch,
+    session: null,
+    uploadBlob: vi.fn(),
+    downloadUrl: vi.fn(),
+    // emptyTrash() branches on this before its simple (non-bulk-job)
+    // per-id destroy path; false selects that simple path.
+    hasCapability: vi.fn(() => false),
+  },
   strict: (r: unknown[]) => r,
 }));
 
@@ -144,8 +152,10 @@ function installBatchMock(opts: {
   destroyed?: string[];
   finalEmail: Email;
   finalState: string;
+  /** Email/query result ids, for emptyTrash's simple destroy path. */
+  queryIds?: string[];
 }): void {
-  const { created = [], updated = [], destroyed = [], finalEmail, finalState } = opts;
+  const { created = [], updated = [], destroyed = [], finalEmail, finalState, queryIds } = opts;
   batch.mockImplementation(async (builder: unknown) => {
     let counter = 0;
     const calls: { name: string; args: Record<string, unknown> }[] = [];
@@ -169,6 +179,58 @@ function installBatchMock(opts: {
         ]);
       } else if (c.name === 'Email/get') {
         responses.push([c.name, { list: [finalEmail], state: finalState }, `c${i}`]);
+      } else if (c.name === 'Email/query') {
+        responses.push([c.name, { ids: queryIds ?? [] }, `c${i}`]);
+      } else {
+        responses.push([c.name, {}, `c${i}`]);
+      }
+    }
+    return { responses, using: new Set<string>() };
+  });
+}
+
+/**
+ * Batch mock for the multi-message-thread scenarios: unlike installBatchMock
+ * (one tracked email), this serves a per-id email map so a thread's several
+ * notified messages can be independently updated across state advances.
+ * Email/get requests with a literal `ids` array (the reconcile step's own
+ * direct call) are answered with exactly those ids; a ref-based `#ids`
+ * request (refreshThread fetching the whole thread membership) is answered
+ * with every email in the map, since it always targets the full thread.
+ */
+function installMultiEmailBatchMock(opts: {
+  created?: string[];
+  updated?: string[];
+  destroyed?: string[];
+  emailsById: Record<string, Email>;
+  threadEmailIds: string[];
+}): void {
+  const { created = [], updated = [], destroyed = [], emailsById, threadEmailIds } = opts;
+  batch.mockImplementation(async (builder: unknown) => {
+    let counter = 0;
+    const calls: { name: string; args: Record<string, unknown> }[] = [];
+    const api = {
+      call: (name: string, args: Record<string, unknown>) => {
+        calls.push({ name, args });
+        return { ref: () => ({ resultOf: `c${counter++}`, name, path: '' }) };
+      },
+    };
+    (builder as (b: unknown) => void)(api);
+    const responses: Array<[string, unknown, string]> = [];
+    for (let i = 0; i < calls.length; i++) {
+      const c = calls[i]!;
+      if (c.name === 'Email/changes') {
+        responses.push([c.name, { created, updated, destroyed }, `c${i}`]);
+      } else if (c.name === 'Thread/get') {
+        responses.push([c.name, { list: [{ id: 'tid-1', emailIds: threadEmailIds }] }, `c${i}`]);
+      } else if (c.name === 'Email/get') {
+        if (Array.isArray(c.args.ids)) {
+          const ids = c.args.ids as string[];
+          const list = ids.map((id) => emailsById[id]).filter((e): e is Email => e !== undefined);
+          responses.push([c.name, { list }, `c${i}`]);
+        } else {
+          responses.push([c.name, { list: Object.values(emailsById) }, `c${i}`]);
+        }
       } else {
         responses.push([c.name, {}, `c${i}`]);
       }
@@ -441,5 +503,235 @@ describe('mail store: page-level desktop notification dismissal (issue #481)', (
     await mail.archiveEmail('e1');
 
     expect(notification.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes the page-level notification when the message is destroyed elsewhere (Email/changes delta.destroyed)', async () => {
+    const { mail } = await import('./store.svelte');
+
+    mail.identities = new Map([['id-1', makeIdentity('me@example.test')]]);
+    mail.mailboxes = new Map<string, Mailbox>([
+      ['mbx-inbox', makeMailbox({ id: 'mbx-inbox', role: 'inbox' })],
+    ]);
+    mail.threads = new Map<string, Thread>([
+      ['tid-1', { id: 'tid-1', emailIds: ['e1'] }],
+    ]);
+    mail.emails = new Map<string, Email>([
+      ['e1', makeEmail({ id: 'e1', threadId: 'tid-1', mailboxIds: {}, keywords: {} })],
+    ]);
+    mail.threadLoadStatus = new Map([['tid-1', 'ready']]);
+    mail.committedThreadEmailIds = new Map([['tid-1', ['e1']]]);
+    mail.emailState = 'state-1';
+
+    const handler = syncHandlers.get('Email');
+    expect(handler).toBeDefined();
+
+    installBatchMock({
+      created: ['e1'],
+      finalEmail: makeEmail({
+        id: 'e1',
+        threadId: 'tid-1',
+        mailboxIds: { 'mbx-inbox': true },
+        keywords: {},
+      }),
+      finalState: 'state-2',
+    });
+    await handler!('state-2', 'acc1');
+    await new Promise((r) => setTimeout(r, 0));
+
+    const notification = MockNotification.instances[0]!;
+    expect(notification.close).not.toHaveBeenCalled();
+
+    // Destroyed elsewhere: the delta.destroyed branch closes it directly,
+    // with no Email/get round trip (the row is gone).
+    installBatchMock({
+      destroyed: ['e1'],
+      finalEmail: makeEmail({ id: 'e1', threadId: 'tid-1' }),
+      finalState: 'state-3',
+    });
+    await handler!('state-3', 'acc1');
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(notification.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes the page-level notification when permanently deleted via emptyTrash (issue #483)', async () => {
+    const { mail } = await import('./store.svelte');
+
+    mail.identities = new Map([['id-1', makeIdentity('me@example.test')]]);
+    mail.mailboxes = new Map<string, Mailbox>([
+      ['mbx-inbox', makeMailbox({ id: 'mbx-inbox', role: 'inbox' })],
+      ['mbx-trash', makeMailbox({ id: 'mbx-trash', role: 'trash' })],
+    ]);
+    mail.threads = new Map<string, Thread>([
+      ['tid-1', { id: 'tid-1', emailIds: ['e1'] }],
+    ]);
+    mail.emails = new Map<string, Email>([
+      ['e1', makeEmail({ id: 'e1', threadId: 'tid-1', mailboxIds: {}, keywords: {} })],
+    ]);
+    mail.threadLoadStatus = new Map([['tid-1', 'ready']]);
+    mail.committedThreadEmailIds = new Map([['tid-1', ['e1']]]);
+    mail.emailState = 'state-1';
+
+    const handler = syncHandlers.get('Email');
+    expect(handler).toBeDefined();
+
+    installBatchMock({
+      created: ['e1'],
+      finalEmail: makeEmail({
+        id: 'e1',
+        threadId: 'tid-1',
+        mailboxIds: { 'mbx-inbox': true },
+        keywords: {},
+      }),
+      finalState: 'state-2',
+    });
+    await handler!('state-2', 'acc1');
+    await new Promise((r) => setTimeout(r, 0));
+
+    const notification = MockNotification.instances[0]!;
+    expect(notification.close).not.toHaveBeenCalled();
+
+    // emptyTrash's simple (non-bulk-job) path: Email/query for the trash
+    // mailbox's contents, then a direct this.emails.delete() per id -- not
+    // routed through #patchEmail, so it carries its own warrant check.
+    installBatchMock({
+      queryIds: ['e1'],
+      finalEmail: makeEmail({ id: 'e1', threadId: 'tid-1' }),
+      finalState: 'state-2',
+    });
+    await mail.emptyTrash();
+
+    expect(notification.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes the page-level notification when permanently deleted via bulkDestroy (issue #483)', async () => {
+    const { mail } = await import('./store.svelte');
+
+    mail.identities = new Map([['id-1', makeIdentity('me@example.test')]]);
+    mail.mailboxes = new Map<string, Mailbox>([
+      ['mbx-inbox', makeMailbox({ id: 'mbx-inbox', role: 'inbox' })],
+    ]);
+    mail.threads = new Map<string, Thread>([
+      ['tid-1', { id: 'tid-1', emailIds: ['e1'] }],
+    ]);
+    mail.emails = new Map<string, Email>([
+      ['e1', makeEmail({ id: 'e1', threadId: 'tid-1', mailboxIds: {}, keywords: {} })],
+    ]);
+    mail.threadLoadStatus = new Map([['tid-1', 'ready']]);
+    mail.committedThreadEmailIds = new Map([['tid-1', ['e1']]]);
+    mail.emailState = 'state-1';
+    mail.listWholeMailboxSelected = false;
+
+    const handler = syncHandlers.get('Email');
+    expect(handler).toBeDefined();
+
+    installBatchMock({
+      created: ['e1'],
+      finalEmail: makeEmail({
+        id: 'e1',
+        threadId: 'tid-1',
+        mailboxIds: { 'mbx-inbox': true },
+        keywords: {},
+      }),
+      finalState: 'state-2',
+    });
+    await handler!('state-2', 'acc1');
+    await new Promise((r) => setTimeout(r, 0));
+
+    const notification = MockNotification.instances[0]!;
+    expect(notification.close).not.toHaveBeenCalled();
+
+    batch.mockResolvedValue({ responses: [['Email/set', {}, 'c0']], using: new Set<string>() });
+    await mail.bulkDestroy(['e1']);
+
+    expect(notification.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('thread-level rule: a notification persists until every notified message in its thread is read (issue #483)', async () => {
+    const { mail } = await import('./store.svelte');
+
+    mail.identities = new Map([['id-1', makeIdentity('me@example.test')]]);
+    mail.mailboxes = new Map<string, Mailbox>([
+      ['mbx-inbox', makeMailbox({ id: 'mbx-inbox', role: 'inbox' })],
+    ]);
+    mail.threads = new Map<string, Thread>([
+      ['tid-1', { id: 'tid-1', emailIds: ['e1', 'e2'] }],
+    ]);
+    mail.emails = new Map<string, Email>([
+      ['e1', makeEmail({ id: 'e1', threadId: 'tid-1', mailboxIds: {}, keywords: {} })],
+      ['e2', makeEmail({ id: 'e2', threadId: 'tid-1', mailboxIds: {}, keywords: {} })],
+    ]);
+    mail.threadLoadStatus = new Map([['tid-1', 'ready']]);
+    mail.committedThreadEmailIds = new Map([['tid-1', ['e1', 'e2']]]);
+    mail.emailState = 'state-1';
+
+    const handler = syncHandlers.get('Email');
+    expect(handler).toBeDefined();
+
+    // e1 arrives in the inbox -- its own notification fires.
+    installMultiEmailBatchMock({
+      created: ['e1'],
+      emailsById: {
+        e1: makeEmail({ id: 'e1', threadId: 'tid-1', mailboxIds: { 'mbx-inbox': true }, keywords: {} }),
+        e2: makeEmail({ id: 'e2', threadId: 'tid-1', mailboxIds: {}, keywords: {} }),
+      },
+      threadEmailIds: ['e1', 'e2'],
+    });
+    await handler!('state-2', 'acc1');
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(MockNotification.instances).toHaveLength(1);
+    const notifE1 = MockNotification.instances[0]!;
+    expect(notifE1.options?.tag).toBe('mail-e1');
+
+    // e2 arrives in the inbox next -- a second, independent notification.
+    installMultiEmailBatchMock({
+      created: ['e2'],
+      emailsById: {
+        e1: makeEmail({ id: 'e1', threadId: 'tid-1', mailboxIds: { 'mbx-inbox': true }, keywords: {} }),
+        e2: makeEmail({ id: 'e2', threadId: 'tid-1', mailboxIds: { 'mbx-inbox': true }, keywords: {} }),
+      },
+      threadEmailIds: ['e1', 'e2'],
+    });
+    await handler!('state-3', 'acc1');
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(MockNotification.instances).toHaveLength(2);
+    const notifE2 = MockNotification.instances[1]!;
+    expect(notifE2.options?.tag).toBe('mail-e2');
+    expect(notifE1.close).not.toHaveBeenCalled();
+    expect(notifE2.close).not.toHaveBeenCalled();
+
+    // e1 is read elsewhere: only e1's notification closes; e2's, still
+    // unread, stays open -- the thread-level rule.
+    installMultiEmailBatchMock({
+      updated: ['e1'],
+      emailsById: {
+        e1: makeEmail({ id: 'e1', threadId: 'tid-1', mailboxIds: { 'mbx-inbox': true }, keywords: { $seen: true } }),
+        e2: makeEmail({ id: 'e2', threadId: 'tid-1', mailboxIds: { 'mbx-inbox': true }, keywords: {} }),
+      },
+      threadEmailIds: ['e1', 'e2'],
+    });
+    await handler!('state-4', 'acc1');
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(notifE1.close).toHaveBeenCalledTimes(1);
+    expect(notifE2.close).not.toHaveBeenCalled();
+
+    // e2 is read elsewhere too: its notification now closes, and no new
+    // notification is created for either message.
+    installMultiEmailBatchMock({
+      updated: ['e2'],
+      emailsById: {
+        e1: makeEmail({ id: 'e1', threadId: 'tid-1', mailboxIds: { 'mbx-inbox': true }, keywords: { $seen: true } }),
+        e2: makeEmail({ id: 'e2', threadId: 'tid-1', mailboxIds: { 'mbx-inbox': true }, keywords: { $seen: true } }),
+      },
+      threadEmailIds: ['e1', 'e2'],
+    });
+    await handler!('state-5', 'acc1');
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(notifE2.close).toHaveBeenCalledTimes(1);
+    expect(MockNotification.instances).toHaveLength(2);
   });
 });
