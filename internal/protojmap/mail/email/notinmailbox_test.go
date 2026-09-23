@@ -243,3 +243,236 @@ func testEmail_QueryChanges_NotInMailbox(t *testing.T, f *fixture) {
 		t.Fatalf("added ids = %v, want [%s] (raw=%s)", gotIDs, wantID, changesRaw)
 	}
 }
+
+// insertForeignMailbox creates a second principal owning a private
+// mailbox unrelated to f.pid's account, and returns its id. When grant
+// is true, the mailbox carries an ACLRightLookup grant to f.pid (the
+// load_visibility_test.go shared-mailbox fixture pattern); when false,
+// f.pid has no access to it at all.
+func insertForeignMailbox(t *testing.T, f *fixture, grant bool) store.MailboxID {
+	t.Helper()
+	ctx := context.Background()
+	ownerEmail := fmt.Sprintf("foreign-owner-%d@example.test", time.Now().UnixNano())
+	owner, err := f.srv.Store.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind:           store.PrincipalKindUser,
+		CanonicalEmail: ownerEmail,
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal foreign owner: %v", err)
+	}
+	mb, err := f.srv.Store.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: owner.ID,
+		Name:        "ForeignPrivate",
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox foreign: %v", err)
+	}
+	if grant {
+		if err := f.srv.Store.Meta().SetMailboxACL(ctx, mb.ID, &f.pid, store.ACLRightLookup, owner.ID); err != nil {
+			t.Fatalf("SetMailboxACL: %v", err)
+		}
+	}
+	return mb.ID
+}
+
+// assertInvalidArgumentsMatchingUnknownID invokes method with a
+// notInMailbox filter naming foreignMailboxID and asserts the response
+// is invalidArguments with the exact description the unknown-mailbox-id
+// case produces: a caller must not be able to tell "this mailbox exists
+// but I cannot see it" apart from "this id does not exist" (issue #467
+// follow-up -- GetMailboxByID alone is a cross-tenant existence oracle).
+func assertInvalidArgumentsMatchingUnknownID(t *testing.T, f *fixture, method string, extraArgs map[string]any, foreignMailboxID store.MailboxID) {
+	t.Helper()
+	args := map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"filter": map[string]any{
+			"notInMailbox": []string{fmt.Sprintf("%d", foreignMailboxID)},
+		},
+	}
+	for k, v := range extraArgs {
+		args[k] = v
+	}
+	name, raw := f.invoke(t, method, args)
+	if name != "error" {
+		t.Fatalf("%s notInMailbox on a non-visible foreign mailbox: expected method-level error, got %q (raw=%s)", method, name, raw)
+	}
+	var got struct {
+		Type        string `json:"type"`
+		Description string `json:"description"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	if got.Type != "invalidArguments" {
+		t.Fatalf("type = %q, want invalidArguments (raw=%s)", got.Type, raw)
+	}
+
+	unknownArgs := map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"filter": map[string]any{
+			"notInMailbox": []string{"999999999"},
+		},
+	}
+	for k, v := range extraArgs {
+		unknownArgs[k] = v
+	}
+	unknownName, unknownRaw := f.invoke(t, method, unknownArgs)
+	if unknownName != "error" {
+		t.Fatalf("%s notInMailbox on an unknown mailbox id: expected method-level error, got %q (raw=%s)", method, unknownName, unknownRaw)
+	}
+	var unknownGot struct {
+		Type        string `json:"type"`
+		Description string `json:"description"`
+	}
+	if err := json.Unmarshal(unknownRaw, &unknownGot); err != nil {
+		t.Fatalf("unmarshal unknown: %v: %s", err, unknownRaw)
+	}
+	if unknownGot.Description != got.Description {
+		t.Fatalf("foreign-mailbox and unknown-id responses differ (%q vs %q) -- distinguishable responses let a caller probe mailbox existence across tenants",
+			got.Description, unknownGot.Description)
+	}
+}
+
+// TestEmail_Query_NotInMailbox_ForeignMailbox_InvalidArguments asserts
+// that a notInMailbox id naming a mailbox that exists but belongs to a
+// different account, with no ACL grant to the caller, is rejected with
+// invalidArguments -- indistinguishable from a nonexistent id. Without
+// this check, GetMailboxByID's unscoped existence lookup lets a caller
+// binary-search mailbox ids system-wide by reading "200 with results"
+// vs "invalidArguments" as a cross-tenant existence oracle.
+func TestEmail_Query_NotInMailbox_ForeignMailbox_InvalidArguments(t *testing.T) {
+	testEmail_Query_NotInMailbox_ForeignMailbox_InvalidArguments(t, setupFixture(t))
+}
+
+// TestEmail_Query_NotInMailbox_ForeignMailbox_InvalidArguments_Postgres
+// is the Postgres leg: the visibility check calls
+// store.Metadata.GetMailboxACL / HasOwnerAccess, so both backends need
+// direct coverage. Skips when HEROLD_PG_DSN is not set.
+func TestEmail_Query_NotInMailbox_ForeignMailbox_InvalidArguments_Postgres(t *testing.T) {
+	testEmail_Query_NotInMailbox_ForeignMailbox_InvalidArguments(t, setupFixturePostgres(t))
+}
+
+func testEmail_Query_NotInMailbox_ForeignMailbox_InvalidArguments(t *testing.T, f *fixture) {
+	_ = f.insertMessage(t, "From: a@example.test\r\nTo: b@example.test\r\nSubject: s\r\n\r\nbody",
+		"s", "a@example.test", "b@example.test", nil, "")
+	foreignID := insertForeignMailbox(t, f, false)
+	assertInvalidArgumentsMatchingUnknownID(t, f, "Email/query", nil, foreignID)
+}
+
+// TestEmail_Query_NotInMailbox_SharedMailbox_Accepted asserts that a
+// notInMailbox id naming a mailbox shared to the caller via an
+// ACLRightLookup grant is accepted -- the caller can legitimately see
+// that mailbox, so it is not treated as unknown/foreign.
+func TestEmail_Query_NotInMailbox_SharedMailbox_Accepted(t *testing.T) {
+	testEmail_Query_NotInMailbox_SharedMailbox_Accepted(t, setupFixture(t))
+}
+
+// TestEmail_Query_NotInMailbox_SharedMailbox_Accepted_Postgres is the
+// Postgres leg. Skips when HEROLD_PG_DSN is not set.
+func TestEmail_Query_NotInMailbox_SharedMailbox_Accepted_Postgres(t *testing.T) {
+	testEmail_Query_NotInMailbox_SharedMailbox_Accepted(t, setupFixturePostgres(t))
+}
+
+func testEmail_Query_NotInMailbox_SharedMailbox_Accepted(t *testing.T, f *fixture) {
+	m := f.insertMessage(t, "From: a@example.test\r\nTo: b@example.test\r\nSubject: s\r\n\r\nbody",
+		"s", "a@example.test", "b@example.test", nil, "")
+	sharedID := insertForeignMailbox(t, f, true)
+
+	name, raw := f.invoke(t, "Email/query", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"filter": map[string]any{
+			"notInMailbox": []string{fmt.Sprintf("%d", sharedID)},
+		},
+	})
+	if name == "error" {
+		t.Fatalf("notInMailbox on a Lookup-shared mailbox must be accepted, got error: %s", raw)
+	}
+	var resp struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	wantID := fmt.Sprintf("%d", m.ID)
+	if len(resp.IDs) != 1 || resp.IDs[0] != wantID {
+		t.Fatalf("ids = %v, want [%s] (raw=%s)", resp.IDs, wantID, raw)
+	}
+}
+
+// TestEmail_QueryChanges_NotInMailbox_ForeignMailbox_InvalidArguments
+// is the Email/queryChanges leg of
+// TestEmail_Query_NotInMailbox_ForeignMailbox_InvalidArguments: the
+// same validation runs on both methods, so both need the same
+// cross-tenant-oracle check pinned.
+func TestEmail_QueryChanges_NotInMailbox_ForeignMailbox_InvalidArguments(t *testing.T) {
+	testEmail_QueryChanges_NotInMailbox_ForeignMailbox_InvalidArguments(t, setupFixture(t))
+}
+
+// TestEmail_QueryChanges_NotInMailbox_ForeignMailbox_InvalidArguments_Postgres
+// is the Postgres leg. Skips when HEROLD_PG_DSN is not set.
+func TestEmail_QueryChanges_NotInMailbox_ForeignMailbox_InvalidArguments_Postgres(t *testing.T) {
+	testEmail_QueryChanges_NotInMailbox_ForeignMailbox_InvalidArguments(t, setupFixturePostgres(t))
+}
+
+func testEmail_QueryChanges_NotInMailbox_ForeignMailbox_InvalidArguments(t *testing.T, f *fixture) {
+	_ = f.insertMessage(t, "From: a@example.test\r\nTo: b@example.test\r\nSubject: s\r\n\r\nbody",
+		"s", "a@example.test", "b@example.test", nil, "")
+	foreignID := insertForeignMailbox(t, f, false)
+	assertInvalidArgumentsMatchingUnknownID(t, f, "Email/queryChanges",
+		map[string]any{"sinceQueryState": "0"}, foreignID)
+}
+
+// TestEmail_QueryChanges_NotInMailbox_SharedMailbox_Accepted is the
+// Email/queryChanges leg of
+// TestEmail_Query_NotInMailbox_SharedMailbox_Accepted.
+func TestEmail_QueryChanges_NotInMailbox_SharedMailbox_Accepted(t *testing.T) {
+	testEmail_QueryChanges_NotInMailbox_SharedMailbox_Accepted(t, setupFixture(t))
+}
+
+// TestEmail_QueryChanges_NotInMailbox_SharedMailbox_Accepted_Postgres
+// is the Postgres leg. Skips when HEROLD_PG_DSN is not set.
+func TestEmail_QueryChanges_NotInMailbox_SharedMailbox_Accepted_Postgres(t *testing.T) {
+	testEmail_QueryChanges_NotInMailbox_SharedMailbox_Accepted(t, setupFixturePostgres(t))
+}
+
+func testEmail_QueryChanges_NotInMailbox_SharedMailbox_Accepted(t *testing.T, f *fixture) {
+	sharedID := insertForeignMailbox(t, f, true)
+	filter := map[string]any{
+		"notInMailbox": []string{fmt.Sprintf("%d", sharedID)},
+	}
+
+	_, queryRaw := f.invoke(t, "Email/query", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"filter":    filter,
+	})
+	var queryResp struct {
+		QueryState string `json:"queryState"`
+	}
+	if err := json.Unmarshal(queryRaw, &queryResp); err != nil {
+		t.Fatalf("unmarshal initial query: %v: %s", err, queryRaw)
+	}
+
+	m := f.insertMessage(t, "From: a@example.test\r\nTo: b@example.test\r\nSubject: s\r\n\r\nbody",
+		"s", "a@example.test", "b@example.test", nil, "")
+
+	name, changesRaw := f.invoke(t, "Email/queryChanges", map[string]any{
+		"accountId":       protojmap.AccountIDForPrincipal(f.pid),
+		"filter":          filter,
+		"sinceQueryState": queryResp.QueryState,
+	})
+	if name == "error" {
+		t.Fatalf("notInMailbox on a Lookup-shared mailbox must be accepted, got error: %s", changesRaw)
+	}
+	var changesResp struct {
+		Added []struct {
+			ID string `json:"id"`
+		} `json:"added"`
+	}
+	if err := json.Unmarshal(changesRaw, &changesResp); err != nil {
+		t.Fatalf("unmarshal queryChanges: %v: %s", err, changesRaw)
+	}
+	wantID := fmt.Sprintf("%d", m.ID)
+	if len(changesResp.Added) != 1 || changesResp.Added[0].ID != wantID {
+		t.Fatalf("added ids = %v, want [%s] (raw=%s)", changesResp.Added, wantID, changesRaw)
+	}
+}

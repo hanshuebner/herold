@@ -124,26 +124,57 @@ func collectNotInMailboxIDs(f *emailFilter) []jmapID {
 // notInMailbox condition against the store, mirroring the
 // "unparseable or unknown mailbox id is invalidArguments" rule other
 // mailbox-referencing JMAP calls apply (e.g. Email/set's mailboxIds).
-// inMailbox / inMailboxOtherThan are left unvalidated here (unchanged,
-// pre-existing behaviour: an unknown id there simply matches no
-// message). Returns a non-nil *MethodError for the caller to return
-// verbatim, or a non-nil error for the caller to wrap via serverFail.
-func validateNotInMailboxRefs(ctx context.Context, meta store.Metadata, f *emailFilter) (*protojmap.MethodError, error) {
+// A mailbox that exists but is not visible to callerPID (not owned by
+// their account, not shared to them by ACL) is reported with the exact
+// same invalidArguments response as a nonexistent id: GetMailboxByID
+// has no owner scoping, so skipping the visibility check would let a
+// caller binary-search mailbox ids system-wide by reading "200 with a
+// result set" vs "invalidArguments" as an existence oracle across
+// tenants. inMailbox / inMailboxOtherThan need no equivalent check
+// here because they are evaluated only against the caller's already
+// ACL-scoped candidate set (listAccountMessages /
+// loadMessageForPrincipal) — an inaccessible mailbox there just
+// matches zero messages, leaking nothing. Returns a non-nil
+// *MethodError for the caller to return verbatim, or a non-nil error
+// for the caller to wrap via serverFail.
+func validateNotInMailboxRefs(ctx context.Context, meta store.Metadata, callerPID store.PrincipalID, f *emailFilter) (*protojmap.MethodError, error) {
+	const notFoundMsg = "notInMailbox references a mailbox that does not exist"
 	for _, raw := range collectNotInMailboxIDs(f) {
 		id, ok := mailboxIDFromJMAP(raw)
 		if !ok {
 			return protojmap.NewMethodError("invalidArguments",
 				"notInMailbox carries an unparseable mailbox id"), nil
 		}
-		if _, err := meta.GetMailboxByID(ctx, id); err != nil {
+		mb, err := meta.GetMailboxByID(ctx, id)
+		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
-				return protojmap.NewMethodError("invalidArguments",
-					"notInMailbox references a mailbox that does not exist"), nil
+				return protojmap.NewMethodError("invalidArguments", notFoundMsg), nil
 			}
 			return nil, err
 		}
+		visible, verr := mailboxVisibleToCaller(ctx, meta, callerPID, mb)
+		if verr != nil {
+			return nil, verr
+		}
+		if !visible {
+			return protojmap.NewMethodError("invalidArguments", notFoundMsg), nil
+		}
 	}
 	return nil, nil
+}
+
+// mailboxVisibleToCaller reports whether callerPID can see mb: either
+// mb belongs to an account callerPID has owner access to (their own
+// account or, per REQ-SUBACCT-04, one of their sub-accounts), or
+// callerPID holds a Lookup grant on mb via ACL. This is the same
+// visibility rule inMailbox is implicitly evaluated under (see
+// listMailboxesForAccount / loadMessageForPrincipal).
+func mailboxVisibleToCaller(ctx context.Context, meta store.Metadata, callerPID store.PrincipalID, mb store.Mailbox) (bool, error) {
+	rights, err := aclRightsForCaller(ctx, meta, callerPID, mb)
+	if err != nil {
+		return false, err
+	}
+	return rights&store.ACLRightLookup != 0, nil
 }
 
 // queryHandler implements Email/query.
@@ -181,7 +212,7 @@ func (q *queryHandler) Execute(ctx context.Context, args json.RawMessage) (any, 
 	if ferr != nil {
 		return nil, protojmap.NewMethodError("invalidArguments", ferr.Error())
 	}
-	if merr, err := validateNotInMailboxRefs(ctx, q.h.store.Meta(), filter); merr != nil {
+	if merr, err := validateNotInMailboxRefs(ctx, q.h.store.Meta(), callerPID, filter); merr != nil {
 		return nil, merr
 	} else if err != nil {
 		return nil, serverFail(err)
@@ -1325,7 +1356,7 @@ func (qc queryChangesHandler) Execute(ctx context.Context, args json.RawMessage)
 	if ferr != nil {
 		return nil, protojmap.NewMethodError("invalidArguments", ferr.Error())
 	}
-	if merr, err := validateNotInMailboxRefs(ctx, qc.h.store.Meta(), filter); merr != nil {
+	if merr, err := validateNotInMailboxRefs(ctx, qc.h.store.Meta(), callerPID, filter); merr != nil {
 		return nil, merr
 	} else if err != nil {
 		return nil, serverFail(err)
