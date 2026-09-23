@@ -1,3 +1,7 @@
+import com.android.build.gradle.BaseExtension
+import com.android.build.gradle.internal.tasks.DeviceProviderInstrumentTestTask
+import com.android.build.gradle.internal.tasks.InstallVariantTask
+import com.android.build.gradle.internal.tasks.UninstallTask
 import java.security.KeyStore
 import java.util.Base64
 import java.util.Properties
@@ -381,26 +385,44 @@ tasks.register("printBuildFacts") {
 // ---------------------------------------------------------------------------
 // Device safety guard (issue #484).
 //
-// A connected-test or install task installs on every device `adb` lists and,
-// on cleanup, uninstalls the app and test packages from each -- with no
-// `ANDROID_SERIAL` set to scope it, that fan-out reached the maintainer's
-// Pixel alongside a local emulator and took the signed release app down with
-// it. This task runs before every such task and refuses when more than one
-// device is attached, or when any attached device is not an emulator,
-// unless the caller opts in with -Pherold.allowDevices=true.
+// AGP's own install/uninstall/connected-test tasks (InstallVariantTask,
+// UninstallTask, DeviceProviderInstrumentTestTask) read $ANDROID_SERIAL and
+// scope themselves to exactly that device when it is set -- but an unset
+// ANDROID_SERIAL, the state that produced the incident, drops that filter
+// entirely and each task falls through to every device `adb` lists,
+// installing on all of them and, on an uninstall, removing the app and test
+// packages from all of them. This task runs before every device-touching
+// task and refuses when more than one device is attached, or when any
+// attached device is not an emulator, unless the caller opts in with
+// -Pherold.allowDevices=true -- a safety net for the invocation that forgot
+// to scope itself, not a replacement for setting ANDROID_SERIAL.
 // ---------------------------------------------------------------------------
+
+/**
+ * The adb executable the guard runs: the SDK's own adb (android.adbExecutable,
+ * itself derived from $ANDROID_SDK_ROOT/platform-tools/adb), not whatever
+ * `adb` a shell's PATH happens to resolve to. HEROLD_ADB_EXECUTABLE overrides
+ * it for the guard's own test (mobile/scripts/check-attached-devices-guard-
+ * test.sh), which brings a fake adb rather than depending on a real SDK/adb
+ * server -- CI runs with no device and no adb server at all.
+ */
+fun resolveAdbExecutable(): String {
+    System.getenv("HEROLD_ADB_EXECUTABLE")?.takeIf { it.isNotBlank() }?.let { return it }
+    return project.extensions.getByType(BaseExtension::class.java).adbExecutable.absolutePath
+}
 
 val checkAttachedDevices = tasks.register("checkAttachedDevices") {
     group = "verification"
     description = "Fails when more than one device, or a non-emulator device, is attached (issue #484)."
     doLast {
         val allowDevices = (findProperty("herold.allowDevices") as String?)?.toBoolean() ?: false
-        val process = ProcessBuilder("adb", "devices", "-l")
+        val adb = resolveAdbExecutable()
+        val process = ProcessBuilder(adb, "devices", "-l")
             .redirectErrorStream(true)
             .start()
         val output = process.inputStream.bufferedReader().readText()
         val exitCode = process.waitFor()
-        check(exitCode == 0) { "adb devices -l failed (exit $exitCode):\n$output" }
+        check(exitCode == 0) { "$adb devices -l failed (exit $exitCode):\n$output" }
         // adb prints optional daemon-startup chatter before the marker line;
         // only what follows it is device listing.
         val deviceLines = output.lineSequence()
@@ -416,9 +438,10 @@ val checkAttachedDevices = tasks.register("checkAttachedDevices") {
             throw GradleException(
                 buildString {
                     appendLine(
-                        "Refusing to install or run instrumented tests: this task installs " +
-                            "on every attached device and its cleanup can uninstall an " +
-                            "unrelated app from a real phone (issue #484).",
+                        "Refusing to install, uninstall or run instrumented tests: this task " +
+                            "acts on every attached device unless ANDROID_SERIAL scopes it, and " +
+                            "an uninstall can remove an unrelated app from a real phone " +
+                            "(issue #484).",
                     )
                     appendLine("Attached devices (adb devices -l):")
                     deviceLines.forEach { appendLine("  $it") }
@@ -432,11 +455,14 @@ val checkAttachedDevices = tasks.register("checkAttachedDevices") {
     }
 }
 
-tasks.configureEach {
-    if (name != checkAttachedDevices.name && (name.startsWith("connected") || name.startsWith("install"))) {
-        dependsOn(checkAttachedDevices)
-    }
-}
+// By type, not by task-name prefix: InstallVariantTask, UninstallTask and
+// DeviceProviderInstrumentTestTask back every install*/uninstall*/connected*
+// task (including the uninstallAll/connectedCheck lifecycle tasks, which
+// depend on these), so a future AGP rename of the task name cannot bypass
+// the guard the way a name-prefix match would.
+tasks.withType<InstallVariantTask>().configureEach { dependsOn(checkAttachedDevices) }
+tasks.withType<UninstallTask>().configureEach { dependsOn(checkAttachedDevices) }
+tasks.withType<DeviceProviderInstrumentTestTask>().configureEach { dependsOn(checkAttachedDevices) }
 
 dependencies {
     implementation(project(":shared"))

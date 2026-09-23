@@ -145,6 +145,15 @@ jobs:
       - name: androidApp assembleDebugAndroidTest (instrumented sources compile only)
         run: ./gradlew --no-daemon :androidApp:assembleDebugAndroidTest
 
+      # Proves the checkAttachedDevices guard (issue #484) is wired to
+      # every device-touching task and actually refuses a multi-device
+      # attach, entirely against a fake adb the script writes itself --
+      # this runner pool has no adb server and no device (see the KVM
+      # probe note above), so the guard's own tests cannot use a real one
+      # either.
+      - name: checkAttachedDevices guard test
+        run: scripts/check-attached-devices-guard-test.sh
+
   # Release lane: an `android-vX.Y.Z` tag builds a signed APK and attaches
   # it to a Forgejo release, the same shape ci.yml's release job uses
   # (curl against the releases API with RELEASE_TOKEN). The maintainer

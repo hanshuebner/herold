@@ -17,25 +17,37 @@ The instrumented acceptance suite runs against an ephemeral herold from
 
 ### Device safety (issue #484)
 
-A connected-test or install task installs on every device `adb` lists and,
-on cleanup, uninstalls the app and test packages from each. With more than
-one device attached and no `ANDROID_SERIAL` set to scope the run, that
-fan-out once reached a real phone alongside the emulator under test and took
-its installed app down with it. Two safeguards:
+AGP's install, uninstall and connected-test tasks (`InstallVariantTask`,
+`UninstallTask`, `DeviceProviderInstrumentTestTask`, verified against the
+8.11.2 toolchain jars this project pins) each read `$ANDROID_SERIAL` and, when
+it is set, scope themselves to exactly that device -- installing, uninstalling
+or running only on it, and failing if it is not attached. **With
+`ANDROID_SERIAL` unset**, that filter drops out entirely and the task falls
+through to every device `adb` lists: it installs on all of them, and an
+uninstall (including the `uninstallDebug`/`uninstallDebugAndroidTest`/
+`uninstallRelease` that a connected-test run's cleanup triggers) removes the
+app and test packages from all of them. That is exactly what happened once,
+with a real phone attached alongside the emulator under test and no
+`ANDROID_SERIAL` set: the fan-out took the phone's installed app down with it.
+Two safeguards:
 
 - The debug build carries `applicationIdSuffix = ".debug"`
   (`com.netzhansa.herold.android.debug`), a package distinct from the signed
   release build's, so a debug install can never replace or uninstall it.
-- Every `connected*` and `install*` Gradle task depends on
-  `checkAttachedDevices`, which runs `adb devices -l` first and fails,
-  listing what is attached, when more than one device is present or any
-  attached device is not an emulator (a serial not starting with
-  `emulator-`). Override with `-Pherold.allowDevices=true` when that is
-  genuinely intended.
+- Every install/uninstall/connected-test task -- matched by AGP task type, not
+  by name, so a future rename cannot slip past the guard -- depends on
+  `checkAttachedDevices`, which runs `adb devices -l` first (via the SDK's own
+  adb, not whatever a shell's PATH resolves to) and fails, listing what is
+  attached, when more than one device is present or any attached device is
+  not an emulator (a serial not starting with `emulator-`). Override with
+  `-Pherold.allowDevices=true` when that is genuinely intended.
+  `mobile/scripts/check-attached-devices-guard-test.sh` exercises the guard
+  against a fake adb and runs in CI on every mobile push.
 
 Set `ANDROID_SERIAL` to the emulator's serial (`adb devices`, e.g.
 `emulator-5554`) before running any device-touching Gradle task regardless:
-the guard is a safety net, not a substitute for scoping the run yourself.
+it is what actually scopes AGP's own tasks to that device, and the guard is
+the safety net for the invocation that forgot to, not a substitute for it.
 
 ## The instrumented acceptance harness
 
