@@ -355,6 +355,12 @@ export const en = {
   'msg.imagesFailedReason.unsupported': 'Unsupported image format.',
   'msg.imagesFailedReason.tooLarge': 'Images too large.',
   'msg.imagesFailedReason.other': 'Images could not be loaded.',
+  // While-snoozed banner (issue #469): shown on a message whose
+  // snoozedUntil is set. Names the wake destination only when it
+  // differs from the account's Inbox.
+  'msg.snooze.banner': 'Snoozed until {time}.',
+  'msg.snooze.bannerToMailbox': 'Snoozed until {time}, returning to {mailbox}.',
+  'msg.snooze.cancel': 'Cancel',
   // Truncated body recovery banner (Forgejo #48).
   'msg.body.loadingFull': 'Loading complete message...',
   // Accessible label for the spinner shown while the iframe is rendering

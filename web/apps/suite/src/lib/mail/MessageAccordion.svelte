@@ -66,6 +66,7 @@
   import TranslateBar from './TranslateBar.svelte';
   import ListChip from './ListChip.svelte';
   import { htmlToText } from '../translate/html-to-text';
+  import { formatWakeTime } from './snooze-format';
 
   interface Props {
     email: Email;
@@ -215,6 +216,35 @@
       }
     } finally {
       retryingImages = false;
+    }
+  }
+
+  // ── While-snoozed banner (issue #469) ───────────────────────────────────
+  //
+  // `Email.snoozedUntil` and `Email.snoozeWakeMailboxId` are already on the
+  // wire (issue #274); this banner reads them directly, no new fetch
+  // needed. The wake destination is named only when it differs from the
+  // account's Inbox -- the server's own default -- so the common case
+  // ("wakes back into the Inbox") stays a single short sentence.
+  let isSnoozed = $derived(Boolean(email.snoozedUntil));
+  let snoozeWakeTimeLabel = $derived(
+    email.snoozedUntil ? formatWakeTime(new Date(email.snoozedUntil)) : '',
+  );
+  let snoozeWakeMailboxName = $derived.by<string | null>(() => {
+    const wakeId = email.snoozeWakeMailboxId;
+    if (!wakeId) return null;
+    if (wakeId === mail.inbox?.id) return null;
+    return mail.mailboxes.get(wakeId)?.name ?? null;
+  });
+  let cancellingSnooze = $state(false);
+
+  async function cancelSnooze(): Promise<void> {
+    if (cancellingSnooze) return;
+    cancellingSnooze = true;
+    try {
+      await mail.unsnoozeEmail(email.id);
+    } finally {
+      cancellingSnooze = false;
     }
   }
 
@@ -941,6 +971,27 @@
 
   {#if expanded}
     <div class="body">
+      {#if isSnoozed}
+        <div class="snooze-banner" role="status">
+          <span>
+            {#if snoozeWakeMailboxName}
+              {t('msg.snooze.bannerToMailbox', {
+                time: snoozeWakeTimeLabel,
+                mailbox: snoozeWakeMailboxName,
+              })}
+            {:else}
+              {t('msg.snooze.banner', { time: snoozeWakeTimeLabel })}
+            {/if}
+          </span>
+          <button
+            type="button"
+            disabled={cancellingSnooze}
+            onclick={() => void cancelSnooze()}
+          >
+            {t('msg.snooze.cancel')}
+          </button>
+        </div>
+      {/if}
       <!-- Translation affordance: shown when the body language differs from
            the active locale; manages its own consent gate and translated
            body overlay (issue #84). -->
@@ -1266,6 +1317,37 @@
     color: var(--text-helper);
   }
 
+  /* While-snoozed banner (issue #469): same shape as the image banners
+     above so status banners in this pane read as one family. */
+  .snooze-banner {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--spacing-04);
+    padding: var(--spacing-03) var(--spacing-04);
+    margin-bottom: var(--spacing-03);
+    background: var(--layer-01);
+    border: 1px solid var(--border-subtle-01);
+    border-radius: var(--radius-md);
+    color: var(--text-secondary);
+    font-size: var(--type-body-compact-01-size);
+  }
+  .snooze-banner button {
+    color: var(--interactive);
+    font-weight: 600;
+    padding: var(--spacing-01) var(--spacing-03);
+    border-radius: var(--radius-md);
+    transition: background var(--duration-fast-02) var(--easing-productive-enter);
+  }
+  .snooze-banner button:hover {
+    background: var(--layer-02);
+  }
+  .snooze-banner button:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+
   /* Per re #233: plain-text and HTML messages must read as one coherent
    * conversation, so the plain-text branch shares the HTML branch's
    * proportional font and un-tinted background instead of presenting its
@@ -1335,6 +1417,7 @@
      recipients metadata the reader expects on paper. */
   @media print {
     .image-banner,
+    .snooze-banner,
     .react-wrapper,
     .header-icon-btn,
     .quoted-toggle {

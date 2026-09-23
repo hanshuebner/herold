@@ -353,6 +353,12 @@ export const de = {
   'msg.imagesFailedReason.unsupported': 'Bildformat nicht unterstützt.',
   'msg.imagesFailedReason.tooLarge': 'Bilder zu groß.',
   'msg.imagesFailedReason.other': 'Bilder konnten nicht geladen werden.',
+  // Banner für zurückgestellte Nachrichten (issue #469): erscheint bei einer
+  // Nachricht mit gesetztem snoozedUntil. Nennt das Zielpostfach nur, wenn es
+  // vom Posteingang des Kontos abweicht.
+  'msg.snooze.banner': 'Zurückgestellt bis {time}.',
+  'msg.snooze.bannerToMailbox': 'Zurückgestellt bis {time}, kehrt zurück nach {mailbox}.',
+  'msg.snooze.cancel': 'Abbrechen',
   // Abgeschnittene Nachricht wird vollständig geladen (Forgejo #48).
   'msg.body.loadingFull': 'Vollständige Nachricht wird geladen...',
   // Zugängliche Bezeichnung für den Ladespinner, während der iframe
