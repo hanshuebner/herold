@@ -40,7 +40,7 @@ vi.mock('../jmap/sync.svelte', () => ({
 
 const batch = vi.fn();
 vi.mock('../jmap/client', () => ({
-  jmap: { batch, session: null, uploadBlob: vi.fn(), downloadUrl: vi.fn() },
+  jmap: { batch, session: null, uploadBlob: vi.fn(), downloadUrl: vi.fn(), hasCapability: vi.fn(() => false) },
   strict: (r: unknown[]) => r,
 }));
 

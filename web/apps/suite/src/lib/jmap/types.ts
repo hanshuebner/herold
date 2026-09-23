@@ -240,6 +240,23 @@ export const Capability = {
    * Both sides MUST be updated together if the URI changes.
    */
   HeroldEmailUnsubscribe: 'https://netzhansa.com/jmap/unsubscribe',
+  /**
+   * Herold-specific `Email/query` / `Email/queryChanges` filter
+   * conditions beyond RFC 8621 (issue #467). Signals that
+   * `notInMailbox: Id[]` (the message holds no membership in any listed
+   * mailbox) is honoured with identical semantics on both the SQL fast
+   * path and the slow path, so the suite can rely on it for indexed
+   * folder-view queries. `applyTrashJunkExclusion` in
+   * `web/apps/suite/src/lib/mail/store.svelte.ts` uses it to exclude
+   * Junk from the inbox and other folder views without also excluding
+   * Trash; absent the capability it falls back to the
+   * `inMailboxOtherThan` shape that excludes both.
+   *
+   * Joined wire surface: the Go-side constant lives at
+   * internal/protojmap/registry.go CapabilityEmailQueryExtensions.
+   * Both sides MUST be updated together if the URI changes.
+   */
+  HeroldEmailQueryExtensions: 'https://netzhansa.com/jmap/email-query-extensions',
 } as const;
 
 export type CapabilityName = (typeof Capability)[keyof typeof Capability];

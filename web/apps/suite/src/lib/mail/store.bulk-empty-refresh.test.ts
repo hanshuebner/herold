@@ -175,7 +175,7 @@ const { batchMock, strictPassthrough, capturedFirstCallNames, AUTH_SESSION } =
 // ── Module mocks ─────────────────────────────────────────────────────────────
 
 vi.mock('../jmap/client', () => ({
-  jmap: { batch: batchMock },
+  jmap: { batch: batchMock, hasCapability: vi.fn(() => false) },
   strict: strictPassthrough,
 }));
 

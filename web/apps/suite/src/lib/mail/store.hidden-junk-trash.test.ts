@@ -79,7 +79,7 @@ const { batchMock, strictPassthrough, capturedCalls, scenario, AUTH_SESSION } = 
 });
 
 vi.mock('../jmap/client', () => ({
-  jmap: { batch: batchMock },
+  jmap: { batch: batchMock, hasCapability: vi.fn(() => false) },
   strict: strictPassthrough,
 }));
 

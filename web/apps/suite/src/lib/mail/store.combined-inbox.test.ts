@@ -12,7 +12,7 @@ import type { Email } from './types';
 
 const batch = vi.fn();
 vi.mock('../jmap/client', () => ({
-  jmap: { batch },
+  jmap: { batch, hasCapability: vi.fn(() => false) },
   strict: (r: unknown[]) => r,
 }));
 

@@ -1199,7 +1199,7 @@ class MailStore {
       // `label:Trash` / `label:Junk`.
       const scopedFilter = includesTrashOrJunk
         ? filter
-        : applyTrashJunkExclusion(filter, this.mailboxes);
+        : applySearchTrashJunkExclusion(filter, this.mailboxes);
       // Captured for selectWholeSearchResults (issue #207): a bulk action
       // taken against the whole search result set must scope
       // Email/setByQuery to this same filter.
@@ -2117,17 +2117,17 @@ class MailStore {
         null;
       if (folder === 'important') {
         // Virtual folder: every email with the $important keyword,
-        // regardless of which mailbox it lives in, excluding Junk/Trash
-        // members (re #426, REQ-SRC-06/07, REQ-UI-13b).
+        // regardless of which mailbox it lives in, excluding Junk
+        // members (re #426, re #467, REQ-SRC-06/07, REQ-UI-13b).
         filter = applyTrashJunkExclusion({ hasKeyword: '$important' }, this.mailboxes);
       } else if (folder === 'snoozed') {
         // Virtual folder: every email currently snoozed
         // ($snoozed keyword, set by the server alongside snoozedUntil),
-        // excluding Junk/Trash members (re #426).
+        // excluding Junk members (re #426, re #467).
         filter = applyTrashJunkExclusion({ hasKeyword: '$snoozed' }, this.mailboxes);
       } else if (folder === 'all') {
-        // Virtual folder: every message in the account except Junk/Trash
-        // members (re #426, REQ-SRC-06/07, REQ-UI-13b).
+        // Virtual folder: every message in the account except Junk
+        // members (re #426, re #467, REQ-SRC-06/07, REQ-UI-13b).
         filter = buildAllMailFilter(this.mailboxes);
       } else {
         let mailboxId: string | null = null;
@@ -5548,10 +5548,8 @@ export function isSystemRole(role: string | null | undefined): boolean {
 }
 
 /**
- * Splice `inMailboxOtherThan: [<trash>, <junk>]` into `parsed` so the
- * default search scope excludes those mailboxes (REQ-SRC-06). Returns
- * the original filter unchanged when neither role exists for this
- * principal — there's nothing to exclude.
+ * Splice `{ [key]: mailboxIds }` into `parsed`. Returns `parsed`
+ * unchanged when `mailboxIds` is empty — there's nothing to exclude.
  *
  * When `parsed` is itself a flat FilterCondition (no `operator` key),
  * the exclusion is spliced in directly: a single FilterCondition with
@@ -5566,7 +5564,31 @@ export function isSystemRole(role: string | null | undefined): boolean {
  * (`{operator, conditions}`), we wrap with AND because we cannot
  * push a sibling key into the operator shape.
  */
-export function applyTrashJunkExclusion(
+function spliceMailboxExclusion(
+  parsed: FilterCondition | FilterOperator,
+  mailboxIds: string[],
+  key: 'inMailboxOtherThan' | 'notInMailbox',
+): FilterCondition | FilterOperator {
+  if (mailboxIds.length === 0) return parsed;
+  if (!('operator' in parsed)) {
+    return { ...parsed, [key]: mailboxIds };
+  }
+  return {
+    operator: 'AND',
+    conditions: [parsed, { [key]: mailboxIds }],
+  };
+}
+
+/**
+ * Splice `inMailboxOtherThan: [<trash>, <junk>]` into `parsed` so the
+ * default search scope excludes those mailboxes (REQ-SRC-06). This is
+ * the RFC 8621 §4.4.1 predicate — the message must sit in at least one
+ * mailbox outside the listed set — unconditionally, regardless of
+ * whether the server advertises `Capability.HeroldEmailQueryExtensions`:
+ * `runSearch` is the only caller, and REQ-SRC-06's Trash-and-Junk scope
+ * is independent of issue #467's folder-view rule.
+ */
+export function applySearchTrashJunkExclusion(
   parsed: FilterCondition | FilterOperator,
   mailboxes: Map<string, Mailbox>,
 ): FilterCondition | FilterOperator {
@@ -5574,23 +5596,52 @@ export function applyTrashJunkExclusion(
   for (const m of mailboxes.values()) {
     if (m.role === 'trash' || m.role === 'junk') exclude.push(m.id);
   }
-  if (exclude.length === 0) return parsed;
-  if (!('operator' in parsed)) {
-    return { ...parsed, inMailboxOtherThan: exclude };
+  return spliceMailboxExclusion(parsed, exclude, 'inMailboxOtherThan');
+}
+
+/**
+ * Exclude Junk from a folder view's filter (issue #467). A message
+ * that a classifier verdict has filed to Junk stays out of the inbox
+ * and every other folder view even while it keeps an Inbox (or other
+ * label) membership. Trash is left alone: a message that also sits in
+ * Trash is listed normally, matching the store's invariant that Trash
+ * never coexists with another mailbox (#460) and the client-side rule
+ * that neither client filters Trash out of a folder view.
+ *
+ * When the server advertises `Capability.HeroldEmailQueryExtensions`,
+ * the exclusion uses the herold `notInMailbox: [<junk>]` filter
+ * condition, which stays on the fast, indexed `Email/query` path on
+ * both backends with identical semantics to the slow path
+ * (REQ-PERF-INDEX-10). Against a server that has not deployed the
+ * extension, this falls back to `applySearchTrashJunkExclusion`'s
+ * `inMailboxOtherThan: [<trash>, <junk>]` shape — the previous
+ * behaviour, which also excludes Trash — so an older server keeps
+ * working.
+ */
+export function applyTrashJunkExclusion(
+  parsed: FilterCondition | FilterOperator,
+  mailboxes: Map<string, Mailbox>,
+): FilterCondition | FilterOperator {
+  if (!jmap.hasCapability(Capability.HeroldEmailQueryExtensions)) {
+    return applySearchTrashJunkExclusion(parsed, mailboxes);
   }
-  return {
-    operator: 'AND',
-    conditions: [parsed, { inMailboxOtherThan: exclude }],
-  };
+  const junk: string[] = [];
+  for (const m of mailboxes.values()) {
+    if (m.role === 'junk') junk.push(m.id);
+  }
+  return spliceMailboxExclusion(parsed, junk, 'notInMailbox');
 }
 
 /**
  * Build the `Email/query` filter for the `all` virtual folder (re #426):
- * every message in the account except Junk/Trash members
- * (REQ-SRC-06/07, REQ-UI-13b). `all` carries no base predicate of its
- * own, so `applyTrashJunkExclusion` is spliced into an empty condition;
- * returns `undefined` (no filter at all) only when the principal has
- * neither a Junk nor a Trash mailbox to exclude, matching the shape
+ * every message in the account except Junk members (re #467,
+ * REQ-SRC-06/07, REQ-UI-13b) -- a message that also sits in Trash is
+ * listed, matching the store's Trash-never-coexists invariant (#460).
+ * `all` carries no base predicate of its own, so `applyTrashJunkExclusion`
+ * is spliced into an empty condition; returns `undefined` (no filter at
+ * all) only when `applyTrashJunkExclusion` finds nothing to exclude
+ * (against a server without the `notInMailbox` extension, that means
+ * neither a Junk nor a Trash mailbox exists), matching the shape
  * `loadFolder`'s `Email/query` call already treats as "no filter".
  */
 export function buildAllMailFilter(
@@ -5605,14 +5656,15 @@ export function buildAllMailFilter(
  * (issue #310). The Junk and Trash mailboxes are returned unfiltered --
  * viewing Junk or Trash must still show everything filed there. Every
  * other mailbox, including a user label such as the IMAP import's
- * provenance label, excludes messages that also sit in Junk or Trash via
- * `applyTrashJunkExclusion`, so a label view never lists junked or
- * trashed mail. `loadFolder`, `#refreshFolderInPlace`, and
+ * provenance label, excludes messages that also sit in Junk via
+ * `applyTrashJunkExclusion` (re #467) -- a message that also sits in
+ * Trash is listed normally, per the store's Trash-never-coexists
+ * invariant (#460). `loadFolder`, `#refreshFolderInPlace`, and
  * `#buildCurrentFolderFilter` (which also scopes pagination and the
  * whole-mailbox bulk actions run through `Email/setByQuery`) all route
  * through this one helper, so a "select all" bulk action from a label
- * view can never touch junked or trashed mail either. The `all`,
- * `important`, and `snoozed` virtual folders (re #426) apply the same
+ * view can never touch junked mail either. The `all`, `important`, and
+ * `snoozed` virtual folders (re #426) apply the same
  * `applyTrashJunkExclusion` directly, via `buildAllMailFilter` for `all`
  * and by splicing into their own `hasKeyword` base condition for the
  * other two -- they have no single `mailboxId` to scope this helper to.
@@ -5628,7 +5680,7 @@ export function buildAllMailFilter(
  * (`internal/protojmap/mail/email/fastquery.go:mergeFlatFilterIntoOpts`
  * translates `notKeyword` straight to `EmailQueryFastOpts.NotKeyword`).
  * Junk and Trash views are unaffected -- they return before this
- * exclusion is built, same as the existing Junk/Trash exclusion.
+ * exclusion is built, same as the existing Junk exclusion.
  */
 export function buildFolderViewFilter(
   mailboxId: string,

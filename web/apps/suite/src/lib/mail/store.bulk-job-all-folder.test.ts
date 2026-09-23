@@ -1,11 +1,14 @@
 /**
  * Coverage for issue #426: a whole-mailbox bulk action (select-all) taken
  * from the "all" virtual folder must scope its `Email/setByQuery` to the
- * same Junk/Trash exclusion the folder view itself queries with --
+ * same Junk exclusion the folder view itself queries with --
  * `#startWholeMailboxBulk` resolves its filter via
  * `#buildCurrentFolderFilter()`, which for `folder === 'all'` now routes
  * through `buildAllMailFilter` instead of returning `undefined` (no
- * filter, matching every message including Junk/Trash members).
+ * filter, matching every message including Junk members). The mocked
+ * `hasCapability` always returns true, so `buildAllMailFilter` takes the
+ * `notInMailbox` path (re #467): the message stays out solely for its
+ * Junk membership, and a Trash membership no longer matters.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -170,7 +173,7 @@ describe('whole-mailbox bulk action from the "all" view excludes Junk/Trash (re 
     vi.useRealTimers();
   });
 
-  it('bulkArchive scopes Email/setByQuery to inMailboxOtherThan: [junk, trash], never a bare match-everything filter', async () => {
+  it('bulkArchive scopes Email/setByQuery to notInMailbox: [junk], never a bare match-everything filter', async () => {
     const { mail } = mailMod;
     vi.mocked(jmapMod.jmap.batch).mockResolvedValueOnce({
       responses: [
@@ -199,7 +202,7 @@ describe('whole-mailbox bulk action from the "all" view excludes Junk/Trash (re 
     expect(sentArgs.filter).not.toBeNull();
     expect(sentArgs.filter).not.toHaveProperty('operator');
     expect(sentArgs.filter).toEqual({
-      inMailboxOtherThan: expect.arrayContaining([JUNK_ID, TRASH_ID]),
+      notInMailbox: [JUNK_ID],
     });
   });
 });

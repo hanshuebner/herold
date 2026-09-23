@@ -225,7 +225,7 @@ describe('search whole-result-set selection (issue #207)', () => {
     });
     // The search filter for a plain "spam" query is `{ text: 'spam' }`
     // (no trash/junk mailboxes configured here, so
-    // applyTrashJunkExclusion leaves it unwrapped) -- crucially NOT
+    // applySearchTrashJunkExclusion leaves it unwrapped) -- crucially NOT
     // `{ inMailbox: 'mbx-inbox' }`, which is what #buildCurrentFolderFilter
     // would have produced from the folder loaded behind the search view.
     expect(sentFilter).toEqual({ text: 'spam' });

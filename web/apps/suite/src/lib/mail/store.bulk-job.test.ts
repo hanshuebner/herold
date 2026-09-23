@@ -16,8 +16,15 @@ import type { Mailbox, Email } from './types';
 
 // ── Module-level mocks (must be before any dynamic import) ────────────────────
 
+// hasCapability is true for the bulk-mutation capability this file is
+// about, and false for issue #467's email-query-extensions -- this
+// file's mailbox fixtures have no Junk mailbox, and the pre-#467
+// `inMailboxOtherThan` fallback is what its filter assertions pin.
 vi.mock('../jmap/client', () => ({
-  jmap: { batch: vi.fn(), hasCapability: vi.fn(() => true) },
+  jmap: {
+    batch: vi.fn(),
+    hasCapability: vi.fn((name: string) => name !== 'https://netzhansa.com/jmap/email-query-extensions'),
+  },
   strict: (r: unknown[]) => r,
 }));
 

@@ -8,6 +8,13 @@
  * directly in loadFolder/#refreshFolderInPlace/#buildCurrentFolderFilter
  * (re #426; see build-all-mail-filter.test.ts).
  *
+ * This file does not mock `../jmap/client`, so `jmap.hasCapability`
+ * defaults to false throughout: it exercises `applyTrashJunkExclusion`'s
+ * pre-#467 fallback, which still excludes both Junk and Trash via
+ * `inMailboxOtherThan`. The capability-advertised path -- Junk-only
+ * exclusion via `notInMailbox`, Trash listed normally -- is covered by
+ * apply-trash-junk-exclusion.test.ts.
+ *
  * Issue #468: every ordinary folder/label view also excludes a message
  * carrying the `$snoozed` keyword, so a snoozed conversation leaves the
  * Inbox (and any other non-Junk/Trash folder) until its reminder falls

@@ -4,6 +4,12 @@
  * (#310) -- REQ-SRC-06/07, REQ-UI-13b. Before the fix, `all` carried no
  * filter at all and `important`/`snoozed` carried only their `hasKeyword`
  * predicate, so Junk/Trash members leaked into every one of them.
+ *
+ * This file does not mock `../jmap/client`, so `jmap.hasCapability`
+ * defaults to false: it exercises `applyTrashJunkExclusion`'s pre-#467
+ * fallback (both Junk and Trash excluded via `inMailboxOtherThan`). The
+ * capability-advertised path (Junk-only exclusion via `notInMailbox`) is
+ * covered by apply-trash-junk-exclusion.test.ts.
  */
 
 import { describe, it, expect } from 'vitest';

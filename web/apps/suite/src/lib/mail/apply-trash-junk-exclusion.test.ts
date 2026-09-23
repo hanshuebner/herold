@@ -1,13 +1,28 @@
 /**
- * REQ-SRC-06: default search scope excludes Trash + Junk via
- * applyTrashJunkExclusion. The helper wraps the parsed filter with
- * inMailboxOtherThan: [<trash-id>, <junk-id>] when those mailboxes
- * exist for the principal.
+ * Issue #467: the inbox and every other folder view exclude Junk via the
+ * herold `notInMailbox` filter condition -- a message that a classifier
+ * verdict has filed to Junk stays out even while it keeps an Inbox (or
+ * other label) membership. Trash is never excluded from a folder view:
+ * a message that also sits in Trash is listed, per the store's
+ * Trash-never-coexists invariant (#460).
+ *
+ * `applyTrashJunkExclusion` takes the `notInMailbox` path only when the
+ * server advertises `Capability.HeroldEmailQueryExtensions`; against an
+ * older server it falls back to the previous `inMailboxOtherThan:
+ * [<trash>, <junk>]` shape, which excludes both.
  */
 
-import { describe, it, expect } from 'vitest';
-import { applyTrashJunkExclusion } from './store.svelte';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Mailbox } from './types';
+
+vi.mock('../jmap/client', () => ({
+  jmap: { hasCapability: vi.fn(() => false) },
+  strict: (r: unknown[]) => r,
+  setJmapOnUnauthenticated: vi.fn(),
+}));
+
+import { jmap } from '../jmap/client';
+import { applyTrashJunkExclusion, buildFolderViewFilter } from './store.svelte';
 
 function mb(id: string, name: string, role: string | null): Mailbox {
   return {
@@ -23,93 +38,119 @@ function mb(id: string, name: string, role: string | null): Mailbox {
   };
 }
 
-describe('applyTrashJunkExclusion (REQ-SRC-06)', () => {
-  it('splices inMailboxOtherThan into a flat text filter without wrapping in AND', () => {
-    // A flat FilterCondition (no `operator` key) gets the exclusion
-    // spliced in directly. RFC 8621 §5.5 makes a single FilterCondition
-    // with multiple keys implicitly AND-ed, and the server's fast-path
-    // gate (mergeFilterIntoOpts) only recognises the flat shape — see
-    // REQ-PERF-INDEX-10.
+describe('applyTrashJunkExclusion (issue #467)', () => {
+  beforeEach(() => {
+    vi.mocked(jmap.hasCapability).mockReturnValue(false);
+  });
+
+  it('excludes only Junk via notInMailbox when the server advertises the capability', () => {
+    vi.mocked(jmap.hasCapability).mockReturnValue(true);
     const m = new Map<string, Mailbox>();
     m.set('mb-inbox', mb('mb-inbox', 'Inbox', 'inbox'));
     m.set('mb-trash', mb('mb-trash', 'Trash', 'trash'));
     m.set('mb-junk', mb('mb-junk', 'Junk', 'junk'));
 
-    const out = applyTrashJunkExclusion({ text: 'foo' }, m);
+    const out = applyTrashJunkExclusion({ inMailbox: 'mb-inbox' }, m);
     expect(out).not.toHaveProperty('operator');
+    expect(out).toEqual({ inMailbox: 'mb-inbox', notInMailbox: ['mb-junk'] });
+  });
+
+  it('falls back to inMailboxOtherThan: [trash, junk] when the capability is absent', () => {
+    vi.mocked(jmap.hasCapability).mockReturnValue(false);
+    const m = new Map<string, Mailbox>();
+    m.set('mb-trash', mb('mb-trash', 'Trash', 'trash'));
+    m.set('mb-junk', mb('mb-junk', 'Junk', 'junk'));
+
+    const out = applyTrashJunkExclusion({ inMailbox: 'mb-label' }, m);
     expect(out).toEqual({
-      text: 'foo',
+      inMailbox: 'mb-label',
       inMailboxOtherThan: expect.arrayContaining(['mb-trash', 'mb-junk']),
     });
   });
 
-  it('splices inMailboxOtherThan into a flat before-filter without wrapping in AND', () => {
-    // The reported bug shape (issue 2026-05-10): `before:2009-01-01`
-    // produced `{operator: AND, conditions: [{before}, {inMailboxOtherThan}]}`
-    // which the fast-pushability gate rejected, dropping the query to
-    // the slow path and tripping the response deadline. After the fix
-    // the shape is flat and the fast path engages.
+  it('returns the filter unchanged when no Junk mailbox exists, capability advertised', () => {
+    vi.mocked(jmap.hasCapability).mockReturnValue(true);
     const m = new Map<string, Mailbox>();
+    m.set('mb-inbox', mb('mb-inbox', 'Inbox', 'inbox'));
     m.set('mb-trash', mb('mb-trash', 'Trash', 'trash'));
-    m.set('mb-junk', mb('mb-junk', 'Junk', 'junk'));
-    const out = applyTrashJunkExclusion({ before: '2009-01-01T00:00:00Z' }, m);
-    expect(out).not.toHaveProperty('operator');
-    expect(out).toEqual({
-      before: '2009-01-01T00:00:00Z',
+    const filter = { inMailbox: 'mb-inbox' };
+    expect(applyTrashJunkExclusion(filter, m)).toBe(filter);
+  });
+});
+
+describe('buildFolderViewFilter shapes (issue #467)', () => {
+  it('inbox view: {inMailbox, notKeyword, notInMailbox: [junk]} when the capability is advertised', () => {
+    vi.mocked(jmap.hasCapability).mockReturnValue(true);
+    const mailboxes = new Map<string, Mailbox>();
+    mailboxes.set('mb-inbox', mb('mb-inbox', 'Inbox', 'inbox'));
+    mailboxes.set('mb-trash', mb('mb-trash', 'Trash', 'trash'));
+    mailboxes.set('mb-junk', mb('mb-junk', 'Junk', 'junk'));
+
+    const filter = buildFolderViewFilter('mb-inbox', mailboxes);
+    expect(filter).toEqual({
+      inMailbox: 'mb-inbox',
+      notKeyword: '$snoozed',
+      notInMailbox: ['mb-junk'],
+    });
+  });
+
+  it('label view: {inMailbox, notKeyword, notInMailbox: [junk]} when the capability is advertised', () => {
+    vi.mocked(jmap.hasCapability).mockReturnValue(true);
+    const mailboxes = new Map<string, Mailbox>();
+    mailboxes.set('mb-trash', mb('mb-trash', 'Trash', 'trash'));
+    mailboxes.set('mb-junk', mb('mb-junk', 'Junk', 'junk'));
+    mailboxes.set('mb-label', mb('mb-label', 'Project X', null));
+
+    const filter = buildFolderViewFilter('mb-label', mailboxes);
+    expect(filter).toEqual({
+      inMailbox: 'mb-label',
+      notKeyword: '$snoozed',
+      notInMailbox: ['mb-junk'],
+    });
+  });
+
+  it('falls back to inMailboxOtherThan: [trash, junk] for a label view when the capability is absent', () => {
+    vi.mocked(jmap.hasCapability).mockReturnValue(false);
+    const mailboxes = new Map<string, Mailbox>();
+    mailboxes.set('mb-trash', mb('mb-trash', 'Trash', 'trash'));
+    mailboxes.set('mb-junk', mb('mb-junk', 'Junk', 'junk'));
+    mailboxes.set('mb-label', mb('mb-label', 'Project X', null));
+
+    const filter = buildFolderViewFilter('mb-label', mailboxes);
+    expect(filter).toEqual({
+      inMailbox: 'mb-label',
+      notKeyword: '$snoozed',
       inMailboxOtherThan: expect.arrayContaining(['mb-trash', 'mb-junk']),
     });
   });
+});
 
-  it('returns the filter unchanged when neither role exists', () => {
-    const m = new Map<string, Mailbox>();
-    m.set('mb-inbox', mb('mb-inbox', 'Inbox', 'inbox'));
-    const filter = { text: 'foo' };
-    expect(applyTrashJunkExclusion(filter, m)).toBe(filter);
-  });
+describe('the fold: Junk hides a message from the inbox, Trash does not (issue #467)', () => {
+  // Minimal evaluator for the subset of FilterCondition semantics this
+  // test needs -- inMailbox (RFC 8621 SS4.4.1's "in" test) and
+  // notInMailbox (the herold extension, issue #467): both look only at
+  // a message's own mailboxIds membership set.
+  function matches(filter: Record<string, unknown>, mailboxIds: string[]): boolean {
+    if (typeof filter.inMailbox === 'string' && !mailboxIds.includes(filter.inMailbox)) {
+      return false;
+    }
+    const notIn = filter.notInMailbox as string[] | undefined;
+    if (notIn && notIn.some((id) => mailboxIds.includes(id))) {
+      return false;
+    }
+    return true;
+  }
 
-  it('returns the filter unchanged when neither role exists for an AND-shaped parsed filter', () => {
-    const m = new Map<string, Mailbox>();
-    m.set('mb-inbox', mb('mb-inbox', 'Inbox', 'inbox'));
-    const filter = {
-      operator: 'OR' as const,
-      conditions: [{ from: 'alice' }, { from: 'bob' }],
-    };
-    expect(applyTrashJunkExclusion(filter, m)).toBe(filter);
-  });
+  it('a message in Inbox and Junk is not listed; one in Inbox and Trash is listed', () => {
+    vi.mocked(jmap.hasCapability).mockReturnValue(true);
+    const mailboxes = new Map<string, Mailbox>();
+    mailboxes.set('mb-inbox', mb('mb-inbox', 'Inbox', 'inbox'));
+    mailboxes.set('mb-trash', mb('mb-trash', 'Trash', 'trash'));
+    mailboxes.set('mb-junk', mb('mb-junk', 'Junk', 'junk'));
 
-  it('wraps an operator-shaped parsed filter with AND', () => {
-    // When `parsed` is itself a FilterOperator (`{operator, conditions}`)
-    // we cannot splice a sibling key — operator-shaped objects do not
-    // accept FilterCondition keys. Wrap with AND so semantics are
-    // preserved; this shape will not engage the fast path until
-    // REQ-PERF-INDEX-10's gate accepts it (only AND-of-flat-conjuncts
-    // is currently pushable).
-    const m = new Map<string, Mailbox>();
-    m.set('mb-trash', mb('mb-trash', 'Trash', 'trash'));
-    m.set('mb-junk', mb('mb-junk', 'Junk', 'junk'));
-    const inner = {
-      operator: 'OR' as const,
-      conditions: [{ from: 'alice' }, { from: 'bob' }],
-    };
-    const out = applyTrashJunkExclusion(inner, m);
-    expect(out).toEqual({
-      operator: 'AND',
-      conditions: [inner, { inMailboxOtherThan: ['mb-trash', 'mb-junk'] }],
-    });
-  });
+    const filter = buildFolderViewFilter('mb-inbox', mailboxes) as Record<string, unknown>;
 
-  it('wraps an AND-tree filter with AND (operator key is the only signal)', () => {
-    const m = new Map<string, Mailbox>();
-    m.set('mb-trash', mb('mb-trash', 'Trash', 'trash'));
-    m.set('mb-junk', mb('mb-junk', 'Junk', 'junk'));
-    const inner = {
-      operator: 'AND' as const,
-      conditions: [{ from: 'alice' }, { hasAttachment: true }],
-    };
-    const out = applyTrashJunkExclusion(inner, m);
-    expect(out).toEqual({
-      operator: 'AND',
-      conditions: [inner, { inMailboxOtherThan: ['mb-trash', 'mb-junk'] }],
-    });
+    expect(matches(filter, ['mb-inbox', 'mb-junk'])).toBe(false);
+    expect(matches(filter, ['mb-inbox', 'mb-trash'])).toBe(true);
   });
 });
