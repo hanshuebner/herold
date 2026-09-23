@@ -1128,6 +1128,41 @@ func ThreadHasArchiveMember(ctx context.Context, st store.Store, principalID sto
 	return 0, false
 }
 
+// ThreadHasPrincipalSentMember reports whether any OTHER message in msg's
+// thread is principal-sent per MessageIsPrincipalSent -- a herold-authored
+// reply, whether sent through herold's own submission path (a Sent-role
+// membership) or mirrored back from an upstream Sent folder (a From naming
+// one of the principal's identities). Store-only sibling of
+// ThreadHasArchiveMember; used by dropOrphanedProvenanceLabel (re #487) to
+// decide whether an otherwise-unmembered mirrored message was answered and
+// so must be preserved rather than deleted.
+//
+// A message not yet threaded (ThreadID == 0) is looked up by its own
+// MessageID as the thread key, mirroring ThreadHasArchiveMember.
+func ThreadHasPrincipalSentMember(ctx context.Context, st store.Store, principalID store.PrincipalID, msg store.Message) bool {
+	key := msg.ThreadID
+	if key == 0 {
+		key = uint64(msg.ID)
+	}
+	rows, err := st.Meta().ListThreadsByKeys(ctx, principalID, []uint64{key})
+	if err != nil || len(rows[key]) == 0 {
+		return false
+	}
+	for _, tm := range rows[key] {
+		if tm.MessageID == msg.ID {
+			continue
+		}
+		m, gerr := st.Meta().GetMessage(ctx, tm.MessageID)
+		if gerr != nil {
+			continue
+		}
+		if MessageIsPrincipalSent(ctx, st, principalID, m) {
+			return true
+		}
+	}
+	return false
+}
+
 // dedupHitIsPrincipalSent reports whether a Message-ID/blob-hash dedup hit
 // (existing, freshly re-fetched msg) is a copy of a message the owning
 // principal sent: either existing already carries a membership in a
@@ -1317,7 +1352,8 @@ func (w *accountWorker) stripInboxMembershipsForJunk(ctx context.Context, pid st
 // longer claims the message: an upstream \Deleted flag or an upstream
 // EXPUNGE (re #303). If the message has no other mailbox membership,
 // RemoveMessageFromMailbox's contract destroys it — herold's normal removal
-// path for a message with no mailbox.
+// path for a message with no mailbox — unless dropOrphanedProvenanceLabel
+// (re #487) finds the message touched and preserves it instead.
 //
 // Divergence guard (re #319): when ms.MappedMailboxID is set and differs
 // from ms.HeroldMailboxID, the folder's nominal mapping was redirected at
@@ -1338,6 +1374,9 @@ func (w *accountWorker) removeMessageStateMembership(ctx context.Context, ms sto
 	if mapped != ms.HeroldMailboxID {
 		return
 	}
+
+	attrs := w.mailboxAttrByID(ctx, store.PrincipalID(w.opts.account.PrincipalID))
+	removedWasInbox := attrs[ms.HeroldMailboxID]&store.MailboxAttrInbox != 0
 
 	if rerr := w.opts.store.Meta().RemoveMessageFromMailbox(ctx, ms.HeroldMessageID, ms.HeroldMailboxID); rerr != nil && !errors.Is(rerr, store.ErrNotFound) {
 		w.opts.log.Warn("imapimport: failed to remove mailbox membership",
@@ -1360,19 +1399,45 @@ func (w *accountWorker) removeMessageStateMembership(ctx context.Context, ms sto
 	// membership other than this account's provenance label, drop the
 	// label too so the message follows the store's normal fate for a
 	// message with no mailbox (RemoveMessageFromMailbox's own zero-
-	// membership contract) instead of lingering as a label-only orphan.
-	w.dropOrphanedProvenanceLabel(ctx, ms.HeroldMessageID)
+	// membership contract) instead of lingering as a label-only orphan --
+	// unless the #487 preservation rule applies.
+	w.dropOrphanedProvenanceLabel(ctx, ms.HeroldMessageID, removedWasInbox)
 }
 
 // dropOrphanedProvenanceLabel removes this account's provenance-label
-// membership from msgID when that label is msgID's only remaining
-// mailbox membership (re #319). The store's own RemoveMessageFromMailbox
-// then applies its normal zero-membership contract; nothing here deletes
-// the blob or the classification record explicitly. A no-op when the
-// account has no provenance label yet, msgID is unknown, the message is
-// already gone (its last real membership removal already destroyed it),
-// or the message has any membership other than this account's label.
-func (w *accountWorker) dropOrphanedProvenanceLabel(ctx context.Context, msgID store.MessageID) {
+// membership from msgID when that label is msgID's only remaining mailbox
+// membership (re #319), unless the preservation rule (re #487) applies: a
+// message the user has acted on in herold is moved to Archive instead of
+// being dropped to zero membership. removedWasInbox reports whether the
+// membership removeMessageStateMembership just removed was Inbox-attributed.
+//
+// The rule's untouched case is exactly "only INBOX plus the provenance
+// label": removedWasInbox true and no herold-authored reply already in the
+// message's thread. Anything else is touched --
+//
+//   - the just-removed membership was not Inbox (it was Archive-mapped, or a
+//     custom label folder mapping this account had already placed the
+//     message in -- "archived" / "labelled with a non-provenance label" in
+//     the rule), or
+//   - the message's thread already contains a herold-authored reply per
+//     ThreadHasPrincipalSentMember (data the store has: a message in the
+//     same thread whose ingest source is a submission -- a Sent-role
+//     membership -- or whose From names one of the principal's identities;
+//     "answered by a herold-authored reply" in the rule).
+//
+// A touched message keeps its provenance label and gains an Archive
+// membership (creating the principal's Archive mailbox if needed) so it
+// survives with the label intact; RemoveMessageFromMailbox is never called
+// on the label in that case. An untouched message follows the delete as
+// before: the store's own RemoveMessageFromMailbox applies its normal
+// zero-membership contract once the label is dropped; nothing here deletes
+// the blob or the classification record explicitly.
+//
+// A no-op when the account has no provenance label yet, msgID is unknown,
+// the message is already gone (its last real membership removal already
+// destroyed it), or the message currently has any membership other than
+// this account's label (already safe: it did not reach zero membership).
+func (w *accountWorker) dropOrphanedProvenanceLabel(ctx context.Context, msgID store.MessageID, removedWasInbox bool) {
 	provID := w.opts.account.ProvenanceMailboxID
 	if provID == 0 || msgID == 0 {
 		return
@@ -1384,6 +1449,29 @@ func (w *accountWorker) dropOrphanedProvenanceLabel(ctx context.Context, msgID s
 	if len(msg.Mailboxes) != 1 || msg.Mailboxes[0].MailboxID != provID {
 		return
 	}
+
+	pid := store.PrincipalID(w.opts.account.PrincipalID)
+	touched := !removedWasInbox || ThreadHasPrincipalSentMember(ctx, w.opts.store, pid, msg)
+	if touched {
+		archiveMB, aerr := w.ensureMailbox(ctx, pid, "Archive")
+		if aerr != nil {
+			w.opts.log.Warn("imapimport: failed to ensure Archive mailbox for preserved message",
+				slog.String("account_id", w.opts.account.ID),
+				slog.Uint64("msg_id", uint64(msgID)),
+				slog.String("error", aerr.Error()),
+			)
+			return
+		}
+		if _, _, merr := w.opts.store.Meta().AddMessageToMailbox(ctx, msgID, archiveMB.ID); merr != nil && !errors.Is(merr, store.ErrConflict) {
+			w.opts.log.Warn("imapimport: failed to preserve orphaned message into Archive",
+				slog.String("account_id", w.opts.account.ID),
+				slog.Uint64("msg_id", uint64(msgID)),
+				slog.String("error", merr.Error()),
+			)
+		}
+		return
+	}
+
 	if rerr := w.opts.store.Meta().RemoveMessageFromMailbox(ctx, msgID, provID); rerr != nil && !errors.Is(rerr, store.ErrNotFound) {
 		w.opts.log.Warn("imapimport: failed to drop orphaned provenance label",
 			slog.String("account_id", w.opts.account.ID),
@@ -1393,12 +1481,93 @@ func (w *accountWorker) dropOrphanedProvenanceLabel(ctx context.Context, msgID s
 	}
 }
 
+// massExpungeGuardMinTracked is the minimum number of message_state rows a
+// folder must have before the mass-expunge guard (re #487) treats its
+// missing-fraction signal as meaningful. Below this floor a single
+// legitimate expunge in a small or newly-mapped folder can swing the missing
+// fraction to 100% (one gone out of one or two tracked rows); guarding on
+// fraction alone at that scale would defer every ordinary single-message
+// expunge indefinitely. Every folder below the floor reconciles immediately,
+// matching the behaviour before this guard existed.
+const massExpungeGuardMinTracked = 20
+
+// massExpungeGuardFraction is the fraction of a folder's tracked
+// message_state rows that may go missing from one UID SEARCH ALL result
+// before reconcileExpungedMessages defers the pass instead of acting on it.
+// The account behind #487 removed at most 16 tracked messages on any single
+// legitimate day; a folder losing more than half its tracked rows in one
+// pass is far more likely to be a truncated or empty SEARCH result (a
+// reconnect race, a transient upstream hiccup the client read as "no
+// messages") than a genuine mass deletion, so it is held back for
+// corroboration instead of acted upon immediately.
+const massExpungeGuardFraction = 0.5
+
+// massExpungeConfirmPasses is the number of consecutive suspect passes (see
+// massExpungeGuardFraction) required, for the same folder, before the guard
+// lets the reconcile through and treats the drop as genuine. One suspect
+// reading proves nothing about repeatability; two independent UID SEARCH ALL
+// results agreeing that the same tracked mail is gone is the corroboration a
+// truncated one-off response cannot produce. A UIDVALIDITY mismatch confirms
+// a folder identity change immediately without waiting on this counter:
+// syncFolder already resets the cursor and skips reconciliation entirely for
+// that pass (see the UIDVALIDITY rollover handling in syncFolder), so this
+// counter only ever governs the same-identity, large-missing-fraction case.
+// A genuine mass purge upstream still converges within at most
+// massExpungeConfirmPasses sync rounds -- an IDLE wake or poll interval
+// apart on a stable connection, or the first two sessions after a
+// reconnecting worker -- rather than wedging: the streak is a plain counter,
+// never a permanent refusal.
+const massExpungeConfirmPasses = 2
+
+// emitMassExpungeGuardEvent records a system event (re #487) each time
+// reconcileExpungedMessages defers a folder's reconcile pass because its
+// missing fraction exceeded massExpungeGuardFraction without yet reaching
+// massExpungeConfirmPasses corroborating passes. Always emitted, unlike
+// emitDebugEvent's DebugLog gate: an operator needs to see the guard
+// declining regardless of whether per-account debug logging happens to be
+// on, since this is exactly the anomaly #487 asks to surface. Best-effort:
+// an append failure is logged and does not affect the decision already
+// made.
+func (w *accountWorker) emitMassExpungeGuardEvent(ctx context.Context, upstreamFolder string, tracked, observed, missing, streak int, fraction float64) {
+	ev := store.SystemEvent{
+		At:      w.opts.clk.Now(),
+		Action:  "imapimport.reconcile.guard_declined",
+		ActorID: w.opts.account.ID,
+		Subject: "imapimport:" + w.opts.account.ID + ":" + upstreamFolder,
+		Outcome: store.OutcomeFailure,
+		Message: fmt.Sprintf(
+			"mass-expunge guard declined reconcile for %s: %d/%d tracked messages missing (%.0f%%), pass %d/%d",
+			upstreamFolder, missing, tracked, fraction*100, streak, massExpungeConfirmPasses,
+		),
+		Metadata: map[string]string{
+			"upstream_folder": upstreamFolder,
+			"tracked_count":   fmt.Sprintf("%d", tracked),
+			"observed_count":  fmt.Sprintf("%d", observed),
+			"missing_count":   fmt.Sprintf("%d", missing),
+			"fraction":        fmt.Sprintf("%.4f", fraction),
+			"streak":          fmt.Sprintf("%d", streak),
+		},
+	}
+	if err := w.opts.store.Meta().AppendSystemEvent(ctx, ev); err != nil {
+		w.opts.log.Warn("imapimport: failed to append mass-expunge guard event",
+			slog.String("account_id", w.opts.account.ID),
+			slog.String("upstream_folder", upstreamFolder),
+			slog.String("error", err.Error()),
+		)
+	}
+}
+
 // reconcileExpungedMessages detects upstream expunges for upstreamFolder: a
 // message_state row whose UpstreamUID is absent from currentUIDs (the
 // folder's just-observed full UID set) was expunged upstream since the last
 // sync. Each such message loses the membership and state row this account
-// recorded for that folder, mirroring the expunge (re #303). Best-effort
-// per row; logs and continues past individual failures.
+// recorded for that folder, mirroring the expunge (re #303), subject to the
+// mass-expunge guard (re #487): when the folder has at least
+// massExpungeGuardMinTracked tracked rows and the missing fraction exceeds
+// massExpungeGuardFraction, the pass is deferred (a system event is
+// recorded and nothing is removed) until massExpungeConfirmPasses
+// consecutive passes agree. Best-effort per row; logs and continues past
+// individual failures.
 func (w *accountWorker) reconcileExpungedMessages(ctx context.Context, upstreamFolder string, currentUIDs []imap.UID) error {
 	account := w.opts.account
 	states, err := w.opts.store.Meta().ListIMAPImportMessageStatesByFolder(ctx, account.ID, upstreamFolder)
@@ -1412,10 +1581,38 @@ func (w *accountWorker) reconcileExpungedMessages(ctx context.Context, upstreamF
 	for _, uid := range currentUIDs {
 		present[uint32(uid)] = true
 	}
+	var missing []store.IMAPImportMessageState
 	for _, s := range states {
-		if present[s.UpstreamUID] {
-			continue
+		if !present[s.UpstreamUID] {
+			missing = append(missing, s)
 		}
+	}
+	if len(missing) == 0 {
+		delete(w.massExpungeStreak, upstreamFolder)
+		return nil
+	}
+
+	tracked := len(states)
+	fraction := float64(len(missing)) / float64(tracked)
+	if tracked >= massExpungeGuardMinTracked && fraction > massExpungeGuardFraction {
+		if w.massExpungeStreak == nil {
+			w.massExpungeStreak = make(map[string]int)
+		}
+		w.massExpungeStreak[upstreamFolder]++
+		streak := w.massExpungeStreak[upstreamFolder]
+		if streak < massExpungeConfirmPasses {
+			w.emitMassExpungeGuardEvent(ctx, upstreamFolder, tracked, len(currentUIDs), len(missing), streak, fraction)
+			return nil
+		}
+		// Confirmed: massExpungeConfirmPasses consecutive passes agree on
+		// the drop. Reset the streak and let this pass's missing set
+		// through below.
+		delete(w.massExpungeStreak, upstreamFolder)
+	} else {
+		delete(w.massExpungeStreak, upstreamFolder)
+	}
+
+	for _, s := range missing {
 		w.removeMessageStateMembership(ctx, s)
 	}
 	return nil

@@ -128,6 +128,16 @@ type accountWorker struct {
 	// rows every reconnect. Accessed only from the worker's supervising
 	// goroutine.
 	seenBackfillDone bool
+
+	// massExpungeStreak counts, per upstream folder, the number of
+	// consecutive reconcileExpungedMessages passes that found the folder's
+	// missing fraction over massExpungeGuardFraction (re #487). Reset to 0
+	// once a pass sees the fraction back under the bound or the folder is
+	// confirmed and reconciled. Accessed only from the worker's supervising
+	// goroutine; lost across a process restart, which only delays
+	// confirmation of a still-ongoing drop by the passes needed to rebuild
+	// the streak.
+	massExpungeStreak map[string]int
 }
 
 func newAccountWorker(opts accountWorkerOpts) *accountWorker {
