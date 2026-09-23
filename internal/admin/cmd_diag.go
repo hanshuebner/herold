@@ -42,6 +42,7 @@ func newDiagCmd() *cobra.Command {
 	c.AddCommand(newDiagReparseEnvelopesCmd())
 	c.AddCommand(newDiagRecomputeBodyMetaCmd())
 	c.AddCommand(newDiagRethreadCmd())
+	c.AddCommand(newDiagOrphanBlobsCmd())
 	return c
 }
 

@@ -63,6 +63,10 @@ func (c *countingBlobs) Delete(ctx context.Context, hash string) error {
 	return c.inner.Delete(ctx, hash)
 }
 
+func (c *countingBlobs) List(ctx context.Context) ([]store.BlobRef, error) {
+	return c.inner.List(ctx)
+}
+
 // countingStore wraps a store.Store and substitutes a countingBlobs.
 type countingStore struct {
 	store.Store

@@ -65,6 +65,15 @@ func (m *metadata) SearchAdminMessages(ctx context.Context, filter store.AdminMe
 		conds = append(conds, "lower(m.env_message_id) = lower(?)")
 		args = append(args, filter.MessageID)
 	}
+	if filter.ReferencesMessageID != "" {
+		// Both env_in_reply_to and env_references store their Message-ID
+		// tokens angle-bracketed (mailparse.splitMessageIDs keeps the
+		// brackets; envelopeFromParsed only re-joins, never strips), and
+		// either header can carry more than one token, so both sides use
+		// the same bracketed-substring match.
+		conds = append(conds, "(lower(m.env_in_reply_to) LIKE lower('%<'||?||'>%') OR lower(m.env_references) LIKE lower('%<'||?||'>%'))")
+		args = append(args, filter.ReferencesMessageID, filter.ReferencesMessageID)
+	}
 	if len(filter.Domains) > 0 {
 		placeholders := make([]string, len(filter.Domains))
 		for i, d := range filter.Domains {

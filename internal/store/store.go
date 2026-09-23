@@ -2773,6 +2773,15 @@ type Metadata interface {
 	// (one entry per unique message blob) on big mailboxes.
 	ListPrincipalBlobHashes(ctx context.Context, principalID PrincipalID) ([]string, error)
 
+	// ListAllMessageBlobHashes returns the set of every blob_hash
+	// currently referenced by a messages row, across all principals.
+	// Diag-only (`herold diag orphan-blobs list`, re #487): distinguishes
+	// a blob the on-disk store holds that no live message references (an
+	// orphan -- a candidate for the recovery path, or safe to leave) from
+	// one still backing a live message. Not for user-facing callers — the
+	// result can be very large on a big installation.
+	ListAllMessageBlobHashes(ctx context.Context) (map[string]bool, error)
+
 	// -- Phase 3 Wave 3.10 ShortcutCoachStat (REQ-PROTO-110..112) --------
 
 	// AppendCoachEvents inserts one or more CoachEvent rows for
@@ -3519,6 +3528,16 @@ type Blobs interface {
 	// does not return ErrConflict on positive refcount (refcounts live
 	// in Metadata, not here).
 	Delete(ctx context.Context, hash string) error
+
+	// List returns every blob currently present in the store, discovered
+	// by walking the on-disk content-addressed tree -- irrespective of
+	// whether any Metadata row currently references it. Diag-only
+	// (`herold diag orphan-blobs list`, re #487): the blob store is never
+	// garbage-collected on message deletion, so a blob can outlive every
+	// message that once referenced it; List is how that recovery tooling
+	// finds them. Not for request-path callers -- the result enumerates
+	// the whole store and can be very large.
+	List(ctx context.Context) ([]BlobRef, error)
 }
 
 // FTSChange is the cross-principal change record delivered to the

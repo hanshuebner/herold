@@ -81,6 +81,11 @@ const (
 	IngestSourceMailingListArchive MessageIngestSource = "mailing-list-archive"
 	// IngestSourceGmailImport is the Google Takeout / Gmail bulk import.
 	IngestSourceGmailImport MessageIngestSource = "gmail-import"
+	// IngestSourceDiagRestore is a message restored via `herold diag
+	// orphan-blobs restore` (re #487): an operator-invoked recovery of a
+	// blob that survived a message row's deletion. IngestSourceRef
+	// carries the blob hash the message was restored from.
+	IngestSourceDiagRestore MessageIngestSource = "diag-restore"
 )
 
 // AdminMessageFilter narrows a SearchAdminMessages read. All fields are
@@ -112,6 +117,16 @@ type AdminMessageFilter struct {
 	// BeforeReceivedUs is the keyset cursor: restrict to messages with
 	// received_at_us < BeforeReceivedUs. 0 = no cursor.
 	BeforeReceivedUs int64
+	// ReferencesMessageID, when non-empty, restricts to messages whose
+	// In-Reply-To or References header contains this Message-ID
+	// (case-insensitive, without angle brackets -- the match wraps it in
+	// brackets internally, since both headers store their tokens
+	// bracketed). Used by the `herold diag orphan-blobs list` recovery
+	// tooling (re #487) to tell whether a blob with no live message of
+	// its own is still referenced by a live message's thread -- the
+	// thread the orphan's reply belongs to survived even though the
+	// ancestor's row did not.
+	ReferencesMessageID string
 }
 
 // AdminMessageMailbox is one mailbox a message currently sits in, as

@@ -283,6 +283,81 @@ func (s *Store) GC(ctx context.Context, referenced func(hash string) bool) (int,
 	return removed, bytes, nil
 }
 
+// List walks the blob tree and returns every blob found, regardless of
+// whether anything still references it. Mirrors GC's directory walk (2-level
+// hex fan-out, tmp/ skipped, prefix-checked) but collects instead of
+// deleting -- diag tooling (`herold diag orphan-blobs list`, re #487) needs
+// the full on-disk set to compare against the store's live references.
+func (s *Store) List(ctx context.Context) ([]store.BlobRef, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	var out []store.BlobRef
+	topEntries, err := os.ReadDir(s.dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("storeblobfs: readdir root: %w", err)
+	}
+	for _, top := range topEntries {
+		if err := ctx.Err(); err != nil {
+			return out, err
+		}
+		if !top.IsDir() || top.Name() == "tmp" || len(top.Name()) != 2 {
+			continue
+		}
+		midPath := filepath.Join(s.dir, top.Name())
+		midEntries, err := os.ReadDir(midPath)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return out, fmt.Errorf("storeblobfs: readdir mid: %w", err)
+		}
+		for _, mid := range midEntries {
+			if err := ctx.Err(); err != nil {
+				return out, err
+			}
+			if !mid.IsDir() || len(mid.Name()) != 2 {
+				continue
+			}
+			leafPath := filepath.Join(midPath, mid.Name())
+			leafEntries, err := os.ReadDir(leafPath)
+			if err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					continue
+				}
+				return out, fmt.Errorf("storeblobfs: readdir leaf: %w", err)
+			}
+			for _, f := range leafEntries {
+				if err := ctx.Err(); err != nil {
+					return out, err
+				}
+				if f.IsDir() {
+					continue
+				}
+				name := f.Name()
+				if !validHash(name) {
+					continue
+				}
+				if name[0:2] != top.Name() || name[2:4] != mid.Name() {
+					continue
+				}
+				info, statErr := f.Info()
+				if statErr != nil {
+					if errors.Is(statErr, os.ErrNotExist) {
+						continue
+					}
+					return out, fmt.Errorf("storeblobfs: stat during list: %w", statErr)
+				}
+				out = append(out, store.BlobRef{Hash: name, Size: info.Size()})
+			}
+		}
+	}
+	return out, nil
+}
+
 func (s *Store) ensureDirs() error {
 	if err := os.MkdirAll(s.dir, 0o700); err != nil {
 		return fmt.Errorf("storeblobfs: mkdir root: %w", err)

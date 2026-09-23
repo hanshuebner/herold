@@ -226,3 +226,30 @@ func (m *metadata) ListPrincipalBlobHashes(
 	}
 	return out, nil
 }
+
+// ListAllMessageBlobHashes returns the set of every blob_hash currently
+// referenced by a messages row, across all principals. Diag-only; see
+// store.Metadata for the contract.
+func (m *metadata) ListAllMessageBlobHashes(ctx context.Context) (map[string]bool, error) {
+	const q = `
+		SELECT DISTINCT blob_hash FROM messages
+		WHERE blob_hash IS NOT NULL
+		  AND blob_hash != ''`
+	rows, err := m.s.db.QueryContext(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("storesqlite: list all message blob hashes: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[string]bool, 4096)
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			return nil, fmt.Errorf("storesqlite: list all message blob hashes scan: %w", err)
+		}
+		out[s] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("storesqlite: list all message blob hashes rows: %w", err)
+	}
+	return out, nil
+}
