@@ -156,15 +156,15 @@ export const de = {
   'mail.emptyTrash.messageOne': '{n} Nachricht dauerhaft aus dem Papierkorb löschen. Das kann nicht rückgängig gemacht werden.',
   'mail.emptyTrash.messageMany': '{n} Nachrichten dauerhaft aus dem Papierkorb löschen. Das kann nicht rückgängig gemacht werden.',
   'mail.emptyTrash.confirm': 'Papierkorb leeren',
-  // Banner für versteckte Mitglieder (re #384): Der Spam/Papierkorb-
-  // Ausschluss (REQ-SRC-06) kann alle Mitglieder einer Ordneransicht
-  // verstecken (am auffälligsten bei einem Label, das auf eine Nachricht
-  // im Spam angewendet wurde); diese Texte erklären den Leerzustand statt
-  // ihn unerklärt zu lassen, und markieren die verlinkte Ansicht ohne den
+  // Banner für versteckte Mitglieder (re #384): Der Spam-Ausschluss der
+  // Ordneransicht (re #467) kann alle Mitglieder einer Ansicht verstecken
+  // (am auffälligsten bei einem Label, das auf eine Nachricht im Spam
+  // angewendet wurde); diese Texte erklären den Leerzustand statt ihn
+  // unerklärt zu lassen, und markieren die verlinkte Ansicht ohne den
   // Ausschluss, damit sie nicht mit der normalen Ordneransicht verwechselt
   // wird.
-  'mail.hiddenJunkTrash.bannerOne': '{n} markierte Nachricht befindet sich im Spam oder im Papierkorb.',
-  'mail.hiddenJunkTrash.bannerMany': '{n} markierte Nachrichten befinden sich im Spam oder im Papierkorb.',
+  'mail.hiddenJunkTrash.bannerOne': '{n} markierte Nachricht befindet sich im Spam.',
+  'mail.hiddenJunkTrash.bannerMany': '{n} markierte Nachrichten befinden sich im Spam.',
   'mail.hiddenJunkTrash.show': 'Anzeigen',
   'mail.hiddenJunkTrash.viewHeader': 'Alle Nachrichten in „{name}“ werden angezeigt, einschließlich Spam und Papierkorb.',
   'mail.hiddenJunkTrash.backToFiltered': 'Zurück zu {name}',

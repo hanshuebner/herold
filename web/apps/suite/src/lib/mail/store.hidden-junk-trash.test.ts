@@ -1,8 +1,8 @@
 /**
  * Issue #384: a label applied to a message while it sits in Junk is
- * excluded from the label's folder view by the REQ-SRC-06 Junk/Trash
- * exclusion (issue #310), and the view renders the empty state with no
- * explanation when every member is hidden this way.
+ * excluded from the label's folder view by its Junk exclusion (issue
+ * #310), and the view renders the empty state with no explanation when
+ * every member is hidden this way.
  *
  * These tests drive the real `mail` singleton against a mocked jmap
  * client, the same harness shape as store.bulk-empty-refresh.test.ts, to
@@ -10,6 +10,11 @@
  * query (independent of the #313 sidebar count) and that
  * `loadFolder(id, { unfiltered: true })` surfaces the hidden members via
  * the plain `inMailbox` query.
+ *
+ * Issue #467: with the herold email-query-extensions capability
+ * advertised, the folder view's exclusion -- and therefore this count --
+ * is Junk-only; a member that also sits in Trash is not hidden and must
+ * not count towards `listHiddenJunkTrashCount`.
  */
 
 import { vi, describe, it, expect, beforeEach } from 'vitest';
@@ -135,6 +140,7 @@ vi.mock('./identity-match', () => ({
 }));
 
 import { mail } from './store.svelte';
+import { jmap } from '../jmap/client';
 
 const INBOX_ID = 'mbx-inbox';
 const TRASH_ID = 'mbx-trash';
@@ -202,6 +208,7 @@ describe('loadFolder hidden-members count (re #384)', () => {
     scenario.mainEmails = [];
     scenario.visibleTotal = 0;
     scenario.rawTotal = 0;
+    vi.mocked(jmap.hasCapability).mockReturnValue(false);
     mail.reset();
   });
 
@@ -270,5 +277,41 @@ describe('loadFolder hidden-members count (re #384)', () => {
 
     expect(mail.listEmailIds).toEqual(memberIds);
     expect(mail.listHiddenJunkTrashCount).toBe(0);
+  });
+
+  it('with the email-query-extensions capability advertised, only the Junk-coexisting member is hidden -- the Trash-coexisting one counts as visible (re #467)', async () => {
+    vi.mocked(jmap.hasCapability).mockReturnValue(true);
+    setupLabelAccount();
+    // Two raw members: one also in Junk (hidden), one also in Trash
+    // (listed normally per #460's invariant). The label's own visible
+    // query returns just the Trash-coexisting member; raw membership is
+    // both. hidden = raw(2) - visible(1) = 1, naming Junk alone.
+    scenario.mainIds = ['m-trash'];
+    scenario.mainEmails = [makeEmail('m-trash', { [LABEL_ID]: true, [TRASH_ID]: true })];
+    scenario.visibleTotal = 1;
+    scenario.rawTotal = 2;
+
+    await mail.loadFolder(LABEL_ID);
+
+    expect(mail.listLoadStatus).toBe('ready');
+    expect(mail.listEmailIds).toEqual(['m-trash']);
+    expect(mail.listHiddenJunkTrashCount).toBe(1);
+
+    // The main list query, and the "visible" count query, both carry the
+    // Junk-only exclusion via notInMailbox -- never inMailboxOtherThan,
+    // and never naming TRASH_ID.
+    const calls = capturedCalls[0]!;
+    expect(calls).toHaveLength(6);
+    expect(calls[0]!.args.filter).toEqual({
+      inMailbox: LABEL_ID,
+      notKeyword: '$snoozed',
+      notInMailbox: [JUNK_ID],
+    });
+    expect(calls[4]!.args.filter).toEqual({
+      inMailbox: LABEL_ID,
+      notKeyword: '$snoozed',
+      notInMailbox: [JUNK_ID],
+    });
+    expect(calls[5]!.args.filter).toEqual({ inMailbox: LABEL_ID });
   });
 });

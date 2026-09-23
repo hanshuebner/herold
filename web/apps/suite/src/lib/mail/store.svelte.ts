@@ -331,25 +331,26 @@ class MailStore {
    */
   listLoadingMore = $state<boolean>(false);
   /**
-   * True while the current list slice was loaded with the Junk/Trash
-   * exclusion (`applyTrashJunkExclusion`, REQ-SRC-06) deliberately
+   * True while the current list slice was loaded with the folder view's
+   * Junk exclusion (`applyTrashJunkExclusion`, re #467) deliberately
    * skipped -- the "view without the exclusion" MailView links to from
    * the hidden-members banner (re #384). `loadFolder(folder, {
    * unfiltered: true })` sets this; every other load path leaves it
    * false. MailView reads it to mark the view header so the principal
-   * knows this list includes Junk/Trash members the normal view hides.
+   * knows this list includes Junk members the normal view hides.
    */
   listUnfiltered = $state<boolean>(false);
   /**
-   * Count of the current folder's members that the Junk/Trash exclusion
-   * (REQ-SRC-06) hides from `listEmailIds`, or `null` when the current
-   * folder has no exclusion in play (Junk/Trash itself, a virtual folder,
-   * or a mailbox with no Trash/Junk mailbox to exclude). Computed by a
-   * dedicated `Email/query { calculateTotal: true }` counting the
-   * folder's members that also sit in Junk or Trash -- independent of the
-   * sidebar's `Mailbox.totalEmails`, which already leaves those members
-   * out (#313) and must keep doing so. Drives the "N labelled messages
-   * are in Spam or Trash" banner (re #384).
+   * Count of the current folder's members that the folder view's Junk
+   * exclusion (re #467) hides from `listEmailIds`, or `null` when the
+   * current folder has no exclusion in play (Junk/Trash itself, a
+   * virtual folder, or a mailbox with no Junk mailbox to exclude).
+   * Computed by a dedicated `Email/query { calculateTotal: true }`
+   * counting the folder's members that also sit in Junk -- a member that
+   * also sits in Trash is not counted, since it is not hidden -- and
+   * independent of the sidebar's `Mailbox.totalEmails`, which already
+   * leaves Junk members out (#313) and must keep doing so. Drives the "N
+   * labelled messages are in Spam" banner (re #384).
    */
   listHiddenJunkTrashCount = $state<number | null>(null);
 
@@ -2109,10 +2110,10 @@ class MailStore {
       let filter: FilterCondition | FilterOperator | undefined;
       let sortProperty: 'receivedAt' | 'sentAt' = 'receivedAt';
       // Set only for a filtered (non-`unfiltered`) load of a real label
-      // with a Junk/Trash exclusion in play (re #384): the two extra
+      // with a Junk exclusion in play (re #384, re #467): the two extra
       // Email/query calls below count what that exclusion hides so the
-      // folder view can show the "N labelled messages are in Spam or
-      // Trash" banner instead of silently rendering the empty state.
+      // folder view can show the "N labelled messages are in Spam"
+      // banner instead of silently rendering the empty state.
       let hiddenCountFilters: { visible: FilterCondition | FilterOperator; raw: FilterCondition } | null =
         null;
       if (folder === 'important') {
@@ -5694,18 +5695,21 @@ export function buildFolderViewFilter(
 }
 
 /**
- * True when `mailboxId`'s folder view can hide members via the
- * Junk/Trash exclusion (re #384) -- `mailboxId` is a genuine user label
- * (`role === null`) and the principal has a Junk or a Trash mailbox to
- * exclude. Callers use this to decide whether the extra round trips
- * `buildHiddenJunkTrashCountFilters` needs are worth issuing at all.
+ * True when `mailboxId`'s folder view might hide members via its Junk
+ * exclusion (re #384, re #467) -- `mailboxId` is a genuine user label
+ * (`role === null`) and the principal has a Junk or a Trash mailbox.
+ * Callers use this to decide whether the extra round trips
+ * `buildHiddenJunkTrashCountFilters` needs are worth issuing at all; the
+ * gate stays coarse (Junk or Trash, not Junk alone) so it also covers a
+ * server without the herold email-query-extensions capability, where
+ * `applyTrashJunkExclusion` falls back to excluding both.
  *
  * Scoped to genuine user labels: a system-role mailbox (Inbox, Sent,
- * Drafts, Archive) is not what the "N labelled messages are in Spam or
- * Trash" banner is talking about, and the vast majority of accounts
- * never have a message that is simultaneously Inbox-resident and
- * Junk/Trash-resident, so the extra round trip would be dead weight on
- * every load of those folders.
+ * Drafts, Archive) is not what the "N labelled messages are in Spam"
+ * banner is talking about, and the vast majority of accounts never have
+ * a message that is simultaneously Inbox-resident and Junk-resident, so
+ * the extra round trip would be dead weight on every load of those
+ * folders.
  */
 export function hasHiddenJunkTrashExclusion(
   mailboxId: string,

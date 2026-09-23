@@ -1,14 +1,17 @@
 /**
  * Issue #384: a label applied to a message while it sits in Junk is
- * excluded from the label's folder view (REQ-SRC-06, issue #310), and the
- * view rendered the empty state with no explanation when every member was
+ * excluded from the label's folder view (issue #310), and the view
+ * rendered the empty state with no explanation when every member was
  * hidden this way.
  *
- * MailView must show a "N labelled messages are in Spam or Trash" banner
- * driven by `mail.listHiddenJunkTrashCount`, with a link into the same
- * folder without the exclusion (`?unfiltered=1`); that linked view must
- * mark itself in its header so it isn't mistaken for the ordinary folder
- * view.
+ * MailView must show a "N labelled messages are in Spam" banner driven by
+ * `mail.listHiddenJunkTrashCount`, with a link into the same folder
+ * without the exclusion (`?unfiltered=1`); that linked view must mark
+ * itself in its header so it isn't mistaken for the ordinary folder view.
+ *
+ * Issue #467: the folder view's exclusion (and therefore this count) is
+ * Junk-only -- a message that also sits in Trash is listed normally, so
+ * the banner names Spam alone, never Trash, as the hiding reason.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -144,8 +147,8 @@ vi.mock('../lib/i18n/i18n.svelte', () => ({
       'list.empty.folder': '{name} is empty.',
       'mail.list.actionsAria': 'List actions',
       'mail.list.threadsAria': 'Messages in {name}',
-      'mail.hiddenJunkTrash.bannerOne': '{n} labelled message is in Spam or Trash.',
-      'mail.hiddenJunkTrash.bannerMany': '{n} labelled messages are in Spam or Trash.',
+      'mail.hiddenJunkTrash.bannerOne': '{n} labelled message is in Spam.',
+      'mail.hiddenJunkTrash.bannerMany': '{n} labelled messages are in Spam.',
       'mail.hiddenJunkTrash.show': 'Show them',
       'mail.hiddenJunkTrash.viewHeader': 'Showing every message in "{name}", including Spam and Trash.',
       'mail.hiddenJunkTrash.backToFiltered': 'Back to {name}',
@@ -179,7 +182,7 @@ describe('MailView hidden-members banner (re #384)', () => {
   it('a label whose only members sit in Junk renders the banner with the right count', () => {
     mailMock.listHiddenJunkTrashCount = 23;
     render(MailView);
-    expect(screen.getByText('23 labelled messages are in Spam or Trash.')).toBeInTheDocument();
+    expect(screen.getByText('23 labelled messages are in Spam.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Show them' })).toBeInTheDocument();
   });
 
@@ -207,7 +210,7 @@ describe('MailView hidden-members banner (re #384)', () => {
       },
     ];
     render(MailView);
-    expect(screen.queryByText(/is in Spam or Trash/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/is in Spam\./)).not.toBeInTheDocument();
   });
 
   it('the unfiltered linked view marks itself in the view header', () => {
@@ -226,6 +229,6 @@ describe('MailView hidden-members banner (re #384)', () => {
     mailMock.listHiddenJunkTrashCount = null;
     routerState.unfiltered = '1';
     render(MailView);
-    expect(screen.queryByText(/is in Spam or Trash/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/is in Spam\./)).not.toBeInTheDocument();
   });
 });

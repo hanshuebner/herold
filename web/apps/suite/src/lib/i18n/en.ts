@@ -157,13 +157,13 @@ export const en = {
   'mail.emptyTrash.messageOne': 'Permanently delete {n} message from Trash. This cannot be undone.',
   'mail.emptyTrash.messageMany': 'Permanently delete {n} messages from Trash. This cannot be undone.',
   'mail.emptyTrash.confirm': 'Empty Trash',
-  // Hidden-members banner (re #384): the Junk/Trash exclusion (REQ-SRC-06)
-  // can hide every member of a folder view (most visibly a label applied
+  // Hidden-members banner (re #384): the folder view's Junk exclusion (re
+  // #467) can hide every member of a view (most visibly a label applied
   // to a message while it sits in Junk); these strings explain the empty
   // state instead of leaving it unexplained, and mark the linked
   // exclusion-free view so it isn't mistaken for the ordinary folder view.
-  'mail.hiddenJunkTrash.bannerOne': '{n} labelled message is in Spam or Trash.',
-  'mail.hiddenJunkTrash.bannerMany': '{n} labelled messages are in Spam or Trash.',
+  'mail.hiddenJunkTrash.bannerOne': '{n} labelled message is in Spam.',
+  'mail.hiddenJunkTrash.bannerMany': '{n} labelled messages are in Spam.',
   'mail.hiddenJunkTrash.show': 'Show them',
   'mail.hiddenJunkTrash.viewHeader': 'Showing every message in "{name}", including Spam and Trash.',
   'mail.hiddenJunkTrash.backToFiltered': 'Back to {name}',
