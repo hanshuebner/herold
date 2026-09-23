@@ -60,6 +60,11 @@ func Run(t *testing.T, f Factory) {
 		// issue #442: diag rethread's Force + DryRun seam.
 		{"RethreadPrincipal_ForceAppliesCurrentRule", testRethreadPrincipal_ForceAppliesCurrentRule},
 		{"RethreadPrincipal_ForceConvergesOutOfOrderAncestor", testRethreadPrincipal_ForceConvergesOutOfOrderAncestor},
+		// issue #485, REQ-STORE-40: a late-arriving ancestor merges onto
+		// the thread(s) that rooted themselves while waiting for it.
+		{"InsertMessage_LateAncestorMergesOnInsert", testInsertMessage_LateAncestorMergesOnInsert},
+		{"InsertMessage_LateAncestorMergesOnInsert_ForwardOrderControl", testInsertMessage_LateAncestorMergesOnInsert_ForwardOrderControl},
+		{"InsertMessage_LateAncestorMergesOnInsert_ThreeMessageChain", testInsertMessage_LateAncestorMergesOnInsert_ThreeMessageChain},
 		{"ListPrincipalBlobHashes", testListPrincipalBlobHashes},
 		{"UpdateFlagsBumpsModSeq", testUpdateFlagsBumpsModSeq},
 		{"UpdateFlagsUnchangedSince", testUpdateFlagsUnchangedSince},
@@ -2901,6 +2906,225 @@ func testRethreadPrincipal_ForceConvergesOutOfOrderAncestor(t *testing.T, s stor
 	if threadKey(k) != threadKey(pMsg) {
 		t.Errorf("K threadKey = %d, want P's threadKey %d after ONE force apply pass (K must not still be on G's %d)",
 			threadKey(k), threadKey(pMsg), threadKey(g))
+	}
+}
+
+// testInsertMessage_LateAncestorMergesOnInsert is the ingest-order
+// regression test for issue #485 (REQ-STORE-40): a reply's own sent
+// copy (external submission) and the original it answers (mirrored in
+// later by a periodic IMAP import poll) can race, so the reply's
+// ancestor may not exist yet at the reply's own insert time. Before the
+// fix, insertMessageTx only resolved a message's thread against
+// ancestors already present at insert time, so the reply rooted its own
+// thread permanently and the ancestor's later arrival never re-threaded
+// it -- the two never converged regardless of ingest order.
+//
+// The reply is inserted first (referencing an ancestor Message-ID not
+// yet in the store), then the ancestor arrives: both must land on one
+// thread, and the reply -- the pre-existing row whose thread_id
+// changes -- must report an EntityKindEmail/ChangeOpUpdated state-change
+// entry so JMAP Email/changes and Thread/changes (derived from the
+// Email feed) tell an already-synced client its threadId moved.
+func testInsertMessage_LateAncestorMergesOnInsert(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "latereply@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+	ref := putBlob(t, s, "late-ancestor-body")
+
+	threadKey := func(m store.Message) uint64 {
+		if m.ThreadID != 0 {
+			return m.ThreadID
+		}
+		return uint64(m.ID)
+	}
+	byMID := func(msgID string) store.Message {
+		t.Helper()
+		msgs, err := s.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 1000, WithEnvelope: true})
+		if err != nil {
+			t.Fatalf("ListMessages: %v", err)
+		}
+		for _, m := range msgs {
+			if m.Envelope.MessageID == msgID {
+				return m
+			}
+		}
+		t.Fatalf("message %s not found", msgID)
+		return store.Message{}
+	}
+
+	// The reply arrives first; its ancestor is not yet in the store.
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID: p.ID, Blob: ref, Size: ref.Size,
+		InternalDate: time.Unix(2000, 0).UTC(), ReceivedAt: time.Unix(2000, 0).UTC(),
+		Envelope: store.Envelope{MessageID: "late-reply@test", InReplyTo: "<late-orig@test>"},
+	}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
+		t.Fatalf("InsertMessage reply: %v", err)
+	}
+	reply := byMID("late-reply@test")
+	if threadKey(reply) != uint64(reply.ID) {
+		t.Fatalf("reply must root its own thread before its ancestor arrives: threadKey=%d id=%d",
+			threadKey(reply), reply.ID)
+	}
+	preFeed, err := s.Meta().ReadChangeFeed(ctx, p.ID, 0, 1000)
+	if err != nil {
+		t.Fatalf("ReadChangeFeed (pre): %v", err)
+	}
+
+	// The ancestor arrives late.
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID: p.ID, Blob: ref, Size: ref.Size,
+		InternalDate: time.Unix(1000, 0).UTC(), ReceivedAt: time.Unix(1000, 0).UTC(),
+		Envelope: store.Envelope{MessageID: "late-orig@test"},
+	}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
+		t.Fatalf("InsertMessage ancestor: %v", err)
+	}
+
+	orig := byMID("late-orig@test")
+	reply = byMID("late-reply@test")
+	if threadKey(orig) != threadKey(reply) {
+		t.Fatalf("orig threadKey=%d, reply threadKey=%d: reply must merge onto its late-arriving ancestor's thread",
+			threadKey(orig), threadKey(reply))
+	}
+
+	// The reply's own row must carry an Updated change-feed entry from
+	// the merge (its threadId moved), scoped to entries produced by this
+	// second insert.
+	postFeed, err := s.Meta().ReadChangeFeed(ctx, p.ID, 0, 1000)
+	if err != nil {
+		t.Fatalf("ReadChangeFeed (post): %v", err)
+	}
+	found := false
+	for _, c := range postFeed[len(preFeed):] {
+		if c.Kind == store.EntityKindEmail && c.Op == store.ChangeOpUpdated &&
+			store.MessageID(c.EntityID) == reply.ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("no EntityKindEmail/ChangeOpUpdated change-feed entry for the merged reply (id=%d) after the ancestor's insert", reply.ID)
+	}
+}
+
+// testInsertMessage_LateAncestorMergesOnInsert_ForwardOrderControl is
+// the control for testInsertMessage_LateAncestorMergesOnInsert: when the
+// ancestor is ingested BEFORE its reply (the ordinary case), the two
+// must already share one thread via the existing forward-only ancestor
+// lookup, with no merge involved.
+func testInsertMessage_LateAncestorMergesOnInsert_ForwardOrderControl(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "forwardreply@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+	ref := putBlob(t, s, "forward-order-body")
+
+	threadKey := func(m store.Message) uint64 {
+		if m.ThreadID != 0 {
+			return m.ThreadID
+		}
+		return uint64(m.ID)
+	}
+	byMID := func(msgID string) store.Message {
+		t.Helper()
+		msgs, err := s.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 1000, WithEnvelope: true})
+		if err != nil {
+			t.Fatalf("ListMessages: %v", err)
+		}
+		for _, m := range msgs {
+			if m.Envelope.MessageID == msgID {
+				return m
+			}
+		}
+		t.Fatalf("message %s not found", msgID)
+		return store.Message{}
+	}
+
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID: p.ID, Blob: ref, Size: ref.Size,
+		InternalDate: time.Unix(1000, 0).UTC(), ReceivedAt: time.Unix(1000, 0).UTC(),
+		Envelope: store.Envelope{MessageID: "fwd-orig@test"},
+	}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
+		t.Fatalf("InsertMessage ancestor: %v", err)
+	}
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID: p.ID, Blob: ref, Size: ref.Size,
+		InternalDate: time.Unix(2000, 0).UTC(), ReceivedAt: time.Unix(2000, 0).UTC(),
+		Envelope: store.Envelope{MessageID: "fwd-reply@test", InReplyTo: "<fwd-orig@test>"},
+	}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
+		t.Fatalf("InsertMessage reply: %v", err)
+	}
+
+	orig, reply := byMID("fwd-orig@test"), byMID("fwd-reply@test")
+	if threadKey(orig) != threadKey(reply) {
+		t.Fatalf("orig threadKey=%d, reply threadKey=%d: forward-order ingest must already share one thread",
+			threadKey(orig), threadKey(reply))
+	}
+}
+
+// testInsertMessage_LateAncestorMergesOnInsert_ThreeMessageChain
+// verifies a full three-message reply chain ingested in strict reverse
+// order (grandchild, then child, then the root last) still converges
+// onto a single thread: each insert only closes the gap to whichever
+// ancestors are present so far, and the root's arrival must fold in the
+// entire chain that had rooted itself while waiting for it.
+func testInsertMessage_LateAncestorMergesOnInsert_ThreeMessageChain(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "latechain@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+	ref := putBlob(t, s, "late-chain-body")
+
+	threadKey := func(m store.Message) uint64 {
+		if m.ThreadID != 0 {
+			return m.ThreadID
+		}
+		return uint64(m.ID)
+	}
+	byMID := func(msgID string) store.Message {
+		t.Helper()
+		msgs, err := s.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 1000, WithEnvelope: true})
+		if err != nil {
+			t.Fatalf("ListMessages: %v", err)
+		}
+		for _, m := range msgs {
+			if m.Envelope.MessageID == msgID {
+				return m
+			}
+		}
+		t.Fatalf("message %s not found", msgID)
+		return store.Message{}
+	}
+
+	// Grandchild C references B; neither B nor A exist yet.
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID: p.ID, Blob: ref, Size: ref.Size,
+		InternalDate: time.Unix(3000, 0).UTC(), ReceivedAt: time.Unix(3000, 0).UTC(),
+		Envelope: store.Envelope{MessageID: "chain-c@test", InReplyTo: "<chain-b@test>"},
+	}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
+		t.Fatalf("InsertMessage C: %v", err)
+	}
+	// Child B references A; A does not exist yet. This merges C onto B.
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID: p.ID, Blob: ref, Size: ref.Size,
+		InternalDate: time.Unix(2000, 0).UTC(), ReceivedAt: time.Unix(2000, 0).UTC(),
+		Envelope: store.Envelope{MessageID: "chain-b@test", InReplyTo: "<chain-a@test>"},
+	}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
+		t.Fatalf("InsertMessage B: %v", err)
+	}
+	if k := threadKey(byMID("chain-c@test")); k != threadKey(byMID("chain-b@test")) {
+		t.Fatalf("C threadKey=%d, B threadKey=%d after B arrives: C must have merged onto B", k, threadKey(byMID("chain-b@test")))
+	}
+	// Root A arrives last: must fold in the whole B/C chain.
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID: p.ID, Blob: ref, Size: ref.Size,
+		InternalDate: time.Unix(1000, 0).UTC(), ReceivedAt: time.Unix(1000, 0).UTC(),
+		Envelope: store.Envelope{MessageID: "chain-a@test"},
+	}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
+		t.Fatalf("InsertMessage A: %v", err)
+	}
+
+	a, b, c := byMID("chain-a@test"), byMID("chain-b@test"), byMID("chain-c@test")
+	ka, kb, kc := threadKey(a), threadKey(b), threadKey(c)
+	if ka != kb || kb != kc {
+		t.Fatalf("thread keys diverge after reverse-order three-message chain: A=%d B=%d C=%d", ka, kb, kc)
 	}
 }
 

@@ -1274,12 +1274,168 @@ func (m *metadata) insertMessageTx(
 			msg.Size, usMicros(now), qpid); err != nil {
 			return mapErr(err)
 		}
-		return incRef(ctx, tx, msg.Blob.Hash, msg.Blob.Size, now)
+		if err := incRef(ctx, tx, msg.Blob.Hash, msg.Blob.Size, now); err != nil {
+			return err
+		}
+		if !skipThreading && msg.Envelope.MessageID != "" {
+			if err := mergeLateAncestorThreads(ctx, tx, pid, newID, msg, now); err != nil {
+				return err
+			}
+		}
+		return nil
 	}()
 	if err != nil {
 		return 0, 0, 0, err
 	}
 	return newID, firstUID, firstModSeq, nil
+}
+
+// mergeLateAncestorThreads resolves REQ-STORE-40 for a message whose
+// In-Reply-To/References ancestor had not yet been ingested when an
+// earlier reply of the same principal arrived: the reply's own sent
+// copy (external submission) and the original it answers (mirrored in
+// by the periodic IMAP import poll) can race, and the forward-only
+// ancestor lookup above only threads a message onto ancestors already
+// present at its own insert time. If any already-stored message names
+// the just-inserted msg (newID) as an ancestor, that message's entire
+// thread is recomputed together with the new message via the shared
+// REQ-STORE-40 rule (mailparse.ComputeRethread) and rewritten in place;
+// each moved message gets an EntityKindEmail/ChangeOpUpdated
+// state-change entry per mailbox membership so JMAP Email/changes and
+// Thread/changes report the new threadId. Bounded to the connected
+// component the new message touches (the size of the threads being
+// merged), never a whole-principal scan.
+func mergeLateAncestorThreads(
+	ctx context.Context, tx pgx.Tx, pid int64,
+	newID store.MessageID, msg store.Message, now time.Time,
+) error {
+	normalizedID := msg.Envelope.MessageID
+
+	// Candidate rows: other messages of this principal whose raw
+	// In-Reply-To/References text contains the new message's id. This is
+	// a case-folded substring prefilter over unparsed header text (there
+	// is no reverse reference index); mailparse.LateAncestorMergeKeys
+	// below confirms genuine membership by actually parsing each
+	// candidate's headers, so a coincidental substring hit is harmless.
+	rows, err := tx.Query(ctx, `
+		SELECT id, env_message_id, env_in_reply_to, env_references, env_subject, thread_id
+		  FROM messages
+		 WHERE principal_id = $1
+		   AND id != $2
+		   AND (LOWER(env_in_reply_to) LIKE '%' || LOWER($3) || '%'
+		        OR LOWER(env_references) LIKE '%' || LOWER($3) || '%')`,
+		pid, int64(newID), normalizedID)
+	if err != nil {
+		return mapErr(err)
+	}
+	var candidates []mailparse.RethreadRow
+	for rows.Next() {
+		var r mailparse.RethreadRow
+		if err := rows.Scan(&r.ID, &r.MessageID, &r.InReplyTo, &r.References, &r.Subject, &r.ThreadID); err != nil {
+			rows.Close()
+			return mapErr(err)
+		}
+		candidates = append(candidates, r)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return mapErr(err)
+	}
+	rows.Close()
+
+	ownKey := mailparse.EffectiveThreadKey(int64(newID), int64(msg.ThreadID))
+	keys := mailparse.LateAncestorMergeKeys(candidates, normalizedID, ownKey)
+	if len(keys) == 0 {
+		return nil
+	}
+
+	// Fetch the full membership of every pre-existing thread a genuine
+	// child names -- the connected component this insert touches.
+	args := make([]any, 0, 1+len(keys))
+	args = append(args, pid)
+	threadPhs := make([]string, len(keys))
+	idPhs := make([]string, len(keys))
+	for i, k := range keys {
+		args = append(args, k)
+		threadPhs[i] = fmt.Sprintf("$%d", len(args))
+	}
+	for i, k := range keys {
+		args = append(args, k)
+		idPhs[i] = fmt.Sprintf("$%d", len(args))
+	}
+	compQ := `
+		SELECT id, env_message_id, env_in_reply_to, env_references, env_subject, thread_id
+		  FROM messages
+		 WHERE principal_id = $1
+		   AND ( thread_id IN (` + strings.Join(threadPhs, ",") + `)
+		      OR (thread_id = 0 AND id IN (` + strings.Join(idPhs, ",") + `)) )
+		 ORDER BY internal_date_us ASC, id ASC`
+	compRows, err := tx.Query(ctx, compQ, args...)
+	if err != nil {
+		return mapErr(err)
+	}
+	all := []mailparse.RethreadRow{{
+		ID:         int64(newID),
+		MessageID:  normalizedID,
+		InReplyTo:  msg.Envelope.InReplyTo,
+		References: msg.Envelope.References,
+		Subject:    msg.Envelope.Subject,
+		ThreadID:   int64(msg.ThreadID),
+	}}
+	for compRows.Next() {
+		var r mailparse.RethreadRow
+		if err := compRows.Scan(&r.ID, &r.MessageID, &r.InReplyTo, &r.References, &r.Subject, &r.ThreadID); err != nil {
+			compRows.Close()
+			return mapErr(err)
+		}
+		all = append(all, r)
+	}
+	if err := compRows.Err(); err != nil {
+		compRows.Close()
+		return mapErr(err)
+	}
+	compRows.Close()
+
+	resolved := mailparse.ComputeRethread(all, true)
+	updates := mailparse.ThreadMergeUpdates(all, resolved)
+	for _, u := range updates {
+		if _, err := tx.Exec(ctx, `UPDATE messages SET thread_id = $1 WHERE id = $2`,
+			u.NewThreadID, u.ID); err != nil {
+			return mapErr(err)
+		}
+		if u.ID == int64(newID) {
+			// The just-inserted row's own Created state-change already
+			// announces it; every JMAP getter reads thread_id live, so no
+			// extra event is needed for its own row.
+			continue
+		}
+		mbRows, err := tx.Query(ctx,
+			`SELECT mailbox_id FROM message_mailboxes WHERE message_id = $1`, u.ID)
+		if err != nil {
+			return mapErr(err)
+		}
+		var mailboxIDs []int64
+		for mbRows.Next() {
+			var mb int64
+			if err := mbRows.Scan(&mb); err != nil {
+				mbRows.Close()
+				return mapErr(err)
+			}
+			mailboxIDs = append(mailboxIDs, mb)
+		}
+		if err := mbRows.Err(); err != nil {
+			mbRows.Close()
+			return mapErr(err)
+		}
+		mbRows.Close()
+		for _, mb := range mailboxIDs {
+			if err := appendStateChange(ctx, tx, store.PrincipalID(pid),
+				store.EntityKindEmail, uint64(u.ID), uint64(mb), store.ChangeOpUpdated, now); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // RethreadPrincipal scans every message of pid in internal-date order

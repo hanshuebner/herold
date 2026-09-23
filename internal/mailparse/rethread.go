@@ -171,3 +171,91 @@ func ComputeRethread(rows []RethreadRow, force bool) []int64 {
 
 	return resolved
 }
+
+// EffectiveThreadKey folds a stored thread_id column into the key every
+// read path (Thread/get, Thread/changes, the mailbox thread-count
+// query) already uses: 0 means "this row is its own thread root", so
+// the row's own id is the key in that case.
+func EffectiveThreadKey(id, threadID int64) int64 {
+	if threadID == 0 {
+		return id
+	}
+	return threadID
+}
+
+// ReferencesMessageID reports whether messageID (already
+// NormalizeMessageID'd) appears in the In-Reply-To or References header
+// text. Used to confirm a candidate row pulled by a substring prefilter
+// genuinely names messageID as an ancestor, rather than merely
+// containing it as a coincidental substring.
+func ReferencesMessageID(inReplyTo, references, messageID string) bool {
+	for _, ref := range ParseReferences(inReplyTo) {
+		if ref == messageID {
+			return true
+		}
+	}
+	for _, ref := range ParseReferences(references) {
+		if ref == messageID {
+			return true
+		}
+	}
+	return false
+}
+
+// LateAncestorMergeKeys returns the distinct effective thread keys,
+// among candidateRows, of rows that genuinely name newMessageID as an
+// ancestor (via In-Reply-To or References) and whose effective thread
+// key differs from ownKey (the just-inserted message's own key).
+// candidateRows is expected to come from a caller-side substring
+// prefilter over env_in_reply_to/env_references that may include
+// coincidental non-matches; this function applies the exact check.
+//
+// Each returned key names one pre-existing thread that rooted itself
+// because the message it actually replies to (newMessageID) had not
+// yet been ingested (REQ-STORE-40); the caller merges that thread's
+// full membership together with the new message via ComputeRethread.
+func LateAncestorMergeKeys(candidateRows []RethreadRow, newMessageID string, ownKey int64) []int64 {
+	seen := make(map[int64]struct{}, len(candidateRows))
+	var keys []int64
+	for _, r := range candidateRows {
+		if !ReferencesMessageID(r.InReplyTo, r.References, newMessageID) {
+			continue
+		}
+		k := EffectiveThreadKey(r.ID, r.ThreadID)
+		if k == ownKey {
+			continue
+		}
+		if _, dup := seen[k]; dup {
+			continue
+		}
+		seen[k] = struct{}{}
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+// ThreadMergeUpdate is one row whose thread_id column must change to
+// NewThreadID to reflect resolved (ComputeRethread's output).
+type ThreadMergeUpdate struct {
+	ID          int64
+	NewThreadID int64
+}
+
+// ThreadMergeUpdates compares each row's stored effective thread key
+// against its freshly computed one (resolved, e.g. from
+// ComputeRethread(rows, true)) and returns only the rows whose
+// observable thread membership actually changes. A row whose resolved
+// value equals its existing effective key is omitted even if the raw
+// thread_id column would literally differ (0 vs the row's own id are
+// the same key), so applying the result never emits a no-op change-feed
+// entry.
+func ThreadMergeUpdates(rows []RethreadRow, resolved []int64) []ThreadMergeUpdate {
+	var out []ThreadMergeUpdate
+	for i, r := range rows {
+		old := EffectiveThreadKey(r.ID, r.ThreadID)
+		if old != resolved[i] {
+			out = append(out, ThreadMergeUpdate{ID: r.ID, NewThreadID: resolved[i]})
+		}
+	}
+	return out
+}
