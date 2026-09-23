@@ -15,6 +15,28 @@ The instrumented acceptance suite runs against an ephemeral herold from
     ./gradlew :androidApp:connectedDebugAndroidTest \
       -Pandroid.testInstrumentationRunnerArguments.heroldBaseUrl=http://10.0.2.2:<port>
 
+### Device safety (issue #484)
+
+A connected-test or install task installs on every device `adb` lists and,
+on cleanup, uninstalls the app and test packages from each. With more than
+one device attached and no `ANDROID_SERIAL` set to scope the run, that
+fan-out once reached a real phone alongside the emulator under test and took
+its installed app down with it. Two safeguards:
+
+- The debug build carries `applicationIdSuffix = ".debug"`
+  (`com.netzhansa.herold.android.debug`), a package distinct from the signed
+  release build's, so a debug install can never replace or uninstall it.
+- Every `connected*` and `install*` Gradle task depends on
+  `checkAttachedDevices`, which runs `adb devices -l` first and fails,
+  listing what is attached, when more than one device is present or any
+  attached device is not an emulator (a serial not starting with
+  `emulator-`). Override with `-Pherold.allowDevices=true` when that is
+  genuinely intended.
+
+Set `ANDROID_SERIAL` to the emulator's serial (`adb devices`, e.g.
+`emulator-5554`) before running any device-touching Gradle task regardless:
+the guard is a safety net, not a substitute for scoping the run yourself.
+
 ## The instrumented acceptance harness
 
 The suite runs against one ephemeral instance and a headless emulator, in
@@ -25,7 +47,7 @@ data the instance does not create on its own.
     HEROLD_DEV_SUB_ACCOUNTS=1 scripts/dev-instance.sh start
 
     # a fresh install, so no earlier run's state is in the store
-    adb shell pm clear com.netzhansa.herold.android
+    adb shell pm clear com.netzhansa.herold.android.debug
     ./gradlew :androidApp:installDebug :androidApp:installDebugAndroidTest
 
 Seed what the suite expects beyond its own deliveries:
@@ -41,7 +63,7 @@ app process, one `am instrument` invocation each:
     #60 online: seeds the two conversations the offline phase acts on
     adb shell svc data disable && adb shell svc wifi disable
     #61 offline: archive, star, send with an attachment - three entries
-    adb shell am kill com.netzhansa.herold.android
+    adb shell am kill com.netzhansa.herold.android.debug
     #62 the queue is still there in a fresh process
     adb shell svc data enable && adb shell svc wifi enable
     #63 the drain, asserted through an independent JMAP client
@@ -84,7 +106,7 @@ over SMTP, so pass the instance's `SMTP_ADDR`:
       -e class com.netzhansa.herold.android.SyncFreshnessAcceptanceTest \
       -e heroldBaseUrl http://10.0.2.2:<backend-port> \
       -e heroldSmtpAddr 10.0.2.2:<smtp-port> \
-      com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+      com.netzhansa.herold.android.debug.test/androidx.test.runner.AndroidJUnitRunner
 
 Start every invocation on an awake screen. A run begun while the
 emulator sleeps fails in its setup with "No compose hierarchies found
@@ -128,7 +150,7 @@ a process kill between them:
 
     adb shell locksettings set-pin 1234
     # UnlockAcceptanceTest#t80  - locks on returning to the foreground
-    adb shell am kill com.netzhansa.herold.android
+    adb shell am kill com.netzhansa.herold.android.debug
     # UnlockAcceptanceTest#t81  - the fresh process starts locked
     adb shell locksettings clear --old 1234
 
@@ -146,7 +168,7 @@ the instance:
     adb shell am instrument -w -r \
       -e class com.netzhansa.herold.android.ScrollPositionAcceptanceTest \
       -e heroldBaseUrl http://10.0.2.2:<backend-port> \
-      com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+      com.netzhansa.herold.android.debug.test/androidx.test.runner.AndroidJUnitRunner
 
 The restore is checked by rebuilding the activity from its saved state,
 which is the path a killed process comes back on. A kill between two
@@ -164,7 +186,7 @@ out and signs back in, so it runs online, in its own invocation:
     adb shell am instrument -w -r \
       -e class com.netzhansa.herold.android.InboxTopBarAcceptanceTest \
       -e heroldBaseUrl http://10.0.2.2:<backend-port> \
-      com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+      com.netzhansa.herold.android.debug.test/androidx.test.runner.AndroidJUnitRunner
 
 `InboxRefreshAcceptanceTest` checks that the pull-to-refresh indicator
 stops (issue #450): with the server reachable, with the wire down, with
@@ -177,7 +199,7 @@ invocation:
     adb shell am instrument -w -r \
       -e class com.netzhansa.herold.android.InboxRefreshAcceptanceTest \
       -e heroldBaseUrl http://10.0.2.2:<backend-port> \
-      com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+      com.netzhansa.herold.android.debug.test/androidx.test.runner.AndroidJUnitRunner
 
 `OAuthAcceptanceTest` needs no device setup. Pass the instance's
 `OAUTH2_CLIENT_ID` when it is not the default `herold-android`:
@@ -187,7 +209,7 @@ invocation:
       -e heroldBaseUrl http://10.0.2.2:<backend-port> \
       -e heroldTotpSecret <ADMIN_TOTP_SECRET> \
       -e heroldOauthClientId <OAUTH2_CLIENT_ID> \
-      com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+      com.netzhansa.herold.android.debug.test/androidx.test.runner.AndroidJUnitRunner
 
 `StepUpAcceptanceTest` drives the six-digit step-up sheet against
 `POST /api/v1/auth/step-up` (issue #401). It signs in as the instance's
@@ -197,7 +219,7 @@ TOTP-enrolled principal, so it needs the printed `ADMIN_TOTP_SECRET`:
       -e class com.netzhansa.herold.android.StepUpAcceptanceTest \
       -e heroldBaseUrl http://10.0.2.2:<backend-port> \
       -e heroldTotpSecret <ADMIN_TOTP_SECRET> \
-      com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+      com.netzhansa.herold.android.debug.test/androidx.test.runner.AndroidJUnitRunner
 
 `t77` spends one wrong code before the right one. The server locks a
 principal out after five consecutive wrong TOTP attempts, so re-running
@@ -231,7 +253,7 @@ Then run the online phase, the offline phase, and collect the screenshots:
       -e heroldSmtpAddr 10.0.2.2:<smtp-port> \
       -e heroldFakeFcmAddr 10.0.2.2:<fakefcm-port> \
       -e heroldTotpSecret <ADMIN_TOTP_SECRET> \
-      com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+      com.netzhansa.herold.android.debug.test/androidx.test.runner.AndroidJUnitRunner
 
     adb shell svc data disable && adb shell svc wifi disable
     # OfflineAcceptanceTest#t2..., ComposeOfflineAcceptanceTest,
@@ -267,7 +289,7 @@ then round-trips a 3 MiB blob through the cache as it is now.
 
     adb shell am instrument -w -r \
       -e class com.netzhansa.herold.android.BlobCacheInstrumentedTest \
-      com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+      com.netzhansa.herold.android.debug.test/androidx.test.runner.AndroidJUnitRunner
 
 `LargeInlineImageAcceptanceTest` delivers a message whose inline image
 is larger than that window and opens the thread on it, which is the
@@ -277,7 +299,7 @@ flow that closed the app on the reporting device:
       -e class com.netzhansa.herold.android.LargeInlineImageAcceptanceTest \
       -e heroldBaseUrl http://10.0.2.2:<backend-port> \
       -e heroldSmtpAddr 10.0.2.2:<smtp-port> \
-      com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+      com.netzhansa.herold.android.debug.test/androidx.test.runner.AndroidJUnitRunner
 
 `LargeInlineImageAcceptanceTest` also delivers a transparent banner in
 the reported sender's markup and reads the pixels where it is drawn: the
@@ -291,7 +313,7 @@ check and one flattened onto white fails the dark one.
 
     adb shell am instrument -w -r \
       -e class com.netzhansa.herold.android.InlineImageAlphaAcceptanceTest \
-      com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+      com.netzhansa.herold.android.debug.test/androidx.test.runner.AndroidJUnitRunner
 
 The decision behind it - whether an image carries an alpha channel, what
 format that leads to, what the display bound leaves it at - has a
@@ -307,7 +329,7 @@ shows (issue #440).
 
     adb shell am instrument -w -r \
       -e class com.netzhansa.herold.android.BodyImageSourceAcceptanceTest \
-      com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+      com.netzhansa.herold.android.debug.test/androidx.test.runner.AndroidJUnitRunner
 
 ### The quoted-history fold (issue #456)
 
@@ -322,7 +344,7 @@ one shape's regression does not hide the next:
       -e class com.netzhansa.herold.android.QuotedHistoryFoldAcceptanceTest \
       -e heroldBaseUrl http://10.0.2.2:<backend-port> \
       -e heroldSmtpAddr 10.0.2.2:<smtp-port> \
-      com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+      com.netzhansa.herold.android.debug.test/androidx.test.runner.AndroidJUnitRunner
 
 `QuotedFoldShapesTest` reads the same table on the host JVM, out of the
 sanitiser's output rather than off a screen, and runs in seconds:
@@ -346,7 +368,7 @@ the inline part are there, the script and the style block are not
       -e class com.netzhansa.herold.android.ForwardHtmlAcceptanceTest \
       -e heroldBaseUrl http://10.0.2.2:<backend-port> \
       -e heroldSmtpAddr 10.0.2.2:<smtp-port> \
-      com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+      com.netzhansa.herold.android.debug.test/androidx.test.runner.AndroidJUnitRunner
 
 `CrashRestoreAcceptanceTest` stands on a conversation, leaves the crash
 record the uncaught-exception handler writes, and recreates the
@@ -357,7 +379,7 @@ next report.
       -e class com.netzhansa.herold.android.CrashRestoreAcceptanceTest \
       -e heroldBaseUrl http://10.0.2.2:<backend-port> \
       -e heroldSmtpAddr 10.0.2.2:<smtp-port> \
-      com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+      com.netzhansa.herold.android.debug.test/androidx.test.runner.AndroidJUnitRunner
 
 `InboxLaneShrinkAcceptanceTest` archives the last conversation of a
 lane while the reader stands on it, and then delivers into that lane
@@ -370,7 +392,7 @@ one conversation it acts on.
       -e class com.netzhansa.herold.android.InboxLaneShrinkAcceptanceTest \
       -e heroldBaseUrl http://10.0.2.2:<backend-port> \
       -e heroldSmtpAddr 10.0.2.2:<smtp-port> \
-      com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+      com.netzhansa.herold.android.debug.test/androidx.test.runner.AndroidJUnitRunner
 
 ### The bug reporter (issues #407, #417)
 
@@ -398,7 +420,7 @@ Run the class in its own invocation:
       -e heroldSmtpAddr 10.0.2.2:<smtp-port> \
       -e heroldBugReportsKey "$KEY" \
       -e heroldEmulatorToken "$(cat ~/.emulator_console_auth_token)" \
-      com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+      com.netzhansa.herold.android.debug.test/androidx.test.runner.AndroidJUnitRunner
 
 Without `heroldBugReportsKey` the three server-side checks skip. The
 same key drives `bin/herold bug-fetch --server-url <backend-url>
@@ -417,14 +439,14 @@ purpose, for the class that follows:
       -e heroldBaseUrl http://10.0.2.2:<backend-port> \
       -e heroldSmtpAddr 10.0.2.2:<smtp-port> \
       -e heroldBugReportsKey "$KEY" \
-      com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+      com.netzhansa.herold.android.debug.test/androidx.test.runner.AndroidJUnitRunner
 
-    adb shell am kill com.netzhansa.herold.android
+    adb shell am kill com.netzhansa.herold.android.debug
 
     adb shell am instrument -w -r \
       -e class com.netzhansa.herold.android.BugReportPendingReportSurvivesTest \
       -e heroldBaseUrl http://10.0.2.2:<backend-port> \
-      com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+      com.netzhansa.herold.android.debug.test/androidx.test.runner.AndroidJUnitRunner
 
 The second invocation is a cold process, which is what a pending report
 has to survive: the marker it finds comes from app storage alone.
@@ -447,7 +469,7 @@ the pass that follows the connection returning:
       -e class com.netzhansa.herold.android.BugReportSendsAtOnceAcceptanceTest \
       -e heroldBaseUrl http://10.0.2.2:<backend-port> \
       -e heroldBugReportsKey "$KEY" \
-      com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+      com.netzhansa.herold.android.debug.test/androidx.test.runner.AndroidJUnitRunner
 
 ### Drafts a reader never wrote (issue #371)
 
@@ -464,7 +486,7 @@ rather than by its close control.
       -e class com.netzhansa.herold.android.EmptyDraftAcceptanceTest \
       -e heroldBaseUrl http://10.0.2.2:<backend-port> \
       -e heroldSmtpAddr 10.0.2.2:<smtp-port> \
-      com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+      com.netzhansa.herold.android.debug.test/androidx.test.runner.AndroidJUnitRunner
 
 `DraftDiscardAcceptanceTest` is the discard itself, in the three orders
 a save and a discard can resolve in; it signs in through a relay in the
@@ -474,7 +496,7 @@ test process, so it needs no device setup either:
       -e class com.netzhansa.herold.android.DraftDiscardAcceptanceTest \
       -e heroldBaseUrl http://10.0.2.2:<backend-port> \
       -e heroldSmtpAddr 10.0.2.2:<smtp-port> \
-      com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+      com.netzhansa.herold.android.debug.test/androidx.test.runner.AndroidJUnitRunner
 
 ### The bottom edge, under both navigation modes (issue #428)
 
@@ -492,7 +514,7 @@ moment before the run:
       -e class com.netzhansa.herold.android.BottomInsetAcceptanceTest \
       -e heroldBaseUrl http://10.0.2.2:<backend-port> \
       -e heroldSmtpAddr 10.0.2.2:<smtp-port> \
-      com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+      com.netzhansa.herold.android.debug.test/androidx.test.runner.AndroidJUnitRunner
 
     adb shell cmd overlay enable com.android.internal.systemui.navbar.threebutton
     # the same invocation again
@@ -521,7 +543,7 @@ host, which is what `scripts/dev-instance.sh` allowlists in
       -e class com.netzhansa.herold.android.UnifiedPushAcceptanceTest \
       -e heroldBaseUrl http://10.0.2.2:<backend-port> \
       -e heroldSmtpAddr 10.0.2.2:<smtp-port> \
-      com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+      com.netzhansa.herold.android.debug.test/androidx.test.runner.AndroidJUnitRunner
 
 Run the four methods in two or three invocations: `t92` waits for the
 dispatcher to retry against a 410 and `t93` fetches an FCM token.
@@ -547,10 +569,22 @@ off. Two sources, first match wins, neither committed:
        applicationId=1:123456789012:android:abcdef0123456789
        apiKey=AIza...
        projectNumber=123456789012
+       packageName=com.netzhansa.herold.android
 
 2. `~/.config/herold-android/google-services.json` — the file as downloaded
    from the Firebase console. `$HEROLD_GOOGLE_SERVICES_JSON` overrides the
    location; `mobile/androidApp/google-services.json` is also read.
+
+A Firebase app is registered for one specific Android package (`packageName`
+above, or `package_name` inside `google-services.json`'s client entry); FCM
+does not deliver to a different one. The release build (`applicationId`
+`com.netzhansa.herold.android`) is what this project is registered for, so
+release push works from either source with no change. The debug build
+(`com.netzhansa.herold.android.debug`, issue #484) has no such registration
+and runs with push off, logging why at build time
+(`FirebaseConfig.scopedTo` in `androidApp/build.gradle.kts`); registering a
+second Firebase app for the debug package and recording its
+`packageName`/`package_name` there turns debug push on the same way.
 
 `./gradlew :androidApp:printBuildFacts` reports whether the build picked a
 project up, the version it will stamp, and whether release signing is

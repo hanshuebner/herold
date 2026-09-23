@@ -1605,7 +1605,11 @@ type UIConfig struct {
 
 // AndroidAppLinkConfig identifies one Android app allowed to verify as
 // the deployment's App Links handler, via a Digital Asset Links
-// statement (REQ-AND-SYS-11, issue #365).
+// statement (REQ-AND-SYS-11, issue #365). Verification checks the
+// package name against the signing certificate's fingerprint, so an
+// entry names one signed build; the mobile client's debug build
+// (applicationId with the ".debug" suffix, issue #484) is never signed
+// with the release key and has no entry here of its own.
 //
 // Example:
 //

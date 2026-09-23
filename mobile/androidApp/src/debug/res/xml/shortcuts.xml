@@ -1,9 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The launcher's long-press menu (REQ-AND-SYS-22). Compose is static;
-     the recent conversations are pushed as dynamic conversation shortcuts
-     by ConversationShortcuts, shared with the notifications. targetPackage
-     below is the release applicationId; src/debug/res/xml/shortcuts.xml
-     overlays it with the debug one (issue #484). -->
+<!--
+Debug-only overlay of res/main/xml/shortcuts.xml: targetPackage names the
+debug applicationId ("com.netzhansa.herold.android" + the debug build
+type's ".debug" suffix from androidApp/build.gradle.kts), so the launcher's
+long-press compose shortcut resolves against this build's own package
+rather than the release one it no longer shares (issue #484). targetClass
+is unaffected: the Kotlin package (the manifest's `namespace`) is the same
+in both build types, only the installed applicationId differs.
+-->
 <shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
     <shortcut
         android:shortcutId="compose"
@@ -13,7 +17,7 @@
         android:shortcutLongLabel="@string/shortcut_compose_long">
         <intent
             android:action="android.intent.action.VIEW"
-            android:targetPackage="com.netzhansa.herold.android"
+            android:targetPackage="com.netzhansa.herold.android.debug"
             android:targetClass="com.netzhansa.herold.android.MainActivity"
             android:data="herold://compose" />
     </shortcut>

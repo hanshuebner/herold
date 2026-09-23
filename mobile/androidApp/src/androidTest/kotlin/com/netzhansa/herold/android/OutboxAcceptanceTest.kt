@@ -61,7 +61,7 @@ import java.io.File
  *   am instrument ... -e class OutboxAcceptanceTest#t60_warmOnline
  *   adb shell svc data disable && adb shell svc wifi disable
  *   am instrument ... -e class OutboxAcceptanceTest#t61_queueThreeThingsOffline
- *   adb shell am kill com.netzhansa.herold.android
+ *   adb shell am kill com.netzhansa.herold.android.debug
  *   am instrument ... -e class OutboxAcceptanceTest#t62_theQueueSurvivesProcessDeath
  *   adb shell svc data enable && adb shell svc wifi enable
  *   am instrument ... -e class OutboxAcceptanceTest#t63_theQueueDrainsAndTheServerHoldsIt

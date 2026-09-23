@@ -55,7 +55,7 @@ import org.junit.runners.MethodSorters
  *       -e class com.netzhansa.herold.android.QuotedHistoryFoldAcceptanceTest \
  *       -e heroldBaseUrl http://10.0.2.2:<backend-port> \
  *       -e heroldSmtpAddr 10.0.2.2:<smtp-port> \
- *       com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+ *       com.netzhansa.herold.android.debug.test/androidx.test.runner.AndroidJUnitRunner
  */
 @RunWith(AndroidJUnit4::class)
 @FixMethodOrder(MethodSorters.NAME_ASCENDING)

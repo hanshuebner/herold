@@ -21,7 +21,7 @@ import org.junit.runner.RunWith
  *
  *   adb shell am instrument -w -e class \
  *     com.netzhansa.herold.android.BugReportMultiCaptureAcceptanceTest ...
- *   adb shell am kill com.netzhansa.herold.android
+ *   adb shell am kill com.netzhansa.herold.android.debug
  *   adb shell am instrument -w -e class \
  *     com.netzhansa.herold.android.BugReportPendingReportSurvivesTest ...
  *

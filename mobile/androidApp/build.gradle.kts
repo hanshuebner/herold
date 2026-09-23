@@ -22,10 +22,17 @@ plugins {
 // Two sources, first match wins, both kept out of git:
 //
 //   1. mobile/androidApp/firebase.properties  - projectId, applicationId,
-//      apiKey, projectNumber.
+//      apiKey, projectNumber, and the optional packageName the project is
+//      registered for.
 //   2. ~/.config/herold-android/google-services.json - the file as downloaded
-//      from the Firebase console; the same four values are read out of it.
+//      from the Firebase console; the same five values are read out of it.
 //      Override the location with $HEROLD_GOOGLE_SERVICES_JSON.
+//
+// A Firebase app is registered for one specific Android package; FCM does
+// not deliver to a different one. The debug build type carries its own
+// applicationId (issue #484), so its config is scoped by packageName
+// (FirebaseConfig.scopedTo below) and runs with push off, logging why,
+// until a debug entry is registered and recorded.
 // ---------------------------------------------------------------------------
 
 data class FirebaseConfig(
@@ -33,8 +40,39 @@ data class FirebaseConfig(
     val applicationId: String,
     val apiKey: String,
     val projectNumber: String,
+    // The Android package this project is registered for in the Firebase
+    // console. Blank in older/hand-written firebase.properties files, which
+    // predate this field and were always written for the release id
+    // (issue #484): scopedTo() below treats a blank packageName as an
+    // implicit claim on the release id, not a wildcard for every id.
+    val packageName: String = "",
 ) {
     val configured: Boolean get() = applicationId.isNotBlank() && apiKey.isNotBlank()
+
+    /**
+     * This config as it applies to one build's actual Android package:
+     * unchanged when [packageName] names that package, or names none and
+     * [targetApplicationId] is the release id (the historical assumption);
+     * [FirebaseConfig.EMPTY] otherwise, so a build under a package the
+     * Firebase project does not know about runs with push off rather than
+     * registering a token FCM can never deliver to.
+     */
+    fun scopedTo(targetApplicationId: String, releaseApplicationId: String): FirebaseConfig {
+        if (!configured) return this
+        val matches = if (packageName.isBlank()) {
+            targetApplicationId == releaseApplicationId
+        } else {
+            packageName == targetApplicationId
+        }
+        if (matches) return this
+        val recordedFor = packageName.ifBlank { "$releaseApplicationId (assumed; no packageName recorded)" }
+        println(
+            "herold: Firebase config is registered for $recordedFor, not $targetApplicationId; " +
+                "push stays off for this build. Add \"packageName=$targetApplicationId\" to " +
+                "firebase.properties once that package has its own Firebase app.",
+        )
+        return EMPTY
+    }
 
     companion object {
         val EMPTY = FirebaseConfig("", "", "", "")
@@ -49,6 +87,7 @@ fun readFirebaseProperties(file: File): FirebaseConfig? {
         applicationId = props.getProperty("applicationId", ""),
         apiKey = props.getProperty("apiKey", ""),
         projectNumber = props.getProperty("projectNumber", ""),
+        packageName = props.getProperty("packageName", ""),
     )
 }
 
@@ -65,6 +104,7 @@ fun readGoogleServicesJson(file: File): FirebaseConfig? {
         applicationId = field("mobilesdk_app_id", client.ifBlank { text }),
         apiKey = field("current_key"),
         projectNumber = field("project_number"),
+        packageName = field("package_name"),
     )
 }
 
@@ -223,22 +263,26 @@ fun generateAcceptanceTls() {
 
 generateAcceptanceTls()
 
+// The signed release package, and the debug package derived from it. App
+// Links verification (assetlinks.json, [server.ui] android_app_links) and
+// the shortcuts.xml/strings.xml debug overlays name releaseApplicationId
+// and debugApplicationId respectively; keeping both here gives the build
+// script one place that defines what ".debug" means (issue #484).
+val releaseApplicationId = "com.netzhansa.herold.android"
+val debugApplicationId = "$releaseApplicationId.debug"
+
 android {
-    namespace = "com.netzhansa.herold.android"
+    namespace = releaseApplicationId
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.netzhansa.herold.android"
+        applicationId = releaseApplicationId
         minSdk = 26
         targetSdk = 36
         versionCode = releaseVersionCode
         versionName = releaseVersionName
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        buildConfigField("String", "FIREBASE_PROJECT_ID", "\"${firebaseConfig.projectId}\"")
-        buildConfigField("String", "FIREBASE_APPLICATION_ID", "\"${firebaseConfig.applicationId}\"")
-        buildConfigField("String", "FIREBASE_API_KEY", "\"${firebaseConfig.apiKey}\"")
-        buildConfigField("String", "FIREBASE_PROJECT_NUMBER", "\"${firebaseConfig.projectNumber}\"")
         buildConfigField("String", "ACCEPTANCE_TLS_PASSWORD", "\"$acceptanceTlsPassword\"")
         buildConfigField("String", "GIT_COMMIT", "\"$buildCommit\"")
     }
@@ -274,9 +318,26 @@ android {
     }
 
     buildTypes {
+        debug {
+            // A package of its own, so installing this build can never
+            // replace or uninstall the signed release app on the same
+            // device (issue #484). src/debug/res carries the matching
+            // app_name and shortcuts.xml overrides.
+            applicationIdSuffix = ".debug"
+            val debugFirebase = firebaseConfig.scopedTo(debugApplicationId, releaseApplicationId)
+            buildConfigField("String", "FIREBASE_PROJECT_ID", "\"${debugFirebase.projectId}\"")
+            buildConfigField("String", "FIREBASE_APPLICATION_ID", "\"${debugFirebase.applicationId}\"")
+            buildConfigField("String", "FIREBASE_API_KEY", "\"${debugFirebase.apiKey}\"")
+            buildConfigField("String", "FIREBASE_PROJECT_NUMBER", "\"${debugFirebase.projectNumber}\"")
+        }
         release {
             isMinifyEnabled = false
             signingConfig = signingConfigs.findByName("release")
+            val releaseFirebase = firebaseConfig.scopedTo(releaseApplicationId, releaseApplicationId)
+            buildConfigField("String", "FIREBASE_PROJECT_ID", "\"${releaseFirebase.projectId}\"")
+            buildConfigField("String", "FIREBASE_APPLICATION_ID", "\"${releaseFirebase.applicationId}\"")
+            buildConfigField("String", "FIREBASE_API_KEY", "\"${releaseFirebase.apiKey}\"")
+            buildConfigField("String", "FIREBASE_PROJECT_NUMBER", "\"${releaseFirebase.projectNumber}\"")
         }
     }
 
@@ -314,6 +375,66 @@ tasks.register("printBuildFacts") {
         println("commit: ${buildCommit.ifBlank { "(unknown)" }}")
         println("release signing: ${if (signed) "configured" else "absent"}")
         println("firebase: ${if (firebase) "configured" else "absent"}")
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Device safety guard (issue #484).
+//
+// A connected-test or install task installs on every device `adb` lists and,
+// on cleanup, uninstalls the app and test packages from each -- with no
+// `ANDROID_SERIAL` set to scope it, that fan-out reached the maintainer's
+// Pixel alongside a local emulator and took the signed release app down with
+// it. This task runs before every such task and refuses when more than one
+// device is attached, or when any attached device is not an emulator,
+// unless the caller opts in with -Pherold.allowDevices=true.
+// ---------------------------------------------------------------------------
+
+val checkAttachedDevices = tasks.register("checkAttachedDevices") {
+    group = "verification"
+    description = "Fails when more than one device, or a non-emulator device, is attached (issue #484)."
+    doLast {
+        val allowDevices = (findProperty("herold.allowDevices") as String?)?.toBoolean() ?: false
+        val process = ProcessBuilder("adb", "devices", "-l")
+            .redirectErrorStream(true)
+            .start()
+        val output = process.inputStream.bufferedReader().readText()
+        val exitCode = process.waitFor()
+        check(exitCode == 0) { "adb devices -l failed (exit $exitCode):\n$output" }
+        // adb prints optional daemon-startup chatter before the marker line;
+        // only what follows it is device listing.
+        val deviceLines = output.lineSequence()
+            .dropWhile { !it.startsWith("List of devices attached") }
+            .drop(1)
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .toList()
+        if (deviceLines.isEmpty()) return@doLast
+        val nonEmulator = deviceLines.filterNot { it.substringBefore(' ').startsWith("emulator-") }
+        if (allowDevices) return@doLast
+        if (deviceLines.size > 1 || nonEmulator.isNotEmpty()) {
+            throw GradleException(
+                buildString {
+                    appendLine(
+                        "Refusing to install or run instrumented tests: this task installs " +
+                            "on every attached device and its cleanup can uninstall an " +
+                            "unrelated app from a real phone (issue #484).",
+                    )
+                    appendLine("Attached devices (adb devices -l):")
+                    deviceLines.forEach { appendLine("  $it") }
+                    append(
+                        "Attach only the one emulator under test (set ANDROID_SERIAL to its " +
+                            "serial), or pass -Pherold.allowDevices=true to override.",
+                    )
+                },
+            )
+        }
+    }
+}
+
+tasks.configureEach {
+    if (name != checkAttachedDevices.name && (name.startsWith("connected") || name.startsWith("install"))) {
+        dependsOn(checkAttachedDevices)
     }
 }
 

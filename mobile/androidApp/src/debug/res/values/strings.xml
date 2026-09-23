@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+Debug-only overlay: a distinct launcher label, so a debug install sits next
+to the release app on the same device's home screen and app drawer without
+being mistaken for it (issue #484). The Quick Settings tile keeps the
+release label, since a debug build is never expected on a device that also
+uses the tile day to day.
+-->
+<resources>
+    <string name="app_name">herold (debug)</string>
+</resources>
