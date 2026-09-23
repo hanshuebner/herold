@@ -1697,7 +1697,8 @@ func (m *metadata) GetMessage(ctx context.Context, id store.MessageID) (store.Me
 		       internalize_pending, preview, has_attachment, body_meta_computed,
 		       failed_image_count, failed_image_state,
 		       retryable_failed_image_count, failed_image_reason,
-		       ingest_source, ingest_source_ref
+		       ingest_source, ingest_source_ref,
+		       snooze_woke_at_us, snooze_woke_for_us
 		  FROM messages WHERE id = $1`, int64(id))
 	msg, err := scanMessageRow(row)
 	if err != nil {
@@ -1723,6 +1724,8 @@ func scanMessageRow(row rowLike) (store.Message, error) {
 	var retryableFailedImageCount int
 	var failedImageReason string
 	var ingestSource string
+	var snoozeWokeAtUs *int64
+	var snoozeWokeForUs *int64
 	err := row.Scan(&id, &pid, &idUs, &rcvUs,
 		&msg.Size, &msg.Blob.Hash, &blobSize, &thread,
 		&msg.Envelope.Subject, &msg.Envelope.From, &msg.Envelope.To,
@@ -1731,7 +1734,8 @@ func scanMessageRow(row rowLike) (store.Message, error) {
 		&pending, &msg.Preview, &msg.HasAttachment, &msg.BodyMetaComputed,
 		&failedImageCount, &failedImageState,
 		&retryableFailedImageCount, &failedImageReason,
-		&ingestSource, &msg.IngestSourceRef)
+		&ingestSource, &msg.IngestSourceRef,
+		&snoozeWokeAtUs, &snoozeWokeForUs)
 	if err != nil {
 		return store.Message{}, mapErr(err)
 	}
@@ -1748,6 +1752,14 @@ func scanMessageRow(row rowLike) (store.Message, error) {
 	msg.Envelope.Date = fromMicros(envDateUs)
 	msg.InternalizePending = pending != 0
 	msg.IngestSource = store.MessageIngestSource(ingestSource)
+	if snoozeWokeAtUs != nil {
+		t := fromMicros(*snoozeWokeAtUs)
+		msg.SnoozeWokeAt = &t
+	}
+	if snoozeWokeForUs != nil {
+		t := fromMicros(*snoozeWokeForUs)
+		msg.SnoozeWokeFor = &t
+	}
 	return msg, nil
 }
 
@@ -1958,6 +1970,15 @@ func (m *metadata) UpdateMessageFlags(
 			UPDATE mailboxes SET highest_modseq = $1, updated_at_us = $2 WHERE id = $3`,
 			int64(modseq), usMicros(now), int64(mailboxID)); err != nil {
 			return mapErr(err)
+		}
+		if flagAdd&store.MessageFlagSeen != 0 {
+			// The message gaining $seen ends the snooze wake indication
+			// (issue #469) regardless of which path set the flag.
+			if _, err := tx.Exec(ctx, `
+				UPDATE messages SET snooze_woke_at_us = NULL, snooze_woke_for_us = NULL WHERE id = $1`,
+				int64(id)); err != nil {
+				return mapErr(err)
+			}
 		}
 		return appendStateChange(ctx, tx, store.PrincipalID(pid),
 			store.EntityKindEmail, uint64(id), uint64(mailboxID), store.ChangeOpUpdated, now)
@@ -4634,6 +4655,82 @@ func (m *metadata) SetSnooze(ctx context.Context, msgID store.MessageID, mailbox
 			UPDATE mailboxes SET highest_modseq = $1, updated_at_us = $2 WHERE id = $3`,
 			int64(modseq), usMicros(now), int64(mailboxID)); err != nil {
 			return mapErr(err)
+		}
+		if when != nil {
+			// A fresh reminder retires any earlier one's wake marker
+			// (issue #469): the "why is this back" indication from a
+			// previous wake no longer applies once the message is
+			// snoozed again.
+			if _, err := tx.Exec(ctx, `
+				UPDATE messages SET snooze_woke_at_us = NULL, snooze_woke_for_us = NULL WHERE id = $1`,
+				int64(msgID)); err != nil {
+				return mapErr(err)
+			}
+		}
+		return appendStateChange(ctx, tx, store.PrincipalID(pid),
+			store.EntityKindEmail, uint64(msgID), uint64(mailboxID), store.ChangeOpUpdated, now)
+	})
+	if err != nil {
+		return 0, err
+	}
+	return modseq, nil
+}
+
+// ReleaseSnooze clears a due snooze and records the wake marker. See
+// the store.Store doc comment for the full contract (issue #469).
+func (m *metadata) ReleaseSnooze(ctx context.Context, msgID store.MessageID, mailboxID store.MailboxID) (store.ModSeq, error) {
+	now := m.s.clock.Now().UTC()
+	var modseq store.ModSeq
+	err := m.runTx(ctx, func(tx pgx.Tx) error {
+		var curKeywords string
+		var snoozedUs *int64
+		err := tx.QueryRow(ctx, `
+			SELECT keywords_csv, snoozed_until_us
+			  FROM message_mailboxes WHERE message_id = $1 AND mailbox_id = $2`,
+			int64(msgID), int64(mailboxID)).Scan(&curKeywords, &snoozedUs)
+		if err != nil {
+			return mapErr(err)
+		}
+		kwSet := map[string]struct{}{}
+		if curKeywords != "" {
+			for _, k := range strings.Split(curKeywords, ",") {
+				if k != "" {
+					kwSet[k] = struct{}{}
+				}
+			}
+		}
+		delete(kwSet, "$snoozed")
+		kws := make([]string, 0, len(kwSet))
+		for k := range kwSet {
+			kws = append(kws, k)
+		}
+		sortStrings(kws)
+
+		var pid, highest int64
+		if err := tx.QueryRow(ctx, `SELECT principal_id, highest_modseq FROM mailboxes WHERE id = $1`,
+			int64(mailboxID)).Scan(&pid, &highest); err != nil {
+			return mapErr(err)
+		}
+		modseq = store.ModSeq(highest + 1)
+
+		if _, err := tx.Exec(ctx, `
+			UPDATE message_mailboxes
+			   SET keywords_csv = $1, modseq = $2, snoozed_until_us = NULL, wake_mailbox_id = NULL
+			 WHERE message_id = $3 AND mailbox_id = $4`,
+			strings.Join(kws, ","), int64(modseq), int64(msgID), int64(mailboxID)); err != nil {
+			return mapErr(err)
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE mailboxes SET highest_modseq = $1, updated_at_us = $2 WHERE id = $3`,
+			int64(modseq), usMicros(now), int64(mailboxID)); err != nil {
+			return mapErr(err)
+		}
+		if snoozedUs != nil {
+			if _, err := tx.Exec(ctx, `
+				UPDATE messages SET snooze_woke_at_us = $1, snooze_woke_for_us = $2 WHERE id = $3`,
+				usMicros(now), *snoozedUs, int64(msgID)); err != nil {
+				return mapErr(err)
+			}
 		}
 		return appendStateChange(ctx, tx, store.PrincipalID(pid),
 			store.EntityKindEmail, uint64(msgID), uint64(mailboxID), store.ChangeOpUpdated, now)

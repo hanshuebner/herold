@@ -263,7 +263,12 @@ type Metadata interface {
 	// row identified by (id, mailboxID), bumps its ModSeq and the
 	// mailbox's HighestModSeq, and appends an (EntityKindEmail,
 	// ChangeOpUpdated) entry — atomically. Flag changes in one mailbox do
-	// not affect other mailbox memberships.
+	// not affect other mailbox memberships. When flagAdd carries
+	// MessageFlagSeen, the message's JMAP snooze wake marker
+	// (messages.snooze_woke_at_us / snooze_woke_for_us, issue #469)
+	// clears in the same tx -- the message gaining $seen through any
+	// path (Email/set, IMAP STORE, importer) is what ends the "why is
+	// this back" indication.
 	// unchangedSince, when non-zero, implements IMAP STORE UNCHANGEDSINCE
 	// (RFC 7162 §3.1.3): the update is rejected with ErrConflict if the
 	// message's current ModSeq in that mailbox exceeds it. Returns the
@@ -2133,12 +2138,42 @@ type Metadata interface {
 	// and "$snoozed" clear, and wake_mailbox_id is also NULLed); when
 	// non-nil sets the snooze and writes wake (the wake-destination
 	// mailbox chosen when the snooze was set; may be nil for "no
-	// destination chosen") to wake_mailbox_id (issue #274). The
-	// mailbox's HighestModSeq is bumped and a (EntityKindEmail,
-	// ChangeOpUpdated) row is appended to the state-change feed in the
-	// same tx. Returns the message's new ModSeq. Returns ErrNotFound when
-	// the (msgID, mailboxID) membership is gone.
+	// destination chosen") to wake_mailbox_id (issue #274), and clears
+	// the message's snooze wake marker (messages.snooze_woke_at_us /
+	// snooze_woke_for_us, issue #469) -- setting a fresh reminder
+	// retires any earlier one's "why is this back" indication. A
+	// when==nil call (a deliberate cancel of a still-pending snooze;
+	// see ReleaseSnooze for the wake path) leaves the wake marker
+	// untouched. The mailbox's HighestModSeq is bumped and a
+	// (EntityKindEmail, ChangeOpUpdated) row is appended to the
+	// state-change feed in the same tx. Returns the message's new
+	// ModSeq. Returns ErrNotFound when the (msgID, mailboxID)
+	// membership is gone.
 	SetSnooze(ctx context.Context, msgID MessageID, mailboxID MailboxID, when *time.Time, wake *MailboxID) (ModSeq, error)
+
+	// ReleaseSnooze clears a due snooze on the (msgID, mailboxID)
+	// membership exactly like SetSnooze(msgID, mailboxID, nil, nil) --
+	// snoozed-until, "$snoozed", and wake_mailbox_id all clear -- and
+	// additionally records the wake on the message (issue #469):
+	// messages.snooze_woke_at_us is set to the current time and
+	// messages.snooze_woke_for_us to the snoozed-until deadline that
+	// just elapsed, surfaced as JMAP Email.snoozeWokeAt /
+	// snoozeWokeFor. Used exclusively by the wake-up worker (issue
+	// #274) -- a caller ending a still-pending reminder deliberately
+	// (Email/set snoozedUntil: null, IMAP STORE -FLAGS $snoozed) must
+	// keep using SetSnooze(nil, nil), which leaves no wake marker,
+	// since ending a reminder before it fires is not a wake. The
+	// marker is left untouched (not cleared to empty) when the
+	// membership's snoozed_until_us is already NULL when this runs --
+	// a race between ListDueSnoozedMessages and release that some
+	// other path already resolved. Both marker columns clear again the
+	// next time the message gains $seen (UpdateMessageFlags) or is
+	// snoozed again (SetSnooze with when != nil). Same tx, same
+	// (EntityKindEmail, ChangeOpUpdated) state-change row SetSnooze
+	// itself would append -- no second row. Returns the message's new
+	// ModSeq. Returns ErrNotFound when the (msgID, mailboxID)
+	// membership is gone.
+	ReleaseSnooze(ctx context.Context, msgID MessageID, mailboxID MailboxID) (ModSeq, error)
 
 	// RecordMailboxArrival appends a (EntityKindEmail, ChangeOpCreated)
 	// row to the state-change feed for the existing (msgID, mailboxID)

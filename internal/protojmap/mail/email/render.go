@@ -69,6 +69,14 @@ func renderEmailMetadata(m store.Message) jmapEmail {
 		s := jmapIDFromMailbox(*wake)
 		out.SnoozeWakeMailboxID = &s
 	}
+	if m.SnoozeWokeAt != nil {
+		s := rfc3339UTC(*m.SnoozeWokeAt)
+		out.SnoozeWokeAt = &s
+	}
+	if m.SnoozeWokeFor != nil {
+		s := rfc3339UTC(*m.SnoozeWokeFor)
+		out.SnoozeWokeFor = &s
+	}
 	if m.Envelope.Subject != "" {
 		out.Subject = m.Envelope.Subject
 	}

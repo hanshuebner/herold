@@ -2016,6 +2016,282 @@ func TestEmailGet_SnoozeWakeMailboxID_NullWhenNotSnoozed(t *testing.T) {
 	}
 }
 
+// -- issue #469: JMAP wake marker (snoozeWokeAt / snoozeWokeFor) -----
+
+func TestEmailGet_SnoozeWakeMarker_NullWhenNeverSnoozed(t *testing.T) {
+	testEmailGet_SnoozeWakeMarker_NullWhenNeverSnoozed(t, setupFixture(t))
+}
+
+func TestEmailGet_SnoozeWakeMarker_NullWhenNeverSnoozed_Postgres(t *testing.T) {
+	testEmailGet_SnoozeWakeMarker_NullWhenNeverSnoozed(t, setupFixturePostgres(t))
+}
+
+func testEmailGet_SnoozeWakeMarker_NullWhenNeverSnoozed(t *testing.T, f *fixture) {
+	t.Helper()
+	body := "From: a@example.test\r\nTo: b@example.test\r\nSubject: never-snoozed\r\n\r\nbody"
+	m := f.insertMessage(t, body, "never-snoozed", "a@example.test", "b@example.test", nil, "")
+	_, raw := f.invoke(t, "Email/get", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"ids":       []string{fmt.Sprintf("%d", m.ID)},
+	})
+	var resp struct {
+		List []map[string]any `json:"list"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	if len(resp.List) != 1 {
+		t.Fatalf("got %d messages, want 1: %s", len(resp.List), raw)
+	}
+	if got := resp.List[0]["snoozeWokeAt"]; got != nil {
+		t.Errorf("snoozeWokeAt = %v, want null", got)
+	}
+	if got := resp.List[0]["snoozeWokeFor"]; got != nil {
+		t.Errorf("snoozeWokeFor = %v, want null", got)
+	}
+}
+
+// testEmailWakeMarkerFixture inserts a message, snoozes it to due, and
+// releases it through Metadata.ReleaseSnooze exactly as the wake-up
+// worker would -- driving the wire contract from the store side that
+// #274's worker actually calls, rather than duplicating the worker's
+// own release tests here.
+func testEmailWakeMarkerFixture(t *testing.T, f *fixture, subject string, due time.Time) store.Message {
+	t.Helper()
+	body := "From: a@example.test\r\nTo: b@example.test\r\nSubject: " + subject + "\r\n\r\nbody"
+	m := f.insertMessage(t, body, subject, "a@example.test", "b@example.test", nil, "")
+	if _, err := f.srv.Store.Meta().SetSnooze(context.Background(), m.ID, f.inbox.ID, &due, nil); err != nil {
+		t.Fatalf("SetSnooze: %v", err)
+	}
+	if _, err := f.srv.Store.Meta().ReleaseSnooze(context.Background(), m.ID, f.inbox.ID); err != nil {
+		t.Fatalf("ReleaseSnooze: %v", err)
+	}
+	return m
+}
+
+func TestEmailGet_RendersSnoozeWakeMarker(t *testing.T) {
+	testEmailGet_RendersSnoozeWakeMarker(t, setupFixture(t))
+}
+
+func TestEmailGet_RendersSnoozeWakeMarker_Postgres(t *testing.T) {
+	testEmailGet_RendersSnoozeWakeMarker(t, setupFixturePostgres(t))
+}
+
+func testEmailGet_RendersSnoozeWakeMarker(t *testing.T, f *fixture) {
+	t.Helper()
+	due := time.Date(2030, 4, 5, 6, 7, 8, 0, time.UTC)
+	m := testEmailWakeMarkerFixture(t, f, "woke", due)
+
+	_, raw := f.invoke(t, "Email/get", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"ids":       []string{fmt.Sprintf("%d", m.ID)},
+	})
+	var resp struct {
+		List []map[string]any `json:"list"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	if len(resp.List) != 1 {
+		t.Fatalf("got %d messages, want 1: %s", len(resp.List), raw)
+	}
+	wokeFor, ok := resp.List[0]["snoozeWokeFor"].(string)
+	if !ok {
+		t.Fatalf("snoozeWokeFor missing or not a string: %v", resp.List[0]["snoozeWokeFor"])
+	}
+	if wokeFor != due.UTC().Format("2006-01-02T15:04:05Z") {
+		t.Errorf("snoozeWokeFor = %q, want %q", wokeFor, due.UTC().Format("2006-01-02T15:04:05Z"))
+	}
+	if _, ok := resp.List[0]["snoozeWokeAt"].(string); !ok {
+		t.Fatalf("snoozeWokeAt missing or not a string: %v", resp.List[0]["snoozeWokeAt"])
+	}
+}
+
+func TestEmail_Changes_ReportsSnoozeWake(t *testing.T) {
+	testEmail_Changes_ReportsSnoozeWake(t, setupFixture(t))
+}
+
+func TestEmail_Changes_ReportsSnoozeWake_Postgres(t *testing.T) {
+	testEmail_Changes_ReportsSnoozeWake(t, setupFixturePostgres(t))
+}
+
+func testEmail_Changes_ReportsSnoozeWake(t *testing.T, f *fixture) {
+	t.Helper()
+	body := "From: a@example.test\r\nTo: b@example.test\r\nSubject: wake-changes\r\n\r\nbody"
+	m := f.insertMessage(t, body, "wake-changes", "a@example.test", "b@example.test", nil, "")
+	due := time.Date(2030, 4, 5, 6, 7, 8, 0, time.UTC)
+	if _, err := f.srv.Store.Meta().SetSnooze(context.Background(), m.ID, f.inbox.ID, &due, nil); err != nil {
+		t.Fatalf("SetSnooze: %v", err)
+	}
+
+	_, ge := f.invoke(t, "Email/get", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"ids":       []string{},
+	})
+	var geResp struct {
+		State string `json:"state"`
+	}
+	_ = json.Unmarshal(ge, &geResp)
+
+	if _, err := f.srv.Store.Meta().ReleaseSnooze(context.Background(), m.ID, f.inbox.ID); err != nil {
+		t.Fatalf("ReleaseSnooze: %v", err)
+	}
+
+	assertEmailChangeReportsUpdate(t, f, geResp.State, fmt.Sprintf("%d", m.ID))
+}
+
+func TestEmail_Changes_ReportsSeenClearsSnoozeWake(t *testing.T) {
+	testEmail_Changes_ReportsSeenClearsSnoozeWake(t, setupFixture(t))
+}
+
+func TestEmail_Changes_ReportsSeenClearsSnoozeWake_Postgres(t *testing.T) {
+	testEmail_Changes_ReportsSeenClearsSnoozeWake(t, setupFixturePostgres(t))
+}
+
+func testEmail_Changes_ReportsSeenClearsSnoozeWake(t *testing.T, f *fixture) {
+	t.Helper()
+	due := time.Date(2030, 4, 5, 6, 7, 8, 0, time.UTC)
+	m := testEmailWakeMarkerFixture(t, f, "seen-clears-wake", due)
+
+	_, ge := f.invoke(t, "Email/get", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"ids":       []string{},
+	})
+	var geResp struct {
+		State string `json:"state"`
+	}
+	_ = json.Unmarshal(ge, &geResp)
+
+	_, raw := f.invoke(t, "Email/set", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"update": map[string]any{
+			fmt.Sprintf("%d", m.ID): map[string]any{
+				"keywords": map[string]bool{"$seen": true},
+			},
+		},
+	})
+	var sr struct {
+		NotUpdated map[string]map[string]any `json:"notUpdated"`
+	}
+	if err := json.Unmarshal(raw, &sr); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	if len(sr.NotUpdated) != 0 {
+		t.Fatalf("notUpdated = %v", sr.NotUpdated)
+	}
+
+	assertEmailChangeReportsUpdate(t, f, geResp.State, fmt.Sprintf("%d", m.ID))
+
+	_, getRaw := f.invoke(t, "Email/get", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"ids":       []string{fmt.Sprintf("%d", m.ID)},
+	})
+	var getResp struct {
+		List []map[string]any `json:"list"`
+	}
+	if err := json.Unmarshal(getRaw, &getResp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, getRaw)
+	}
+	if got := getResp.List[0]["snoozeWokeAt"]; got != nil {
+		t.Errorf("snoozeWokeAt = %v after $seen, want null", got)
+	}
+	if got := getResp.List[0]["snoozeWokeFor"]; got != nil {
+		t.Errorf("snoozeWokeFor = %v after $seen, want null", got)
+	}
+}
+
+func TestEmail_Changes_ReportsResnoozeClearsSnoozeWake(t *testing.T) {
+	testEmail_Changes_ReportsResnoozeClearsSnoozeWake(t, setupFixture(t))
+}
+
+func TestEmail_Changes_ReportsResnoozeClearsSnoozeWake_Postgres(t *testing.T) {
+	testEmail_Changes_ReportsResnoozeClearsSnoozeWake(t, setupFixturePostgres(t))
+}
+
+func testEmail_Changes_ReportsResnoozeClearsSnoozeWake(t *testing.T, f *fixture) {
+	t.Helper()
+	due := time.Date(2030, 4, 5, 6, 7, 8, 0, time.UTC)
+	m := testEmailWakeMarkerFixture(t, f, "resnooze-clears-wake", due)
+
+	_, ge := f.invoke(t, "Email/get", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"ids":       []string{},
+	})
+	var geResp struct {
+		State string `json:"state"`
+	}
+	_ = json.Unmarshal(ge, &geResp)
+
+	due2 := "2030-06-01T12:00:00Z"
+	_, raw := f.invoke(t, "Email/set", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"update": map[string]any{
+			fmt.Sprintf("%d", m.ID): map[string]any{
+				"snoozedUntil": due2,
+			},
+		},
+	})
+	var sr struct {
+		NotUpdated map[string]map[string]any `json:"notUpdated"`
+	}
+	if err := json.Unmarshal(raw, &sr); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	if len(sr.NotUpdated) != 0 {
+		t.Fatalf("notUpdated = %v", sr.NotUpdated)
+	}
+
+	assertEmailChangeReportsUpdate(t, f, geResp.State, fmt.Sprintf("%d", m.ID))
+
+	_, getRaw := f.invoke(t, "Email/get", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"ids":       []string{fmt.Sprintf("%d", m.ID)},
+	})
+	var getResp struct {
+		List []map[string]any `json:"list"`
+	}
+	if err := json.Unmarshal(getRaw, &getResp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, getRaw)
+	}
+	if got := getResp.List[0]["snoozeWokeAt"]; got != nil {
+		t.Errorf("snoozeWokeAt = %v after resnooze, want null", got)
+	}
+	if got := getResp.List[0]["snoozeWokeFor"]; got != nil {
+		t.Errorf("snoozeWokeFor = %v after resnooze, want null", got)
+	}
+}
+
+// assertEmailChangeReportsUpdate asserts that Email/changes since
+// sinceState reports wantID among either Created or Updated -- a fresh
+// create-and-immediately-snooze fixture's first observable change may
+// still be folded into Created rather than Updated depending on
+// state-cursor granularity, so both are accepted.
+func assertEmailChangeReportsUpdate(t *testing.T, f *fixture, sinceState, wantID string) {
+	t.Helper()
+	_, raw := f.invoke(t, "Email/changes", map[string]any{
+		"accountId":  protojmap.AccountIDForPrincipal(f.pid),
+		"sinceState": sinceState,
+	})
+	var resp struct {
+		Created []string `json:"created"`
+		Updated []string `json:"updated"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	for _, c := range resp.Created {
+		if c == wantID {
+			return
+		}
+	}
+	for _, u := range resp.Updated {
+		if u == wantID {
+			return
+		}
+	}
+	t.Fatalf("Email/changes since %s reports neither created nor updated for %s (raw=%s)", sinceState, wantID, raw)
+}
+
 func TestEmailSet_SnoozeWithExplicitWakeDestination(t *testing.T) {
 	f := setupFixture(t)
 	body := "From: a@example.test\r\nTo: b@example.test\r\nSubject: hi\r\n\r\nhi"

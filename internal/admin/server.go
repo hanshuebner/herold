@@ -1439,8 +1439,9 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 
 	// Snooze wake-up worker — Phase 2 REQ-PROTO-49. Polls
 	// Metadata.ListDueSnoozedMessages and clears the per-message
-	// snooze pair atomically through Metadata.SetSnooze. Bounded by
-	// the lifecycle errgroup so shutdown drains it.
+	// snooze pair, plus records the wake marker (issue #469), atomically
+	// through Metadata.ReleaseSnooze. Bounded by the lifecycle errgroup
+	// so shutdown drains it.
 	snoozeWorker := snooze.NewWorker(snooze.Options{
 		Store:        st,
 		Logger:       logger.With("subsystem", "snooze"),

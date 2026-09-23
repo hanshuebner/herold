@@ -79,6 +79,13 @@ type jmapEmail struct {
 	// property renders the resolved (or explicitly chosen) destination
 	// once a snooze is in force.
 	SnoozeWakeMailboxID *jmapID `json:"snoozeWakeMailboxId"`
+	// SnoozeWokeAt and SnoozeWokeFor are the JMAP snooze wake marker
+	// (issue #469, REQ-PROTO-49): the instant the wake-up worker
+	// released a due reminder and the deadline that fell due. Both
+	// null when no reminder has fired, or once the marker is cleared
+	// (the message gains $seen, or is snoozed again).
+	SnoozeWokeAt  *string `json:"snoozeWokeAt"`
+	SnoozeWokeFor *string `json:"snoozeWokeFor"`
 	// Reactions is the email reactions extension property
 	// (REQ-PROTO-100, capability https://netzhansa.com/jmap/email-reactions).
 	// Shape: {"<emoji>": ["<principal-id>", ...], ...}. Sparse — emojis
@@ -170,6 +177,8 @@ type jmapEmailWire struct {
 	ReceivedAt                string               `json:"receivedAt"`
 	SnoozedUntil              *string              `json:"snoozedUntil"`
 	SnoozeWakeMailboxID       *jmapID              `json:"snoozeWakeMailboxId"`
+	SnoozeWokeAt              *string              `json:"snoozeWokeAt"`
+	SnoozeWokeFor             *string              `json:"snoozeWokeFor"`
 	Reactions                 map[string][]string  `json:"reactions,omitempty"`
 	From                      []jmapAddress        `json:"from,omitempty"`
 	To                        []jmapAddress        `json:"to,omitempty"`
@@ -209,6 +218,8 @@ func (e jmapEmail) MarshalJSON() ([]byte, error) {
 		ReceivedAt:                e.ReceivedAt,
 		SnoozedUntil:              e.SnoozedUntil,
 		SnoozeWakeMailboxID:       e.SnoozeWakeMailboxID,
+		SnoozeWokeAt:              e.SnoozeWokeAt,
+		SnoozeWokeFor:             e.SnoozeWokeFor,
 		Reactions:                 e.Reactions,
 		From:                      e.From,
 		To:                        e.To,

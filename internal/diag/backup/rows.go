@@ -324,6 +324,15 @@ type MessageRow struct {
 	// counterparts for the same reason.
 	RetryableFailedImageCount int64  `json:"retryable_failed_image_count,omitempty"`
 	FailedImageReason         string `json:"failed_image_reason,omitempty"`
+	// SnoozeWokeAtUs and SnoozeWokeForUs are the migration-0116 JMAP
+	// snooze wake marker (issue #469): the instant the wake-up worker
+	// released a due reminder, and the deadline that fell due. Both
+	// nil until a reminder has fired, or once the marker clears
+	// (message gains $seen, or is snoozed again). Restoring them keeps
+	// a just-woken message's "why is this back" indication intact
+	// across a backup/restore instead of silently losing it.
+	SnoozeWokeAtUs  *int64 `json:"snooze_woke_at_us,omitempty"`
+	SnoozeWokeForUs *int64 `json:"snooze_woke_for_us,omitempty"`
 }
 
 // MessageMailboxRow mirrors one row of the message_mailboxes join table

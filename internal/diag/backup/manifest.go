@@ -926,7 +926,16 @@ const CurrentBackupVersion = 1
 //	being inserted right now as an ancestor" -- the late-ancestor
 //	thread-merge lookup -- into a single indexed lookup instead of a
 //	per-principal LIKE scan. New table; MessageReferenceRow.
-const CurrentSchemaVersion = 115
+//
+// 116 — 0116_snooze_wake_marker.sql (issue #469). Adds
+//
+//	messages.snooze_woke_at_us and messages.snooze_woke_for_us (both
+//	nullable): the instant the JMAP snooze wake-up worker released a
+//	due reminder, and the deadline that fell due. Surfaced as
+//	Email.snoozeWokeAt / snoozeWokeFor; cleared when the message gains
+//	$seen or is snoozed again. No new table; MessageRow gains the two
+//	fields.
+const CurrentSchemaVersion = 116
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

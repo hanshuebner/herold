@@ -481,6 +481,40 @@ func TestWorker_WakeDefaultsToInbox_Postgres(t *testing.T) {
 	testWakeDefaultsToInbox(t, newFixturePostgres(t))
 }
 
+// testWorkerRecordsWakeMarker covers the wake marker end to end
+// through the worker's own release path (issue #469): a message
+// snoozed to a due-in-the-past deadline is released by one tick, and
+// GetMessage afterwards shows SnoozeWokeAt around "now" (the release
+// instant) and SnoozeWokeFor equal to the deadline that fell due.
+func testWorkerRecordsWakeMarker(t *testing.T, f *fixture) {
+	due := time.Date(2030, 1, 1, 1, 0, 0, 0, time.UTC)
+	id := f.snoozeMessage(t, "wake-marker", due)
+
+	w := newWorker(f)
+	f.clk.Advance(2 * time.Hour)
+	releaseAt := f.clk.Now()
+	runToRelease(t, w, 1)
+
+	m, err := f.store.Meta().GetMessage(context.Background(), id)
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	if m.SnoozeWokeFor == nil || !m.SnoozeWokeFor.Equal(due) {
+		t.Fatalf("SnoozeWokeFor = %v, want %v", m.SnoozeWokeFor, due)
+	}
+	if m.SnoozeWokeAt == nil || !m.SnoozeWokeAt.Equal(releaseAt) {
+		t.Fatalf("SnoozeWokeAt = %v, want %v", m.SnoozeWokeAt, releaseAt)
+	}
+}
+
+func TestWorker_RecordsWakeMarker(t *testing.T) {
+	testWorkerRecordsWakeMarker(t, newFixture(t))
+}
+
+func TestWorker_RecordsWakeMarker_Postgres(t *testing.T) {
+	testWorkerRecordsWakeMarker(t, newFixturePostgres(t))
+}
+
 // TestWorker_NoInbox_WakesInPlace covers the fallback when a
 // principal has no resolvable Inbox at all: the message wakes in its
 // origin mailbox with no membership add.

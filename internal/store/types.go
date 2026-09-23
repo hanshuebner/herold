@@ -788,6 +788,22 @@ type Message struct {
 	// failedImageReason (null when empty).
 	FailedImageReason string
 
+	// SnoozeWokeAt and SnoozeWokeFor are the wake marker for the JMAP
+	// snooze extension (issue #469): the instant the wake-up worker
+	// released a due snooze, and the deadline (the erstwhile
+	// SnoozedUntil) that fell due. Both nil until a reminder has fired
+	// and stay nil, or return to nil, once the marker is cleared.
+	// Message-level (unlike SnoozedUntil, which is per-mailbox
+	// membership) because a wake can add the message to a mailbox
+	// other than the one the snooze was set from -- the marker must
+	// still be visible there. Written by Metadata.ReleaseSnooze;
+	// cleared by Metadata.UpdateMessageFlags when the message gains
+	// $seen and by Metadata.SetSnooze when the message is snoozed
+	// again. Exposed to JMAP Email/get as snoozeWokeAt / snoozeWokeFor
+	// (both UTCDate, null when unset).
+	SnoozeWokeAt  *time.Time
+	SnoozeWokeFor *time.Time
+
 	// Preview is the precomputed RFC 8621 Email.preview value: the first
 	// 256 characters of the plain-text body. Empty string when
 	// BodyMetaComputed is false (not yet computed by the background

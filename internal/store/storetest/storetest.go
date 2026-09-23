@@ -339,6 +339,10 @@ func Run(t *testing.T, f Factory) {
 		{"Snooze_ResolveInboxMailbox_None", testResolveInboxMailboxNone},
 		// -- issue #274 (2026-09-22 update): reminder-ending rule ---
 		{"Snooze_SurvivesIncidentalOperations", testSnoozeSurvivesIncidentalOperations},
+		// -- issue #469: wake marker (snoozeWokeAt / snoozeWokeFor) --
+		{"Snooze_WakeMarker_RecordedOnRelease", testReleaseSnoozeRecordsWakeMarker},
+		{"Snooze_WakeMarker_ClearedOnSeen", testSnoozeWakeMarkerClearedOnSeen},
+		{"Snooze_WakeMarker_ClearedOnResnooze", testSnoozeWakeMarkerClearedOnResnooze},
 		// -- REQ-FILT-200..221 LLM categorisation -----------------
 		{"CategorisationConfig_DefaultsSeededOnFirstRead", testCategorisationConfigDefaults},
 		{"CategorisationConfig_RoundTrip", testCategorisationConfigRoundtrip},
@@ -8822,6 +8826,186 @@ func testSnoozeSurvivesIncidentalOperations(t *testing.T, s store.Store) {
 		t.Fatalf("MoveMessage: %v", err)
 	}
 	assertStillSnoozed("after move", archive.ID)
+}
+
+// -- issue #469: wake marker (snoozeWokeAt / snoozeWokeFor) ----------
+
+// lastChangeSeq returns the highest ChangeSeq currently on p's change
+// feed, used as a cursor so a test can assert on exactly the rows a
+// later call appends.
+func lastChangeSeq(t *testing.T, s store.Store, pid store.PrincipalID) store.ChangeSeq {
+	t.Helper()
+	feed, err := s.Meta().ReadChangeFeed(ctxT(t), pid, 0, 1000)
+	if err != nil {
+		t.Fatalf("ReadChangeFeed: %v", err)
+	}
+	var cursor store.ChangeSeq
+	for _, e := range feed {
+		if e.Seq > cursor {
+			cursor = e.Seq
+		}
+	}
+	return cursor
+}
+
+// assertEmailUpdatedSince asserts that the change feed appended at
+// least one (EntityKindEmail, ChangeOpUpdated) row for id since cursor.
+func assertEmailUpdatedSince(t *testing.T, s store.Store, pid store.PrincipalID, cursor store.ChangeSeq, id store.MessageID) {
+	t.Helper()
+	tail, err := s.Meta().ReadChangeFeed(ctxT(t), pid, cursor, 1000)
+	if err != nil {
+		t.Fatalf("ReadChangeFeed tail: %v", err)
+	}
+	for _, e := range tail {
+		if e.Kind == store.EntityKindEmail && e.Op == store.ChangeOpUpdated && e.EntityID == uint64(id) {
+			return
+		}
+	}
+	t.Fatalf("no (Email, Updated, %d) row in tail %+v", id, tail)
+}
+
+// testReleaseSnoozeRecordsWakeMarker covers the wake-worker release
+// path (issue #469): a never-snoozed message reports null for both
+// wake-marker properties; ReleaseSnooze clears the snooze pair exactly
+// like SetSnooze(nil, nil) and additionally stamps
+// messages.snooze_woke_at_us / snooze_woke_for_us (surfaced as
+// Email.snoozeWokeAt / snoozeWokeFor), in the same state-change row
+// SetSnooze itself would have appended.
+func testReleaseSnoozeRecordsWakeMarker(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "snooze-wake-marker@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+	ref := putBlob(t, s, "snooze-wake-marker-body")
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{PrincipalID: p.ID, Blob: ref, Size: ref.Size}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	id := firstMessageIDFromFeed(t, s, p.ID)
+
+	before, err := s.Meta().GetMessage(ctx, id)
+	if err != nil {
+		t.Fatalf("GetMessage (never snoozed): %v", err)
+	}
+	if before.SnoozeWokeAt != nil || before.SnoozeWokeFor != nil {
+		t.Fatalf("SnoozeWokeAt/For = %v/%v on a never-snoozed message, want nil/nil",
+			before.SnoozeWokeAt, before.SnoozeWokeFor)
+	}
+
+	due := time.Date(2030, 5, 6, 7, 8, 9, 0, time.UTC)
+	if _, err := s.Meta().SetSnooze(ctx, id, mb.ID, &due, nil); err != nil {
+		t.Fatalf("SetSnooze: %v", err)
+	}
+
+	cursor := lastChangeSeq(t, s, p.ID)
+	if _, err := s.Meta().ReleaseSnooze(ctx, id, mb.ID); err != nil {
+		t.Fatalf("ReleaseSnooze: %v", err)
+	}
+	assertEmailUpdatedSince(t, s, p.ID, cursor, id)
+
+	got, err := s.Meta().GetMessage(ctx, id)
+	if err != nil {
+		t.Fatalf("GetMessage (after release): %v", err)
+	}
+	if got.SnoozedUntil != nil {
+		t.Fatalf("SnoozedUntil = %v after release, want nil", got.SnoozedUntil)
+	}
+	if snoozeKeywordPresent(got) {
+		t.Fatalf("$snoozed keyword still present after release: %v", got.Keywords)
+	}
+	if got.SnoozeWokeFor == nil || !got.SnoozeWokeFor.Equal(due) {
+		t.Fatalf("SnoozeWokeFor = %v, want %v", got.SnoozeWokeFor, due)
+	}
+	if got.SnoozeWokeAt == nil {
+		t.Fatalf("SnoozeWokeAt = nil, want set")
+	}
+}
+
+// testSnoozeWakeMarkerClearedOnSeen covers the first of the two
+// clearing rules (issue #469): the message gaining $seen through
+// UpdateMessageFlags clears both wake-marker properties and appends
+// its own state-change row.
+func testSnoozeWakeMarkerClearedOnSeen(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "snooze-wake-marker-seen@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+	ref := putBlob(t, s, "snooze-wake-marker-seen-body")
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{PrincipalID: p.ID, Blob: ref, Size: ref.Size}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	id := firstMessageIDFromFeed(t, s, p.ID)
+	due := time.Date(2030, 5, 6, 7, 8, 9, 0, time.UTC)
+	if _, err := s.Meta().SetSnooze(ctx, id, mb.ID, &due, nil); err != nil {
+		t.Fatalf("SetSnooze: %v", err)
+	}
+	if _, err := s.Meta().ReleaseSnooze(ctx, id, mb.ID); err != nil {
+		t.Fatalf("ReleaseSnooze: %v", err)
+	}
+	woken, err := s.Meta().GetMessage(ctx, id)
+	if err != nil {
+		t.Fatalf("GetMessage (woken): %v", err)
+	}
+	if woken.SnoozeWokeAt == nil || woken.SnoozeWokeFor == nil {
+		t.Fatalf("SnoozeWokeAt/For = %v/%v after release, want both set", woken.SnoozeWokeAt, woken.SnoozeWokeFor)
+	}
+
+	cursor := lastChangeSeq(t, s, p.ID)
+	if _, err := s.Meta().UpdateMessageFlags(ctx, id, mb.ID, store.MessageFlagSeen, 0, nil, nil, 0); err != nil {
+		t.Fatalf("UpdateMessageFlags(seen): %v", err)
+	}
+	assertEmailUpdatedSince(t, s, p.ID, cursor, id)
+
+	got, err := s.Meta().GetMessage(ctx, id)
+	if err != nil {
+		t.Fatalf("GetMessage (after seen): %v", err)
+	}
+	if got.SnoozeWokeAt != nil || got.SnoozeWokeFor != nil {
+		t.Fatalf("SnoozeWokeAt/For = %v/%v after $seen, want nil/nil", got.SnoozeWokeAt, got.SnoozeWokeFor)
+	}
+}
+
+// testSnoozeWakeMarkerClearedOnResnooze covers the second clearing
+// rule (issue #469): setting a fresh snooze via SetSnooze clears a
+// wake marker left by an earlier, unread wake.
+func testSnoozeWakeMarkerClearedOnResnooze(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "snooze-wake-marker-resnooze@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+	ref := putBlob(t, s, "snooze-wake-marker-resnooze-body")
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{PrincipalID: p.ID, Blob: ref, Size: ref.Size}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	id := firstMessageIDFromFeed(t, s, p.ID)
+	due := time.Date(2030, 5, 6, 7, 8, 9, 0, time.UTC)
+	if _, err := s.Meta().SetSnooze(ctx, id, mb.ID, &due, nil); err != nil {
+		t.Fatalf("SetSnooze: %v", err)
+	}
+	if _, err := s.Meta().ReleaseSnooze(ctx, id, mb.ID); err != nil {
+		t.Fatalf("ReleaseSnooze: %v", err)
+	}
+	woken, err := s.Meta().GetMessage(ctx, id)
+	if err != nil {
+		t.Fatalf("GetMessage (woken): %v", err)
+	}
+	if woken.SnoozeWokeAt == nil || woken.SnoozeWokeFor == nil {
+		t.Fatalf("SnoozeWokeAt/For = %v/%v after release, want both set", woken.SnoozeWokeAt, woken.SnoozeWokeFor)
+	}
+
+	due2 := due.Add(24 * time.Hour)
+	cursor := lastChangeSeq(t, s, p.ID)
+	if _, err := s.Meta().SetSnooze(ctx, id, mb.ID, &due2, nil); err != nil {
+		t.Fatalf("SetSnooze (again): %v", err)
+	}
+	assertEmailUpdatedSince(t, s, p.ID, cursor, id)
+
+	got, err := s.Meta().GetMessage(ctx, id)
+	if err != nil {
+		t.Fatalf("GetMessage (after resnooze): %v", err)
+	}
+	if got.SnoozeWokeAt != nil || got.SnoozeWokeFor != nil {
+		t.Fatalf("SnoozeWokeAt/For = %v/%v after resnooze, want nil/nil", got.SnoozeWokeAt, got.SnoozeWokeFor)
+	}
+	if got.SnoozedUntil == nil || !got.SnoozedUntil.Equal(due2) {
+		t.Fatalf("SnoozedUntil = %v, want %v", got.SnoozedUntil, due2)
+	}
 }
 
 // testResolveInboxMailboxByAttribute covers the primary resolution

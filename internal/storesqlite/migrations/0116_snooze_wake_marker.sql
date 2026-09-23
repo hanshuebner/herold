@@ -1,0 +1,34 @@
+-- 0116_snooze_wake_marker.sql -- wake marker for the JMAP snooze
+-- extension (issue #469).
+--
+-- The wake-up worker (issue #274) cleared a due snooze in place and
+-- kept no record of the event: once released, a message that just
+-- came back from a reminder was indistinguishable from one that had
+-- never been snoozed. This migration adds the record that lets the
+-- Suite and Android clients say "this came back because a reminder
+-- fell due" until the message is read.
+--
+-- snooze_woke_at_us: the instant the wake-up worker released the
+-- snooze. snooze_woke_for_us: the deadline (the erstwhile
+-- snoozed_until_us) that fell due. Both NULL until a reminder has
+-- fired and NULL again once the marker clears. Message-level rather
+-- than a message_mailboxes column: a wake often ADDS the message to a
+-- mailbox other than the one the snooze was set from (issue #274's
+-- wake-destination resolution), and the marker must still be visible
+-- there, so it cannot live on the per-membership row snoozed_until_us
+-- itself uses.
+--
+-- Written by Metadata.ReleaseSnooze; cleared by
+-- Metadata.UpdateMessageFlags when the message gains $seen and by
+-- Metadata.SetSnooze when the message is snoozed again. Exposed to
+-- JMAP Email/get as snoozeWokeAt / snoozeWokeFor (both UTCDate, null
+-- when unset).
+--
+-- No backfill: no prior release recorded a wake instant or deadline to
+-- recover, so every existing row is correctly NULL/NULL (indicating
+-- "no reminder has fired, or none is remembered").
+--
+-- Forward-only. Mirrors storepg 0116.
+
+ALTER TABLE messages ADD COLUMN snooze_woke_at_us INTEGER;
+ALTER TABLE messages ADD COLUMN snooze_woke_for_us INTEGER;

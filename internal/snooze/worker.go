@@ -111,10 +111,11 @@ func (w *Worker) PollInterval() time.Duration { return w.poll }
 func (w *Worker) BatchSize() int { return w.batch }
 
 // Run drives the wake-up loop until ctx is cancelled. Each tick
-// calls ListDueSnoozedMessages and then SetSnooze(nil) for every
-// returned row; when a tick releases a full batch the next tick
-// fires immediately so backlogs drain without waiting a full poll
-// interval.
+// calls ListDueSnoozedMessages and then ReleaseSnooze for every
+// returned row, which clears the snooze pair and records the wake
+// marker (issue #469: Email.snoozeWokeAt / snoozeWokeFor); when a tick
+// releases a full batch the next tick fires immediately so backlogs
+// drain without waiting a full poll interval.
 //
 // Returns nil on ctx cancellation; non-nil only on an unrecoverable
 // store failure (the lifecycle errgroup logs and triggers shutdown).
@@ -244,12 +245,12 @@ func (w *Worker) tick(ctx context.Context) (int, error) {
 				return 0, fmt.Errorf("snooze: record arrival %d at mailbox %d: %w", msg.ID, dest, err)
 			}
 		}
-		if _, err := w.store.Meta().SetSnooze(ctx, msg.ID, msg.MailboxID, nil, nil); err != nil {
+		if _, err := w.store.Meta().ReleaseSnooze(ctx, msg.ID, msg.MailboxID); err != nil {
 			if errors.Is(err, store.ErrNotFound) {
-				// Message was expunged between list and set; skip.
+				// Message was expunged between list and release; skip.
 				continue
 			}
-			return 0, fmt.Errorf("snooze: clear %d: %w", msg.ID, err)
+			return 0, fmt.Errorf("snooze: release %d: %w", msg.ID, err)
 		}
 		w.released.Add(1)
 		observe.SnoozeMessagesWokenTotal.Inc()

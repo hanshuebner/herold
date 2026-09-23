@@ -260,8 +260,9 @@ func seedFidelityRows(t *testing.T, db *sql.DB) {
 	        env_references, env_date_us, ingest_source, ingest_source_ref,
 	        internalize_pending, preview, has_attachment, body_meta_computed,
 	        failed_image_count, failed_image_state,
-	        retryable_failed_image_count, failed_image_reason)
-	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	        retryable_failed_image_count, failed_image_reason,
+	        snooze_woke_at_us, snooze_woke_for_us)
+	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		1, 1, int64(1000000), int64(1000001), 512,
 		"aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899", 512,
 		100, longUnicode, "alice@example.test", "bob@example.test",
@@ -269,7 +270,12 @@ func seedFidelityRows(t *testing.T, db *sql.DB) {
 		"", int64(1000000), "imap-import", "acct-classic-computing",
 		1, "The quick brown fox previews here", 1, 1,
 		2, "opaque-retained-failed-image-state",
-		1, "blocked_by_policy")
+		1, "blocked_by_policy",
+		// snooze_woke_at_us / snooze_woke_for_us (migration 0116, issue
+		// #469): message 1 exercises the non-null wake-marker case; the
+		// llm_classifications second message row below (id 2) leaves both
+		// columns unset, exercising the null case.
+		int64(1500000), int64(1400000))
 
 	// message_mailboxes
 	exec(`INSERT INTO message_mailboxes (message_id, mailbox_id, uid, modseq, flags, keywords_csv, snoozed_until_us, wake_mailbox_id, received_to)

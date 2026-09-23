@@ -67,9 +67,10 @@ func RegisterWithOptions(
 
 	// JMAP snooze capability (REQ-PROTO-49). Property-only; the
 	// snoozedUntil field and the "$snoozed" keyword piggyback on
-	// Email/get and Email/set. Advertise the capability so clients
-	// can detect support; the descriptor is the empty object per the
-	// IETF draft.
+	// Email/get and Email/set, and so do the read-only wake-marker
+	// properties snoozeWokeAt / snoozeWokeFor (issue #469). Advertise
+	// the capability so clients can detect support; the descriptor is
+	// the empty object per the IETF draft.
 	reg.RegisterCapabilityDescriptor(protojmap.CapabilityMailSnooze, struct{}{})
 
 	// JMAP Sieve datatype (REQ-PROTO-53 / RFC 9007). Sub-package
