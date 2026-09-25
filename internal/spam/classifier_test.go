@@ -1195,6 +1195,124 @@ func TestClassify_WithDecisiveSpamSignalsEmptyDisablesResolution(t *testing.T) {
 	}
 }
 
+// TestClassify_HamVerdictWithSynonymNamedSpamSignalResolvedToSpam is the
+// #489 regression test for message 3971's production record: the model
+// reported verdict=ham, score=0.25, and spam_signals naming
+// "commercial_promotion" and "unsolicited_marketing_pitch" -- the same
+// unsolicited-bulk-marketing trait DefaultDecisiveSpamSignals names as
+// "unsolicited_bulk_marketing", spelled differently. matchDecisiveSignal's
+// exact-name comparison against that literal left the contradiction only
+// flagged (Inconsistent) and the message delivered to Inbox; this fix
+// normalises both the direct synonym and the commercial_promotion +
+// unsolicited_* combination onto the canonical name before matching, so
+// the ham verdict resolves to Spam regardless of which spelling the model
+// used. DecisiveSignalMatch carries the canonical name matched, for the
+// transparency record.
+func TestClassify_HamVerdictWithSynonymNamedSpamSignalResolvedToSpam(t *testing.T) {
+	invoker := newFakeInvoker()
+	invoker.handle("herold-spam-llm", ClassifyMethod, func(_ context.Context, _ any) (json.RawMessage, error) {
+		return json.RawMessage(`{"verdict":"ham","score":0.25,"reason":"This is a legitimate educational workshop promotion from an authenticated sender with proper mailing list infrastructure, not unsolicited bulk marketing.","spam_signals":["commercial_promotion","unsolicited_marketing_pitch"],"ham_signals":["passing_authentication","list_id_present","list_unsubscribe_header","educational_content","legitimate_business_training"]}`), nil
+	})
+	c := New(invoker, silentLogger(), clock.NewFake(time.Now()))
+	r, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "herold-spam-llm", ClassifyContext{}, OwnAddressInfo{})
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if r.Verdict != Spam {
+		t.Fatalf("verdict = %v, want Spam (commercial_promotion + unsolicited_marketing_pitch names the decisive unsolicited_bulk_marketing trait under a synonym)", r.Verdict)
+	}
+	if r.ModelVerdict != Ham {
+		t.Fatalf("ModelVerdict = %v, want Ham (the plugin's own verdict is preserved for the transparency record)", r.ModelVerdict)
+	}
+	if !r.Inconsistent {
+		t.Fatalf("Inconsistent = false, want true")
+	}
+	if r.DecisiveSignalMatch != "unsolicited_bulk_marketing" {
+		t.Fatalf("DecisiveSignalMatch = %q, want unsolicited_bulk_marketing (the canonical name the synonym normalises onto)", r.DecisiveSignalMatch)
+	}
+	// The persisted signals keep the model's own reported names verbatim
+	// -- normalization only affects the decisiveness check, never what is
+	// stored for the transparency record.
+	if !reflect.DeepEqual(r.SpamSignals, []string{"commercial_promotion", "unsolicited_marketing_pitch"}) {
+		t.Fatalf("SpamSignals = %v, want the model's own reported names unchanged", r.SpamSignals)
+	}
+}
+
+// TestClassify_HamVerdictWithColdMarketingPitchSynonymResolvedToSpam
+// verifies the second recognised direct synonym, "cold_marketing_pitch"
+// (re #489).
+func TestClassify_HamVerdictWithColdMarketingPitchSynonymResolvedToSpam(t *testing.T) {
+	invoker := newFakeInvoker()
+	invoker.handle("p", ClassifyMethod, func(_ context.Context, _ any) (json.RawMessage, error) {
+		return json.RawMessage(`{"verdict":"ham","score":0.2,"reason":"x","spam_signals":["cold_marketing_pitch"],"ham_signals":[]}`), nil
+	})
+	c := New(invoker, silentLogger(), clock.NewFake(time.Now()))
+	r, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "p", ClassifyContext{}, OwnAddressInfo{})
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if r.Verdict != Spam {
+		t.Fatalf("verdict = %v, want Spam (cold_marketing_pitch is a recognised synonym for unsolicited_bulk_marketing)", r.Verdict)
+	}
+	if r.DecisiveSignalMatch != "unsolicited_bulk_marketing" {
+		t.Fatalf("DecisiveSignalMatch = %q, want unsolicited_bulk_marketing", r.DecisiveSignalMatch)
+	}
+}
+
+// TestClassify_HamVerdictWithCommercialPromotionAloneOnlyFlagged verifies
+// that "commercial_promotion" alone -- without any "unsolicited_*"-named
+// signal alongside it -- is not decisive: the combination rule requires
+// both (re #489), not commercial_promotion by itself, which is common on
+// legitimate newsletters a recipient did subscribe to.
+func TestClassify_HamVerdictWithCommercialPromotionAloneOnlyFlagged(t *testing.T) {
+	invoker := newFakeInvoker()
+	invoker.handle("p", ClassifyMethod, func(_ context.Context, _ any) (json.RawMessage, error) {
+		return json.RawMessage(`{"verdict":"ham","score":0.2,"reason":"x","spam_signals":["commercial_promotion"],"ham_signals":["known_correspondent"]}`), nil
+	})
+	c := New(invoker, silentLogger(), clock.NewFake(time.Now()))
+	r, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "p", ClassifyContext{}, OwnAddressInfo{})
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if r.Verdict != Ham {
+		t.Fatalf("verdict = %v, want Ham (commercial_promotion alone is not decisive)", r.Verdict)
+	}
+	if !r.Inconsistent {
+		t.Fatalf("Inconsistent = false, want true")
+	}
+	if r.DecisiveSignalMatch != "" {
+		t.Fatalf("DecisiveSignalMatch = %q, want empty (no resolution happened)", r.DecisiveSignalMatch)
+	}
+}
+
+// TestNormalizeSpamSignals verifies the synonym-normalisation helper
+// directly (re #489): direct renames, the commercial_promotion +
+// unsolicited_* combination, idempotence on an already-canonical name,
+// and that unrelated signals pass through untouched.
+func TestNormalizeSpamSignals(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{"direct synonym", []string{"unsolicited_marketing_pitch"}, []string{"unsolicited_marketing_pitch", "unsolicited_bulk_marketing"}},
+		{"cold pitch synonym", []string{"cold_marketing_pitch"}, []string{"cold_marketing_pitch", "unsolicited_bulk_marketing"}},
+		{"combination", []string{"commercial_promotion", "unsolicited_marketing_pitch"}, []string{"commercial_promotion", "unsolicited_marketing_pitch", "unsolicited_bulk_marketing"}},
+		{"commercial_promotion alone does not combine", []string{"commercial_promotion"}, []string{"commercial_promotion"}},
+		{"already canonical is idempotent", []string{"unsolicited_bulk_marketing"}, []string{"unsolicited_bulk_marketing"}},
+		{"unrelated signal untouched", []string{"urgency_pressure"}, []string{"urgency_pressure"}},
+		{"empty stays empty", nil, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := normalizeSpamSignals(tc.in)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("normalizeSpamSignals(%v) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestMatchDecisiveSignal_ANDGroupRequiresAllNames verifies a "+"-joined
 // decisive entry only matches when every named signal is present, not
 // on a partial match.

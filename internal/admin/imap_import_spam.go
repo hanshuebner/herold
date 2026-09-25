@@ -273,6 +273,12 @@ func (a *imapImportSpamAdapter) RecordVerdict(ctx context.Context, principalID s
 	if classification.ModelVerdict != spam.Unclassified {
 		mv := classification.ModelVerdict.String()
 		rec.SpamModelVerdict = &mv
+		// SpamDecisiveSignalMatch (re #489) names the canonical
+		// decisive-signal rule matched after synonym normalization.
+		if classification.DecisiveSignalMatch != "" {
+			dm := classification.DecisiveSignalMatch
+			rec.SpamDecisiveSignalMatch = &dm
+		}
 	}
 	// Build the user-visible prompt-as-applied the same way protosmtp's
 	// persistLLMRecord does: the structured spam.Request context sent to

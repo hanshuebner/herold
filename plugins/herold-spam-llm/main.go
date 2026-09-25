@@ -145,7 +145,7 @@ const builtinSystemPrompt = `You are a spam classifier. Return ONLY a single JSO
 Do not include any other text.
 Score is your confidence that the message is spam.
 Consider: authentication results (DKIM/SPF/DMARC), subject, from, body text.
-spam_signals lists every trait you relied on that argues the message is spam (e.g. "unsolicited_bulk_marketing", "urgency_pressure"); ham_signals lists every trait arguing it is not (e.g. "known_correspondent", "passing_authentication"). Use short snake_case names. Your verdict and score MUST follow from the balance of these signals: a message whose spam_signals include unsolicited bulk marketing is spam even when authentication passes and a List-Unsubscribe header is present -- passing authentication and an unsubscribe link are not, by themselves, ham signals that outweigh unsolicited commercial content.
+spam_signals lists every trait you relied on that argues the message is spam; ham_signals lists every trait arguing it is not. Use the exact name "unsolicited_bulk_marketing" for an unsolicited commercial pitch -- never a different phrase for the same trait (e.g. not "unsolicited_marketing_pitch" or "cold_marketing_pitch"). Other spam_signals names: "unauthenticated_sender", "dmarc_fail", "phishing", "recipient_not_own", "bulk_list_relay", "urgency_pressure", "commercial_promotion". Other ham_signals names: "known_correspondent", "passing_authentication", "list_id_present", "list_unsubscribe_header", "educational_content", "legitimate_business_training". For a trait outside these fixed names, report "other:<short description>" rather than inventing a new bare name. Your verdict and score MUST follow from the balance of these signals: a message whose spam_signals include unsolicited bulk marketing is spam even when authentication passes and a List-Unsubscribe header is present -- passing authentication and an unsubscribe link are not, by themselves, ham signals that outweigh unsolicited commercial content.
 When the request carries "auth_summary", treat it as an authoritative, already-verified statement about the sender's identity: do not contradict it, and never describe a sender it says is verified as spoofed, forged, or impersonating. Judge such a message on its content, not on its identity.
 When the request carries "own_addresses", every "to"/"cc" address listed there belongs to the mailbox owner. Never cite such an address as "scraped", "not one the owner uses", or any variant of that signal -- the owner receives mail there.
 When the request carries "recipient_not_own": true, no "to"/"cc" address belongs to the mailbox owner; herold has already determined this and will record "recipient_not_own" in spam_signals regardless of your answer, so weigh it as a real fact about the message, not merely a possibility to consider.`
@@ -161,7 +161,7 @@ const builtinClassifySystemPrompt = `You are a spam classifier and mail categori
 Do not include any other text.
 Score is your confidence that the message is spam.
 Consider: authentication results (DKIM/SPF/DMARC), subject, from, body text.
-spam_signals lists every trait you relied on that argues the message is spam (e.g. "unsolicited_bulk_marketing", "urgency_pressure"); ham_signals lists every trait arguing it is not (e.g. "known_correspondent", "passing_authentication"). Use short snake_case names. Your verdict and score MUST follow from the balance of these signals: a message whose spam_signals include unsolicited bulk marketing is spam even when authentication passes and a List-Unsubscribe header is present -- passing authentication and an unsubscribe link are not, by themselves, ham signals that outweigh unsolicited commercial content.
+spam_signals lists every trait you relied on that argues the message is spam; ham_signals lists every trait arguing it is not. Use the exact name "unsolicited_bulk_marketing" for an unsolicited commercial pitch -- never a different phrase for the same trait (e.g. not "unsolicited_marketing_pitch" or "cold_marketing_pitch"). Other spam_signals names: "unauthenticated_sender", "dmarc_fail", "phishing", "recipient_not_own", "bulk_list_relay", "urgency_pressure", "commercial_promotion". Other ham_signals names: "known_correspondent", "passing_authentication", "list_id_present", "list_unsubscribe_header", "educational_content", "legitimate_business_training". For a trait outside these fixed names, report "other:<short description>" rather than inventing a new bare name. Your verdict and score MUST follow from the balance of these signals: a message whose spam_signals include unsolicited bulk marketing is spam even when authentication passes and a List-Unsubscribe header is present -- passing authentication and an unsubscribe link are not, by themselves, ham signals that outweigh unsolicited commercial content.
 When the request carries "auth_summary", treat it as an authoritative, already-verified statement about the sender's identity: do not contradict it, and never describe a sender it says is verified as spoofed, forged, or impersonating. Judge such a message on its content, not on its identity.
 When the request carries a "categories" array, choose "category" from exactly one of those names, or return "" if none fit -- never invent a name outside the supplied set. When "categories" is absent or empty, always return "category": "".
 When the request carries a "policy" string, it is the principal's own instructions for what belongs in each category; follow it.
@@ -556,6 +556,12 @@ func (h *handler) SpamClassify(ctx context.Context, in sdk.SpamClassifyParams) (
 	if in.RecipientNotOwn {
 		final.SpamSignals = appendSignalIfMissing(final.SpamSignals, "recipient_not_own")
 	}
+	// re #489: normalise a synonym for the decisive unsolicited-bulk-
+	// marketing trait onto its canonical name before the response leaves
+	// the plugin, so the resolution does not depend solely on the
+	// server's own normalization keeping pace with every spelling
+	// observed.
+	final.SpamSignals = normalizeSpamSignals(final.SpamSignals)
 	labels["verdict"] = final.Verdict
 	sdk.Metric("spam.latency_ms", labels, float64(elapsed.Milliseconds()))
 
@@ -640,6 +646,8 @@ func (h *handler) MailClassify(ctx context.Context, in sdk.MailClassifyParams) (
 	if in.RecipientNotOwn {
 		final.SpamSignals = appendSignalIfMissing(final.SpamSignals, "recipient_not_own")
 	}
+	// re #489: see SpamClassify's identical normalization call.
+	final.SpamSignals = normalizeSpamSignals(final.SpamSignals)
 	labels["verdict"] = final.Verdict
 	sdk.Metric("spam.latency_ms", labels, float64(elapsed.Milliseconds()))
 
@@ -760,6 +768,61 @@ func appendSignalIfMissing(signals []string, signal string) []string {
 	return append(signals, signal)
 }
 
+// canonicalDecisiveSpamSignal is the single decisive-signal name
+// signalSynonyms and the commercial_promotion + "unsolicited_*"
+// combination normalise onto (re #489), mirroring
+// internal/spam.canonicalDecisiveSpamSignal (separate package, same
+// small contract): internal/spam.DefaultDecisiveSpamSignals' entry of
+// the same name.
+const canonicalDecisiveSpamSignal = "unsolicited_bulk_marketing"
+
+// signalSynonyms maps a spam-signal name the model reported to the
+// canonical decisive name it argues the same trait as, mirroring
+// internal/spam's map of the same name (re #489, message 3971's
+// production record: the deployed prompt names
+// "unsolicited_bulk_marketing" only as an example). Normalizing here,
+// before the response ever leaves the plugin, means a synonym resolves
+// even against a server whose own decisive-signal rule set has not yet
+// been updated with it.
+var signalSynonyms = map[string]string{
+	"unsolicited_marketing_pitch":  canonicalDecisiveSpamSignal,
+	"cold_marketing_pitch":         canonicalDecisiveSpamSignal,
+	"unsolicited_commercial_email": canonicalDecisiveSpamSignal,
+}
+
+// normalizeSpamSignals returns signals with every synonym for
+// canonicalDecisiveSpamSignal mapped onto that canonical name, added
+// alongside the signals as reported -- mirroring
+// internal/spam.normalizeSpamSignals field-for-field (re #489): a direct
+// rename (signalSynonyms) and the combination of "commercial_promotion"
+// with any "unsolicited_*"-named signal both resolve to
+// canonicalDecisiveSpamSignal. The model's own reported names are never
+// dropped or rewritten, only supplemented.
+func normalizeSpamSignals(signals []string) []string {
+	if len(signals) == 0 {
+		return signals
+	}
+	out := append([]string(nil), signals...)
+	hasCommercialPromotion := false
+	hasUnsolicitedPrefixed := false
+	for _, s := range signals {
+		name := strings.ToLower(strings.TrimSpace(s))
+		if canon, ok := signalSynonyms[name]; ok {
+			out = appendSignalIfMissing(out, canon)
+		}
+		if name == "commercial_promotion" {
+			hasCommercialPromotion = true
+		}
+		if strings.HasPrefix(name, "unsolicited_") {
+			hasUnsolicitedPrefixed = true
+		}
+	}
+	if hasCommercialPromotion && hasUnsolicitedPrefixed {
+		out = appendSignalIfMissing(out, canonicalDecisiveSpamSignal)
+	}
+	return out
+}
+
 // chatMessage is one entry in an OpenAI chat-completions request.
 type chatMessage struct {
 	Role    string `json:"role"`
@@ -798,6 +861,60 @@ type modelVerdict struct {
 	HamSignals  []string `json:"ham_signals"`
 }
 
+// spamSignalVocabulary is the fixed set of names a json_schema-mode
+// classify response's spam_signals entries must draw from, unless the
+// entry uses the otherSignalPrefix escape (re #489): the building blocks
+// of internal/spam.DefaultDecisiveSpamSignals (each "+"-joined entry
+// split into its component names) plus the other spam-side traits the
+// system prompt already names as examples. signalSynonyms' entries are
+// deliberately excluded -- forcing the canonical spelling of a decisive
+// trait into the model's only fixed-vocabulary option is the point of
+// this schema change; a model in strict json_schema mode that means one
+// of them must say so via the "other:" form instead.
+var spamSignalVocabulary = []string{
+	canonicalDecisiveSpamSignal,
+	"unauthenticated_sender",
+	"dmarc_fail",
+	"phishing",
+	"recipient_not_own",
+	"bulk_list_relay",
+	"urgency_pressure",
+	"commercial_promotion",
+}
+
+// hamSignalVocabulary is spamSignalVocabulary's counterpart for
+// ham_signals: the ham-side traits the system prompt already names as
+// examples, or that a classify response has been observed to report (re
+// #489, message 3971's own ham_signals).
+var hamSignalVocabulary = []string{
+	"known_correspondent",
+	"passing_authentication",
+	"list_id_present",
+	"list_unsubscribe_header",
+	"educational_content",
+	"legitimate_business_training",
+}
+
+// otherSignalPrefix is the escape hatch a spam_signals/ham_signals entry
+// naming a trait outside its fixed vocabulary uses (re #489): "other:
+// <free text>" rather than an invented bare name, so a json_schema
+// response never blocks the model from reporting something new.
+const otherSignalPrefix = "other:"
+
+// signalItemSchema builds the json_schema "items" sub-schema for a
+// spam_signals/ham_signals array: each entry is either one of vocabulary
+// (case-sensitive, matching the snake_case names the prompt and
+// signalSynonyms use) or an otherSignalPrefix-prefixed free-text string.
+func signalItemSchema(vocabulary []string) map[string]any {
+	return map[string]any{
+		"type": "string",
+		"anyOf": []map[string]any{
+			{"enum": append([]string(nil), vocabulary...)},
+			{"pattern": "^" + otherSignalPrefix + ".+$"},
+		},
+	}
+}
+
 // spamVerdictJSONSchema is the schema advertised to json_schema-mode
 // endpoints. It matches modelVerdict field-for-field: verdict is one of
 // spam/ham, score is a 0..1 confidence, reason is free text; all three
@@ -817,9 +934,11 @@ var spamVerdictJSONSchema = map[string]any{
 		// alone. Required (not merely present-if-relevant) because strict
 		// json_schema mode demands every declared property be listed in
 		// "required"; an empty array is a valid, meaningful answer ("no
-		// signals of this kind").
-		"spam_signals": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "short snake_case traits arguing this message is spam, e.g. unsolicited_bulk_marketing"},
-		"ham_signals":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "short snake_case traits arguing this message is not spam, e.g. known_correspondent"},
+		// signals of this kind"). Items are constrained to a fixed
+		// vocabulary plus an "other:" escape (re #489) so a decisive
+		// trait cannot be spelled as an unlisted synonym.
+		"spam_signals": map[string]any{"type": "array", "items": signalItemSchema(spamSignalVocabulary), "description": "traits arguing this message is spam, drawn from the fixed vocabulary or \"other:<free text>\""},
+		"ham_signals":  map[string]any{"type": "array", "items": signalItemSchema(hamSignalVocabulary), "description": "traits arguing this message is not spam, drawn from the fixed vocabulary or \"other:<free text>\""},
 	},
 	"required":             []string{"verdict", "score", "reason", "spam_signals", "ham_signals"},
 	"additionalProperties": false,
@@ -882,9 +1001,10 @@ func classifyJSONSchema(categoryNames []string) map[string]any {
 			"score":    map[string]any{"type": "number", "description": "probability that the message is spam, 0.0 to 1.0"},
 			"reason":   map[string]any{"type": "string"},
 			"category": category,
-			// spam_signals / ham_signals (re #396): see spamVerdictJSONSchema.
-			"spam_signals": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "short snake_case traits arguing this message is spam, e.g. unsolicited_bulk_marketing"},
-			"ham_signals":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "short snake_case traits arguing this message is not spam, e.g. known_correspondent"},
+			// spam_signals / ham_signals (re #396, vocabulary re #489): see
+			// spamVerdictJSONSchema.
+			"spam_signals": map[string]any{"type": "array", "items": signalItemSchema(spamSignalVocabulary), "description": "traits arguing this message is spam, drawn from the fixed vocabulary or \"other:<free text>\""},
+			"ham_signals":  map[string]any{"type": "array", "items": signalItemSchema(hamSignalVocabulary), "description": "traits arguing this message is not spam, drawn from the fixed vocabulary or \"other:<free text>\""},
 		},
 		"required":             []string{"verdict", "score", "reason", "category", "spam_signals", "ham_signals"},
 		"additionalProperties": false,

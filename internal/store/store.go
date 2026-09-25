@@ -2266,7 +2266,8 @@ type Metadata interface {
 	SetLLMClassification(ctx context.Context, rec LLMClassificationRecord) error
 
 	// CorrectLLMClassificationVerdict overwrites msgID's stored
-	// spam_verdict with verdict and clears spam_model_verdict to NULL
+	// spam_verdict with verdict and clears spam_model_verdict and
+	// spam_decisive_signal_match (re #489) to NULL
 	// (re #396, third round repair path,
 	// internal/admin/spam_undo_recipient_only.go). Unlike
 	// SetLLMClassification's COALESCE-on-NULL upsert -- which can only

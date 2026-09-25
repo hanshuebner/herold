@@ -196,6 +196,9 @@ func llmClassificationRecordToMap(rec store.LLMClassificationRecord) map[string]
 	if rec.SpamModelVerdict != nil {
 		out["spam_model_verdict"] = *rec.SpamModelVerdict
 	}
+	if rec.SpamDecisiveSignalMatch != nil {
+		out["spam_decisive_signal_match"] = *rec.SpamDecisiveSignalMatch
+	}
 	if rec.CategoryAssigned != nil {
 		out["category_assigned"] = *rec.CategoryAssigned
 	}

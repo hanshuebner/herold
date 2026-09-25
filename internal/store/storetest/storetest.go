@@ -9756,6 +9756,7 @@ func testLLMClassificationSignalsRoundtrip(t *testing.T, s store.Store) {
 
 	verdict := "spam"
 	modelVerdict := "ham"
+	decisiveSignalMatch := "unsolicited_bulk_marketing"
 	confidence := 0.15
 	spamSignals := []string{"unsolicited_bulk_marketing", "urgency_pressure"}
 	hamSignals := []string{"passing_authentication"}
@@ -9764,16 +9765,18 @@ func testLLMClassificationSignalsRoundtrip(t *testing.T, s store.Store) {
 	// verdict="spam" / modelVerdict="ham" mirrors migration 0112 (re
 	// #396, second round): SpamVerdict holds what herold actually
 	// applied after server-side resolution, SpamModelVerdict preserves
-	// the plugin's own original answer.
+	// the plugin's own original answer. SpamDecisiveSignalMatch
+	// (migration 0117, re #489) names the canonical rule that matched.
 	rec := store.LLMClassificationRecord{
-		MessageID:        msg.ID,
-		PrincipalID:      p.ID,
-		SpamVerdict:      &verdict,
-		SpamModelVerdict: &modelVerdict,
-		SpamConfidence:   &confidence,
-		SpamSignals:      &spamSignals,
-		HamSignals:       &hamSignals,
-		SpamInconsistent: &inconsistent,
+		MessageID:               msg.ID,
+		PrincipalID:             p.ID,
+		SpamVerdict:             &verdict,
+		SpamModelVerdict:        &modelVerdict,
+		SpamDecisiveSignalMatch: &decisiveSignalMatch,
+		SpamConfidence:          &confidence,
+		SpamSignals:             &spamSignals,
+		HamSignals:              &hamSignals,
+		SpamInconsistent:        &inconsistent,
 	}
 	if err := s.Meta().SetLLMClassification(ctx, rec); err != nil {
 		t.Fatalf("SetLLMClassification: %v", err)
@@ -9794,6 +9797,9 @@ func testLLMClassificationSignalsRoundtrip(t *testing.T, s store.Store) {
 	if got.SpamModelVerdict == nil || *got.SpamModelVerdict != modelVerdict {
 		t.Fatalf("SpamModelVerdict = %v, want %q", got.SpamModelVerdict, modelVerdict)
 	}
+	if got.SpamDecisiveSignalMatch == nil || *got.SpamDecisiveSignalMatch != decisiveSignalMatch {
+		t.Fatalf("SpamDecisiveSignalMatch = %v, want %q", got.SpamDecisiveSignalMatch, decisiveSignalMatch)
+	}
 
 	// BatchGet must surface the same fields.
 	batch, err := s.Meta().BatchGetLLMClassifications(ctx, []store.MessageID{msg.ID})
@@ -9812,6 +9818,9 @@ func testLLMClassificationSignalsRoundtrip(t *testing.T, s store.Store) {
 	}
 	if brec.SpamModelVerdict == nil || *brec.SpamModelVerdict != modelVerdict {
 		t.Fatalf("batch SpamModelVerdict = %v, want %q", brec.SpamModelVerdict, modelVerdict)
+	}
+	if brec.SpamDecisiveSignalMatch == nil || *brec.SpamDecisiveSignalMatch != decisiveSignalMatch {
+		t.Fatalf("batch SpamDecisiveSignalMatch = %v, want %q", brec.SpamDecisiveSignalMatch, decisiveSignalMatch)
 	}
 }
 
@@ -9850,6 +9859,9 @@ func testLLMClassificationSignalsNilByDefault(t *testing.T, s store.Store) {
 	}
 	if got.SpamModelVerdict != nil {
 		t.Fatalf("SpamModelVerdict = %v, want nil (no server-side resolution happened)", *got.SpamModelVerdict)
+	}
+	if got.SpamDecisiveSignalMatch != nil {
+		t.Fatalf("SpamDecisiveSignalMatch = %v, want nil (no server-side resolution happened)", *got.SpamDecisiveSignalMatch)
 	}
 }
 

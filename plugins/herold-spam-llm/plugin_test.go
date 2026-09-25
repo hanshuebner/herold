@@ -465,6 +465,54 @@ func TestMailClassify_SignalsRequestedAndReturned(t *testing.T) {
 	}
 }
 
+// TestMailClassify_NormalizesSynonymNamedSignalToCanonical is the #489
+// plugin unit test: a model response naming the decisive unsolicited-
+// bulk-marketing trait under a synonym combination
+// ("commercial_promotion" + "unsolicited_marketing_pitch", message
+// 3971's exact production shape) has the canonical name
+// "unsolicited_bulk_marketing" added to the returned spam_signals
+// deterministically, alongside the model's own reported names, without
+// depending on the server's own normalization catching it.
+func TestMailClassify_NormalizesSynonymNamedSignalToCanonical(t *testing.T) {
+	llm := newFakeLLM(t)
+	llm.setHandler(func(w http.ResponseWriter, r *http.Request) {
+		replyJSON(w, `{"verdict":"ham","score":0.25,"reason":"a legitimate workshop promotion","category":"",`+
+			`"spam_signals":["commercial_promotion","unsolicited_marketing_pitch"],"ham_signals":["passing_authentication"]}`)
+	})
+
+	bin := buildPlugin(t)
+	p := spawnPlugin(t, bin)
+	defer p.close()
+
+	p.initialize(t)
+	if err := p.configure(t, map[string]any{
+		"endpoint":       llm.endpoint(),
+		"model":          "fake",
+		"spam_threshold": 0.7,
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	res, err := p.mailClassify(ctx, canonicalPayload("legitimate workshop pitch"))
+	if err != nil {
+		t.Fatalf("mail.classify: %v", err)
+	}
+
+	gotSpamSignals, _ := res["spam_signals"].([]any)
+	got := map[string]bool{}
+	for _, s := range gotSpamSignals {
+		got[fmt.Sprint(s)] = true
+	}
+	if !got["commercial_promotion"] || !got["unsolicited_marketing_pitch"] {
+		t.Fatalf("spam_signals = %v, want the model's own reported names preserved", gotSpamSignals)
+	}
+	if !got["unsolicited_bulk_marketing"] {
+		t.Fatalf("spam_signals = %v, want unsolicited_bulk_marketing added (the canonical name for this synonym combination)", gotSpamSignals)
+	}
+}
+
 // TestClassify_SignalsOptionalUnderJSONObject verifies a json_object
 // (non-strict) response that omits spam_signals/ham_signals entirely
 // still classifies successfully -- the fields are optional under this
@@ -1318,6 +1366,58 @@ func TestClassify_ResponseFormatJSONSchema(t *testing.T) {
 	reasonProp, ok := props["reason"].(map[string]any)
 	if !ok || reasonProp["type"] != "string" {
 		t.Fatalf("schema.properties.reason = %#v, want string-typed property", props["reason"])
+	}
+}
+
+// TestClassify_ResponseFormatJSONSchema_SpamSignalsVocabulary is the
+// #489 plugin unit test for item 1: the json_schema schema's
+// spam_signals items enum names the canonical decisive signal
+// ("unsolicited_bulk_marketing") but excludes every synonym
+// internal/spam recognises for it, and offers the "other:<free text>"
+// escape for anything outside the fixed vocabulary -- so a strict-mode
+// model cannot spell the decisive trait as an unlisted synonym while
+// remaining free to report a novel trait.
+func TestClassify_ResponseFormatJSONSchema_SpamSignalsVocabulary(t *testing.T) {
+	body := captureRequestBody(t, map[string]any{"response_format": "json_schema"})
+	rf, _ := body["response_format"].(map[string]any)
+	js, _ := rf["json_schema"].(map[string]any)
+	schema, _ := js["schema"].(map[string]any)
+	props, _ := schema["properties"].(map[string]any)
+	spamSignalsProp, ok := props["spam_signals"].(map[string]any)
+	if !ok {
+		t.Fatalf("schema.properties.spam_signals missing or wrong type: %#v", props["spam_signals"])
+	}
+	items, ok := spamSignalsProp["items"].(map[string]any)
+	if !ok {
+		t.Fatalf("spam_signals.items missing or wrong type: %#v", spamSignalsProp["items"])
+	}
+	anyOf, ok := items["anyOf"].([]any)
+	if !ok || len(anyOf) != 2 {
+		t.Fatalf("spam_signals.items.anyOf = %#v, want a 2-entry anyOf (vocabulary enum, other: pattern)", items["anyOf"])
+	}
+	enumEntry, ok := anyOf[0].(map[string]any)
+	if !ok {
+		t.Fatalf("spam_signals.items.anyOf[0] = %#v, want the vocabulary enum", anyOf[0])
+	}
+	enumVals, ok := enumEntry["enum"].([]any)
+	if !ok {
+		t.Fatalf("spam_signals.items.anyOf[0].enum missing or wrong type: %#v", enumEntry["enum"])
+	}
+	gotEnum := map[string]bool{}
+	for _, e := range enumVals {
+		gotEnum[fmt.Sprint(e)] = true
+	}
+	if !gotEnum["unsolicited_bulk_marketing"] {
+		t.Fatalf("spam_signals vocabulary = %v, missing the canonical decisive name unsolicited_bulk_marketing", enumVals)
+	}
+	for _, synonym := range []string{"unsolicited_marketing_pitch", "cold_marketing_pitch", "unsolicited_commercial_email"} {
+		if gotEnum[synonym] {
+			t.Fatalf("spam_signals vocabulary = %v, must exclude the synonym %q so a strict-mode model cannot spell the decisive trait that way", enumVals, synonym)
+		}
+	}
+	patternEntry, ok := anyOf[1].(map[string]any)
+	if !ok || patternEntry["pattern"] != "^other:.+$" {
+		t.Fatalf("spam_signals.items.anyOf[1] = %#v, want the other: escape pattern", anyOf[1])
 	}
 }
 

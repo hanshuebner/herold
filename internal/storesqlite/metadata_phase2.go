@@ -3045,10 +3045,10 @@ func (m *metadata) SetLLMClassification(ctx context.Context, rec store.LLMClassi
 			   spam_prompt_applied, spam_model, spam_classified_at_us,
 			   delivery_override,
 			   spam_signals_json, spam_ham_signals_json, spam_inconsistent,
-			   spam_model_verdict,
+			   spam_model_verdict, spam_decisive_signal_match,
 			   category_assigned, category_prompt_applied,
 			   category_model, category_classified_at_us)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(message_id) DO UPDATE SET
 			  spam_verdict             = COALESCE(excluded.spam_verdict, spam_verdict),
 			  spam_confidence          = COALESCE(excluded.spam_confidence, spam_confidence),
@@ -3061,6 +3061,7 @@ func (m *metadata) SetLLMClassification(ctx context.Context, rec store.LLMClassi
 			  spam_ham_signals_json    = COALESCE(excluded.spam_ham_signals_json, spam_ham_signals_json),
 			  spam_inconsistent        = COALESCE(excluded.spam_inconsistent, spam_inconsistent),
 			  spam_model_verdict       = COALESCE(excluded.spam_model_verdict, spam_model_verdict),
+			  spam_decisive_signal_match = COALESCE(excluded.spam_decisive_signal_match, spam_decisive_signal_match),
 			  category_assigned        = COALESCE(excluded.category_assigned, category_assigned),
 			  category_prompt_applied  = COALESCE(excluded.category_prompt_applied, category_prompt_applied),
 			  category_model           = COALESCE(excluded.category_model, category_model),
@@ -3070,7 +3071,7 @@ func (m *metadata) SetLLMClassification(ctx context.Context, rec store.LLMClassi
 			rec.SpamPromptApplied, rec.SpamModel, optTimeToUs(rec.SpamClassifiedAt),
 			rec.SpamDeliveryOverride,
 			spamSignalsJSON, hamSignalsJSON, optBoolToInt64(rec.SpamInconsistent),
-			rec.SpamModelVerdict,
+			rec.SpamModelVerdict, rec.SpamDecisiveSignalMatch,
 			rec.CategoryAssigned, rec.CategoryPromptApplied,
 			rec.CategoryModel, optTimeToUs(rec.CategoryClassifiedAt))
 		return mapErr(err)
@@ -3162,7 +3163,7 @@ func (m *metadata) CorrectLLMClassificationVerdict(ctx context.Context, msgID st
 	return m.runTx(ctx, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx,
 			`UPDATE llm_classifications
-			   SET spam_verdict = ?, spam_model_verdict = NULL
+			   SET spam_verdict = ?, spam_model_verdict = NULL, spam_decisive_signal_match = NULL
 			 WHERE message_id = ?`,
 			verdict, int64(msgID))
 		if err != nil {
@@ -3261,7 +3262,7 @@ func (m *metadata) BatchGetLLMClassifications(ctx context.Context, msgIDs []stor
 		     spam_prompt_applied, spam_model, spam_classified_at_us,
 		     delivery_override,
 		     spam_signals_json, spam_ham_signals_json, spam_inconsistent,
-		     spam_model_verdict,
+		     spam_model_verdict, spam_decisive_signal_match,
 		     category_assigned, category_prompt_applied,
 		     category_model, category_classified_at_us
 		  FROM llm_classifications
@@ -3274,29 +3275,30 @@ func (m *metadata) BatchGetLLMClassifications(ctx context.Context, msgIDs []stor
 	out := make(map[store.MessageID]store.LLMClassificationRecord, len(msgIDs))
 	for rows.Next() {
 		var (
-			msgID, pidInt          int64
-			spamVerdict            sql.NullString
-			spamConfidence         sql.NullFloat64
-			spamReason             sql.NullString
-			spamPromptApplied      sql.NullString
-			spamModel              sql.NullString
-			spamClassifiedAtUs     sql.NullInt64
-			deliveryOverride       sql.NullString
-			spamSignalsJSON        sql.NullString
-			spamHamSignalsJSON     sql.NullString
-			spamInconsistent       sql.NullInt64
-			spamModelVerdict       sql.NullString
-			categoryAssigned       sql.NullString
-			categoryPromptApplied  sql.NullString
-			categoryModel          sql.NullString
-			categoryClassifiedAtUs sql.NullInt64
+			msgID, pidInt           int64
+			spamVerdict             sql.NullString
+			spamConfidence          sql.NullFloat64
+			spamReason              sql.NullString
+			spamPromptApplied       sql.NullString
+			spamModel               sql.NullString
+			spamClassifiedAtUs      sql.NullInt64
+			deliveryOverride        sql.NullString
+			spamSignalsJSON         sql.NullString
+			spamHamSignalsJSON      sql.NullString
+			spamInconsistent        sql.NullInt64
+			spamModelVerdict        sql.NullString
+			spamDecisiveSignalMatch sql.NullString
+			categoryAssigned        sql.NullString
+			categoryPromptApplied   sql.NullString
+			categoryModel           sql.NullString
+			categoryClassifiedAtUs  sql.NullInt64
 		)
 		if err := rows.Scan(&msgID, &pidInt,
 			&spamVerdict, &spamConfidence, &spamReason,
 			&spamPromptApplied, &spamModel, &spamClassifiedAtUs,
 			&deliveryOverride,
 			&spamSignalsJSON, &spamHamSignalsJSON, &spamInconsistent,
-			&spamModelVerdict,
+			&spamModelVerdict, &spamDecisiveSignalMatch,
 			&categoryAssigned, &categoryPromptApplied,
 			&categoryModel, &categoryClassifiedAtUs); err != nil {
 			return nil, mapErr(err)
@@ -3319,6 +3321,10 @@ func (m *metadata) BatchGetLLMClassifications(ctx context.Context, msgIDs []stor
 		if spamModelVerdict.Valid {
 			v := spamModelVerdict.String
 			rec.SpamModelVerdict = &v
+		}
+		if spamDecisiveSignalMatch.Valid {
+			v := spamDecisiveSignalMatch.String
+			rec.SpamDecisiveSignalMatch = &v
 		}
 		if spamVerdict.Valid {
 			v := spamVerdict.String

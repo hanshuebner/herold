@@ -224,6 +224,12 @@ type jmapSpamDetail struct {
 	// original verdict ("ham"), while Verdict above carries what herold
 	// actually applied. Absent when no such resolution happened.
 	ModelVerdict string `json:"modelVerdict,omitempty"`
+	// DecisiveSignalMatch (re #489) is present exactly when ModelVerdict
+	// is present: the canonical decisive-signal rule name matched after
+	// synonym normalization (e.g. "unsolicited_bulk_marketing"), even
+	// when it does not appear verbatim among SpamSignals because the
+	// model reported the same trait under a different name.
+	DecisiveSignalMatch string `json:"decisiveSignalMatch,omitempty"`
 }
 
 // jmapCategoryDetail is the categorisation sub-record in an llmInspect
@@ -326,17 +332,18 @@ func (i *llmInspectHandler) Execute(ctx context.Context, args json.RawMessage) (
 		entry := jmapLLMInspectEntry{ID: jid}
 		if rec.SpamVerdict != nil {
 			entry.Spam = &jmapSpamDetail{
-				Verdict:          derefStr(rec.SpamVerdict),
-				Confidence:       derefF64(rec.SpamConfidence),
-				Reason:           derefStr(rec.SpamReason),
-				PromptApplied:    derefStr(rec.SpamPromptApplied),
-				Model:            derefStr(rec.SpamModel),
-				ClassifiedAt:     formatTime(rec.SpamClassifiedAt),
-				DeliveryOverride: derefStr(rec.SpamDeliveryOverride),
-				SpamSignals:      derefStrSlice(rec.SpamSignals),
-				HamSignals:       derefStrSlice(rec.HamSignals),
-				Inconsistent:     rec.SpamInconsistent != nil && *rec.SpamInconsistent,
-				ModelVerdict:     derefStr(rec.SpamModelVerdict),
+				Verdict:             derefStr(rec.SpamVerdict),
+				Confidence:          derefF64(rec.SpamConfidence),
+				Reason:              derefStr(rec.SpamReason),
+				PromptApplied:       derefStr(rec.SpamPromptApplied),
+				Model:               derefStr(rec.SpamModel),
+				ClassifiedAt:        formatTime(rec.SpamClassifiedAt),
+				DeliveryOverride:    derefStr(rec.SpamDeliveryOverride),
+				SpamSignals:         derefStrSlice(rec.SpamSignals),
+				HamSignals:          derefStrSlice(rec.HamSignals),
+				Inconsistent:        rec.SpamInconsistent != nil && *rec.SpamInconsistent,
+				ModelVerdict:        derefStr(rec.SpamModelVerdict),
+				DecisiveSignalMatch: derefStr(rec.SpamDecisiveSignalMatch),
 			}
 		}
 		if rec.CategoryPromptApplied != nil {

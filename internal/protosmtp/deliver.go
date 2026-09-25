@@ -852,6 +852,13 @@ func (sess *session) persistLLMRecord(
 		if classification.ModelVerdict != spam.Unclassified {
 			mv := classification.ModelVerdict.String()
 			rec.SpamModelVerdict = &mv
+			// SpamDecisiveSignalMatch (re #489) names the canonical
+			// decisive-signal rule matched after synonym normalization,
+			// for the transparency record.
+			if classification.DecisiveSignalMatch != "" {
+				dm := classification.DecisiveSignalMatch
+				rec.SpamDecisiveSignalMatch = &dm
+			}
 		}
 		// Build the user-visible prompt-as-applied from the spam.Request.
 		// The spam.Request is the structured context sent to the plugin —

@@ -935,7 +935,17 @@ const CurrentBackupVersion = 1
 //	Email.snoozeWokeAt / snoozeWokeFor; cleared when the message gains
 //	$seen or is snoozed again. No new table; MessageRow gains the two
 //	fields.
-const CurrentSchemaVersion = 116
+//
+// 117 — 0117_llm_classification_decisive_signal_match.sql (issue #489).
+//
+//	Adds llm_classifications.spam_decisive_signal_match (text, nullable):
+//	the canonical decisive-signal rule name matched after synonym
+//	normalization, exactly when spam_model_verdict is non-NULL.
+//	spam_signals keeps the model's own reported names unchanged; this
+//	column names what the normalized match actually resolved against,
+//	for the transparency record. No new table; LLMClassificationRow
+//	gains the one field.
+const CurrentSchemaVersion = 117
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

@@ -1006,6 +1006,11 @@ type LLMClassificationRow struct {
 	// matched a decisive signal; nil otherwise, including every row
 	// classified before this column existed.
 	SpamModelVerdict *string `json:"spam_model_verdict,omitempty"`
+	// SpamDecisiveSignalMatch (migration 0117, re #489) is the canonical
+	// decisive-signal rule name matched after synonym normalization,
+	// non-nil exactly when SpamModelVerdict is non-nil; nil otherwise,
+	// including every row classified before this column existed.
+	SpamDecisiveSignalMatch *string `json:"spam_decisive_signal_match,omitempty"`
 }
 
 // SeenAddressRow mirrors the seen_addresses table introduced in

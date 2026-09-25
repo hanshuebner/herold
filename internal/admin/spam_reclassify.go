@@ -314,6 +314,12 @@ func recordReclassifyVerdict(
 	if cl.ModelVerdict != spam.Unclassified {
 		mv := cl.ModelVerdict.String()
 		rec.SpamModelVerdict = &mv
+		// SpamDecisiveSignalMatch (re #489) names the canonical
+		// decisive-signal rule matched after synonym normalization.
+		if cl.DecisiveSignalMatch != "" {
+			dm := cl.DecisiveSignalMatch
+			rec.SpamDecisiveSignalMatch = &dm
+		}
 	}
 	classifiedAt := clk.Now()
 	rec.SpamClassifiedAt = &classifiedAt

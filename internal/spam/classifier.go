@@ -116,6 +116,17 @@ type Classification struct {
 	// actually applied, ModelVerdict is what the classifier itself
 	// reported.
 	ModelVerdict Verdict
+	// DecisiveSignalMatch (re #489) is the canonical decisive-signal rule
+	// name matchDecisiveSignal matched, rendered as "sig1+sig2" for a
+	// combined rule, exactly when ModelVerdict is non-Unclassified. Empty
+	// when no resolution happened. The match is computed against
+	// SpamSignals after synonym normalization (normalizeSpamSignals), so
+	// this always names the canonical form even when the model reported
+	// the same trait under a different spelling (e.g.
+	// "unsolicited_marketing_pitch" resolves the message but this field
+	// still reads "unsolicited_bulk_marketing") -- the persisted
+	// SpamSignals themselves are never rewritten to match.
+	DecisiveSignalMatch string
 }
 
 // PluginInvoker is the minimum plugin-supervisor surface Classifier needs:
@@ -329,14 +340,79 @@ func parseDecisiveSignals(raw []string) [][]string {
 	return out
 }
 
+// canonicalDecisiveSpamSignal is the single decisive-signal name every
+// entry in signalSynonyms, and the commercial_promotion +
+// "unsolicited_*" combination, normalises onto (re #489): the
+// "unsolicited_bulk_marketing" entry of DefaultDecisiveSpamSignals.
+const canonicalDecisiveSpamSignal = "unsolicited_bulk_marketing"
+
+// signalSynonyms maps a spam-signal name a model reported to the
+// canonical decisive name it argues the same trait as (re #489, message
+// 3971's production record: the deployed prompt names
+// "unsolicited_bulk_marketing" only as an example -- "e.g." -- so a
+// model is free to spell the same trait differently, and
+// matchDecisiveSignal's exact case-insensitive comparison then never
+// fires). Extend this map, not DefaultDecisiveSpamSignals, when a new
+// spelling is observed in production; the decisive-signal rule set stays
+// the fixed vocabulary operators configure, and this map is the
+// bookkeeping that keeps a model's own wording from evading it.
+var signalSynonyms = map[string]string{
+	"unsolicited_marketing_pitch":  canonicalDecisiveSpamSignal,
+	"cold_marketing_pitch":         canonicalDecisiveSpamSignal,
+	"unsolicited_commercial_email": canonicalDecisiveSpamSignal,
+}
+
+// normalizeSpamSignals returns signals with every synonym for
+// canonicalDecisiveSpamSignal mapped onto that canonical name, ADDED
+// alongside the signals as reported -- the original names are never
+// dropped or rewritten, only supplemented, so the caller's decisiveness
+// check sees the canonical name without needing to mutate (and
+// therefore misrepresent on the transparency record) what the model
+// actually said. Two synonym forms are recognised (re #489): a direct
+// rename (signalSynonyms) and the combination of "commercial_promotion"
+// with any "unsolicited_*"-named signal -- message 3971 reported exactly
+// that pair, two labels for the one trait
+// DefaultDecisiveSpamSignals names in one. Returns signals unchanged
+// (same slice) when it is empty, so an untouched nil/empty input never
+// allocates.
+func normalizeSpamSignals(signals []string) []string {
+	if len(signals) == 0 {
+		return signals
+	}
+	out := append([]string(nil), signals...)
+	hasCommercialPromotion := false
+	hasUnsolicitedPrefixed := false
+	for _, s := range signals {
+		name := strings.ToLower(strings.TrimSpace(s))
+		if canon, ok := signalSynonyms[name]; ok {
+			out = appendSignalIfMissing(out, canon)
+		}
+		if name == "commercial_promotion" {
+			hasCommercialPromotion = true
+		}
+		if strings.HasPrefix(name, "unsolicited_") {
+			hasUnsolicitedPrefixed = true
+		}
+	}
+	if hasCommercialPromotion && hasUnsolicitedPrefixed {
+		out = appendSignalIfMissing(out, canonicalDecisiveSpamSignal)
+	}
+	return out
+}
+
 // matchDecisiveSignal reports whether signals satisfies any rule in
 // rules (AND within a rule, OR across rules), matching names case-
 // insensitively, and returns the first matching rule rendered as
-// "sig1+sig2" for logging.
+// "sig1+sig2" for logging. signals is normalised (normalizeSpamSignals)
+// before matching (re #489), so a rule naming the canonical decisive
+// signal also matches a model's synonym for it; the returned rule string
+// is always the canonical rendering from rules, never the model's own
+// spelling.
 func matchDecisiveSignal(signals []string, rules [][]string) (string, bool) {
 	if len(rules) == 0 || len(signals) == 0 {
 		return "", false
 	}
+	signals = normalizeSpamSignals(signals)
 	have := make(map[string]struct{}, len(signals))
 	for _, s := range signals {
 		have[strings.ToLower(strings.TrimSpace(s))] = struct{}{}
@@ -703,6 +779,7 @@ func (c *Classifier) Classify(ctx context.Context, msg mailparse.Message, auth *
 			}
 			cl.ModelVerdict = Ham
 			cl.Verdict = resolved
+			cl.DecisiveSignalMatch = rule
 			log.WarnContext(ctx, "spam classifier: resolving ham verdict against decisive spam signal",
 				"activity", observe.ActivitySystem,
 				"score", cl.Score,

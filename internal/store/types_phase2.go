@@ -1547,6 +1547,18 @@ type LLMClassificationRecord struct {
 	// row (flagged only) and every row classified before this field
 	// existed.
 	SpamModelVerdict *string
+	// SpamDecisiveSignalMatch (re #489) is the canonical decisive-signal
+	// rule name (e.g. "unsolicited_bulk_marketing", or "sig1+sig2" for a
+	// combined rule) that matched after synonym normalization, non-nil
+	// exactly when SpamModelVerdict is non-nil. SpamSignals keeps the
+	// model's own reported names unchanged even when this field names a
+	// different, canonical spelling of the same trait (e.g. the model
+	// reported "unsolicited_marketing_pitch" and this field reads
+	// "unsolicited_bulk_marketing") -- this is the transparency record's
+	// answer to "what actually fired", not a rewrite of what the model
+	// said. Nil whenever no resolution happened, including every row
+	// written before this field existed.
+	SpamDecisiveSignalMatch *string
 
 	// -- Categorisation (nil when categorisation was not run or produced no category) --
 
