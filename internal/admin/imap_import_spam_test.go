@@ -175,8 +175,9 @@ func TestIMAPImportSpamAdapter_ClassifyEmptyPluginName(t *testing.T) {
 // fallback categoriser to run whenever no classifier plugin is
 // installed, but Classify used to return Classification{Verdict:
 // Unclassified} immediately on a nil Classifier without ever reaching
-// the category-resolution switch. A List-Id message imported with no
-// spam plugin configured therefore never got $category-forums.
+// the category-resolution switch. A discussion-list message (List-Id
+// plus List-Post, re #491) imported with no spam plugin configured
+// therefore never got $category-forums.
 func TestIMAPImportSpamAdapter_ClassifyNilClassifier_StructuralFallback(t *testing.T) {
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	st := sqlitetest.Open(t, clk)
@@ -184,6 +185,7 @@ func TestIMAPImportSpamAdapter_ClassifyNilClassifier_StructuralFallback(t *testi
 
 	raw := "From: sender@example.com\r\nTo: bob@example.com\r\n" +
 		"List-Id: <announce.example.com>\r\n" +
+		"List-Post: <mailto:announce@example.com>\r\n" +
 		"Subject: list mail, no plugin configured\r\nMessage-ID: <spam-adapter-fallback@example.com>\r\n\r\n" +
 		"Hello.\r\n"
 	msg, err := mailparse.Parse(bytes.NewReader([]byte(raw)), mailparse.NewParseOptions())

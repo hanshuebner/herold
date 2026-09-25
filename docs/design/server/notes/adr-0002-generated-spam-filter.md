@@ -212,10 +212,14 @@ could not see before, alongside `${spam.verdict}`.
 
 A plugin may return an empty `category`, and a deployment may have no classifier plugin
 at all. In both cases herold falls back to a **small structural categoriser built into
-the server** -- `List-Id` and `List-Unsubscribe` to `forums`, `Precedence: bulk` to
-`promotions`, `Auto-Submitted` to `updates`, and nothing else. This is REQ-FILT-214,
-retained: **the tab strip works on a herold with no model configured and no plugin
-installed.**
+the server** -- a discussion-list marker (`List-Post`, or `Precedence: list`, or
+`List-Id` together with `List-Post`) to `forums`; `List-Id` or `List-Unsubscribe`
+without a discussion-list marker to `updates`, or to `promotions` when `Precedence:
+bulk` is also present; `Auto-Submitted` to `updates`; and nothing else. This is
+REQ-FILT-214, retained: **the tab strip works on a herold with no model configured
+and no plugin installed.** `List-Id`/`List-Unsubscribe` alone marks one-way bulk mail
+-- a newsletter or a marketing mail -- not list discussion traffic, which is what
+`forums` is for (issue #491).
 
 It is a fallback, not a competitor. **The plugin's category wins whenever it gives one**,
 and the fallback fills silence. It is deliberately dumb -- a handful of structural

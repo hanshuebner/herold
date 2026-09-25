@@ -560,9 +560,11 @@ func TestClassifyMatrix_NoPlugin_StructuralFallbackToForums(t *testing.T) {
 			if backend == "postgres" {
 				pgDSN = os.Getenv("HEROLD_PG_DSN")
 			}
-			// No [[plugin]] block at all.
+			// No [[plugin]] block at all. List-Post makes this a
+			// discussion-list message (re #491): List-Id alone is
+			// one-way bulk mail and now falls to "updates".
 			h := startClassifyMatrixServer(t, backend, pgDSN, "", 0)
-			deliverClassifyMatrixMessage(t, h, "List-Id: <announce.external.example>\r\n", "smtp-no-plugin-forums")
+			deliverClassifyMatrixMessage(t, h, "List-Id: <announce.external.example>\r\nList-Post: <mailto:announce@external.example>\r\n", "smtp-no-plugin-forums")
 
 			msg := waitForMessageInMailbox(t, h, "INBOX")
 			if kw := categoryKeyword(msg); kw != "$category-forums" {

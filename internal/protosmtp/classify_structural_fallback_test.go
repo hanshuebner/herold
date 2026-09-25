@@ -3,7 +3,7 @@ package protosmtp_test
 // classify_structural_fallback_test.go is the regression test for a
 // defect found while writing the #304 acceptance matrix: REQ-FILT-214 /
 // ADR-0002 promise that the server's structural fallback categoriser
-// ("List-Id present -> forums", etc.) runs "where the classifier
+// (a discussion-list marker -> forums, etc.) runs "where the classifier
 // plugin's category is empty ... or no classifier plugin is installed".
 // Before this fix, classifyMessage (internal/protosmtp/deliver.go)
 // returned Classification{Verdict: Unclassified} immediately whenever
@@ -18,8 +18,9 @@ package protosmtp_test
 // This test constructs a protosmtp.Server with a real, non-nil
 // spam.Classifier but NO plugin registered under any name (the shape
 // admin.StartServer produces when system.toml carries no [[plugin]]
-// block of type "spam"/"classifier"), delivers a List-Id-bearing
-// message, and asserts the message still lands with $category-forums.
+// block of type "spam"/"classifier"), delivers a discussion-list
+// message (List-Id plus List-Post, re #491), and asserts the message
+// still lands with $category-forums.
 
 import (
 	"context"
@@ -128,6 +129,7 @@ func TestDelivery_NoPluginConfigured_StructuralFallbackStillApplies(t *testing.T
 	mustOK(t, cli, 354)
 	body := "From: sender@sender.test\r\nTo: alice@example.test\r\n" +
 		"List-Id: <announce.example.test>\r\n" +
+		"List-Post: <mailto:announce@example.test>\r\n" +
 		"Message-ID: <no-plugin-fallback@sender.test>\r\n" +
 		"Subject: list mail with no classifier configured\r\n\r\nBody.\r\n.\r\n"
 	cli.sendRaw(t, []byte(body))
