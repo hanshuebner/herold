@@ -103,7 +103,11 @@ func List(ctx context.Context, st store.Store) ([]OrphanBlob, error) {
 		if err := ctx.Err(); err != nil {
 			return out, err
 		}
-		out = append(out, describeOrphan(ctx, st, b))
+		ob, err := describeOrphan(ctx, st, b)
+		if err != nil {
+			return nil, fmt.Errorf("orphanblobs: describe blob %s: %w", b.Hash, err)
+		}
+		out = append(out, ob)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Hash < out[j].Hash })
 	return out, nil
@@ -111,22 +115,31 @@ func List(ctx context.Context, st store.Store) ([]OrphanBlob, error) {
 
 // describeOrphan reads only b's blob's header section (bounded by
 // MaxOrphanHeaderBytes), parses those headers, and looks up the resulting
-// Message-ID's duplicate/reference status. A read or parse failure is
-// recorded on ParseError rather than failing the whole List call -- one
-// unreadable or malformed blob must not hide every other orphan from the
-// operator. Hitting the header-size cap is not a failure: HeadersTruncated
-// is set and whatever headers were read before the cut are still used.
-func describeOrphan(ctx context.Context, st store.Store, b store.BlobRef) OrphanBlob {
+// Message-ID's duplicate/reference status. A read or parse failure on the
+// blob itself is recorded on ParseError rather than failing the whole List
+// call -- one unreadable or malformed blob must not hide every other orphan
+// from the operator. Hitting the header-size cap is not a failure:
+// HeadersTruncated is set and whatever headers were read before the cut are
+// still used.
+//
+// A SearchAdminMessages failure, by contrast, is returned as an error rather
+// than folded into a false "no duplicate" result: re #488, a transient store
+// error silently treated as "not found" is indistinguishable from a genuine
+// miss, so the operator would see a live message's Message-ID reported as
+// safe to restore when the lookup had in fact never run. Restore's own
+// duplicate check already surfaces such errors; List must agree with it
+// rather than default to the answer that looks safe.
+func describeOrphan(ctx context.Context, st store.Store, b store.BlobRef) (OrphanBlob, error) {
 	ob := OrphanBlob{Hash: b.Hash, Size: b.Size}
 	hdr, truncated, err := readBlobHeaders(ctx, st, b.Hash, MaxOrphanHeaderBytes)
 	if err != nil {
 		ob.ParseError = err.Error()
-		return ob
+		return ob, nil
 	}
 	msg, err := mailparse.ParseHeadersOnly(hdr)
 	if err != nil {
 		ob.ParseError = err.Error()
-		return ob
+		return ob, nil
 	}
 	ob.HeadersTruncated = truncated
 	ob.Date = parseDate(msg.Envelope.Date)
@@ -134,17 +147,25 @@ func describeOrphan(ctx context.Context, st store.Store, b store.BlobRef) Orphan
 	ob.Subject = msg.Envelope.Subject
 	ob.MessageID = msg.Envelope.MessageID
 	if ob.MessageID == "" {
-		return ob
+		return ob, nil
 	}
 	normID := mailparse.NormalizeMessageID(ob.MessageID)
 
-	if hits, serr := st.Meta().SearchAdminMessages(ctx, store.AdminMessageFilter{MessageID: normID, Limit: 1}); serr == nil && len(hits) > 0 {
+	hits, err := st.Meta().SearchAdminMessages(ctx, store.AdminMessageFilter{MessageID: normID, Limit: 1})
+	if err != nil {
+		return OrphanBlob{}, fmt.Errorf("SearchAdminMessages(MessageID): %w", err)
+	}
+	if len(hits) > 0 {
 		ob.DuplicateOfLiveMessageID = hits[0].MessageID
 	}
-	if hits, serr := st.Meta().SearchAdminMessages(ctx, store.AdminMessageFilter{ReferencesMessageID: normID, Limit: 1}); serr == nil && len(hits) > 0 {
+	hits, err = st.Meta().SearchAdminMessages(ctx, store.AdminMessageFilter{ReferencesMessageID: normID, Limit: 1})
+	if err != nil {
+		return OrphanBlob{}, fmt.Errorf("SearchAdminMessages(ReferencesMessageID): %w", err)
+	}
+	if len(hits) > 0 {
 		ob.ReferencedByLiveThread = true
 	}
-	return ob
+	return ob, nil
 }
 
 // RestoreResult reports what Restore did for one blob hash.
