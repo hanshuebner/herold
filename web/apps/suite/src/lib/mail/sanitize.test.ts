@@ -805,6 +805,25 @@ describe('sanitizeHtml — anchor rewrite', () => {
     expect(body).toContain('target="_blank"');
     expect(body).toContain('rel="noopener noreferrer"');
   });
+
+  // Issue #490: a real bulk newsletter's TOC linked to href="#2" etc with
+  // no matching id anywhere in the body, only legacy `<a name="2">`
+  // targets. The browser's own fragment-resolution algorithm falls back to
+  // an `<a name>` element when no id matches, and this sanitizer already
+  // keeps `name` (it has no explicit ALLOWED_ATTR, so DOMPurify's default
+  // allow-list applies, which retains `name`) -- pinned here so a future
+  // ALLOWED_ATTR/FORBID_ATTR change cannot silently drop it again. Verified
+  // live against the real #490 message: the resolvable links (matching an
+  // `<a name>`) scroll the reading pane; the ones with no id AND no name
+  // anywhere in the sender's own HTML correctly do nothing (see
+  // toc-fragment-anchor.spec.ts, which exercises the live browser fallback
+  // this unit test cannot -- jsdom/happy-dom has no layout engine).
+  it('keeps the name attribute on an anchor (legacy fragment-target fallback, issue #490)', () => {
+    const html = '<a name="2"></a>';
+    const body = bodyOf(sanitizeHtml(html, { loadImages: false, fragmentDocumentUrl: 'about:srcdoc' }));
+    expect(body).toContain('name="2"');
+  });
+
 });
 
 describe('sanitizeHtml — linkify plain-text URLs (issue #103)', () => {
