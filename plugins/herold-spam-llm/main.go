@@ -861,16 +861,20 @@ type modelVerdict struct {
 	HamSignals  []string `json:"ham_signals"`
 }
 
-// spamSignalVocabulary is the fixed set of names a json_schema-mode
-// classify response's spam_signals entries must draw from, unless the
-// entry uses the otherSignalPrefix escape (re #489): the building blocks
-// of internal/spam.DefaultDecisiveSpamSignals (each "+"-joined entry
-// split into its component names) plus the other spam-side traits the
-// system prompt already names as examples. signalSynonyms' entries are
-// deliberately excluded -- forcing the canonical spelling of a decisive
-// trait into the model's only fixed-vocabulary option is the point of
-// this schema change; a model in strict json_schema mode that means one
-// of them must say so via the "other:" form instead.
+// spamSignalVocabulary is the vocabulary a json_schema-mode classify
+// response's spam_signals entries are asked (via signalItemSchema's
+// "description", not a schema-enforced enum -- see that function) to
+// draw from, or to use the otherSignalPrefix escape for anything else
+// (re #489): the building blocks of internal/spam.DefaultDecisiveSpamSignals
+// (each "+"-joined entry split into its component names) plus the other
+// spam-side traits the system prompt already names as examples.
+// signalSynonyms' entries are deliberately excluded from the description
+// -- naming the canonical spelling of a decisive trait as the preferred
+// answer, without a synonym alongside it to pick instead, is the point;
+// a model that reports one of them anyway (or invents a new synonym) is
+// caught by normalizeSpamSignals below and by internal/spam's
+// server-side mirror, which is what actually resolves a decisive trait
+// regardless of the exact name the model chose for it.
 var spamSignalVocabulary = []string{
 	canonicalDecisiveSpamSignal,
 	"unauthenticated_sender",
@@ -895,23 +899,40 @@ var hamSignalVocabulary = []string{
 	"legitimate_business_training",
 }
 
-// otherSignalPrefix is the escape hatch a spam_signals/ham_signals entry
-// naming a trait outside its fixed vocabulary uses (re #489): "other:
-// <free text>" rather than an invented bare name, so a json_schema
-// response never blocks the model from reporting something new.
+// otherSignalPrefix is the free-text form a spam_signals/ham_signals
+// entry naming a trait outside its described vocabulary is asked to use
+// (re #489): "other:<free text>" rather than an invented bare name.
 const otherSignalPrefix = "other:"
 
 // signalItemSchema builds the json_schema "items" sub-schema for a
-// spam_signals/ham_signals array: each entry is either one of vocabulary
-// (case-sensitive, matching the snake_case names the prompt and
-// signalSynonyms use) or an otherSignalPrefix-prefixed free-text string.
+// spam_signals/ham_signals array entry: a plain string, with the fixed
+// vocabulary and the otherSignalPrefix escape stated only in
+// "description" rather than enforced via "enum"/"anyOf" (re #489).
+//
+// An earlier version of this schema enforced the vocabulary with
+// {"type":"string","anyOf":[{"enum":[...]},{"pattern":"^other:.+$"}]}.
+// That shape broke every production classify call the moment it
+// deployed: Anthropic's OpenAI-compatible endpoint
+// (https://api.anthropic.com/v1) rejects a "type" keyword sitting
+// alongside "anyOf"/"oneOf"/"allOf" in a strict json_schema
+// response_format, returning HTTP 400
+// invalid_request_error "response_format.json_schema.schema: For
+// 'anyOf', 'type' is not supported" -- a quirk not previously recorded
+// here (the other one is: no "minimum"/"maximum" on a number property,
+// see spamVerdictJSONSchema and classifyJSONSchema below). A bare
+// "enum" (no "anyOf") does not trigger it -- see classifyJSONSchema's
+// "category" property -- but a plain enum cannot also express the
+// "other:<free text>" escape, so this function drops schema-level
+// vocabulary enforcement entirely rather than reintroduce a shape with
+// unknown acceptance. The vocabulary therefore only guides the model;
+// normalizeSpamSignals (this file) and internal/spam's mirror are the
+// mechanism that actually resolves a decisive trait reported under a
+// different name.
 func signalItemSchema(vocabulary []string) map[string]any {
 	return map[string]any{
 		"type": "string",
-		"anyOf": []map[string]any{
-			{"enum": append([]string(nil), vocabulary...)},
-			{"pattern": "^" + otherSignalPrefix + ".+$"},
-		},
+		"description": "one of: " + strings.Join(vocabulary, ", ") +
+			"; or \"" + otherSignalPrefix + "<free text>\" for any other trait",
 	}
 }
 
@@ -934,9 +955,10 @@ var spamVerdictJSONSchema = map[string]any{
 		// alone. Required (not merely present-if-relevant) because strict
 		// json_schema mode demands every declared property be listed in
 		// "required"; an empty array is a valid, meaningful answer ("no
-		// signals of this kind"). Items are constrained to a fixed
-		// vocabulary plus an "other:" escape (re #489) so a decisive
-		// trait cannot be spelled as an unlisted synonym.
+		// signals of this kind"). Items are plain strings whose
+		// description states the fixed vocabulary plus the "other:"
+		// escape (re #489); see signalItemSchema for why the vocabulary
+		// is not schema-enforced.
 		"spam_signals": map[string]any{"type": "array", "items": signalItemSchema(spamSignalVocabulary), "description": "traits arguing this message is spam, drawn from the fixed vocabulary or \"other:<free text>\""},
 		"ham_signals":  map[string]any{"type": "array", "items": signalItemSchema(hamSignalVocabulary), "description": "traits arguing this message is not spam, drawn from the fixed vocabulary or \"other:<free text>\""},
 	},

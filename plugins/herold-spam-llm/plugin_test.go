@@ -1371,12 +1371,15 @@ func TestClassify_ResponseFormatJSONSchema(t *testing.T) {
 
 // TestClassify_ResponseFormatJSONSchema_SpamSignalsVocabulary is the
 // #489 plugin unit test for item 1: the json_schema schema's
-// spam_signals items enum names the canonical decisive signal
-// ("unsolicited_bulk_marketing") but excludes every synonym
-// internal/spam recognises for it, and offers the "other:<free text>"
-// escape for anything outside the fixed vocabulary -- so a strict-mode
-// model cannot spell the decisive trait as an unlisted synonym while
-// remaining free to report a novel trait.
+// spam_signals items are a plain string property whose description
+// names the canonical decisive signal ("unsolicited_bulk_marketing"),
+// excludes every synonym internal/spam recognises for it, and states
+// the "other:<free text>" escape for anything outside the described
+// vocabulary. The vocabulary is not schema-enforced (an "anyOf"
+// alongside "type" is what broke every production classify call, re
+// #489 regression) -- normalizeSpamSignals is what actually resolves a
+// synonym onto the canonical name; this test only asserts what the
+// model is told.
 func TestClassify_ResponseFormatJSONSchema_SpamSignalsVocabulary(t *testing.T) {
 	body := captureRequestBody(t, map[string]any{"response_format": "json_schema"})
 	rf, _ := body["response_format"].(map[string]any)
@@ -1391,34 +1394,158 @@ func TestClassify_ResponseFormatJSONSchema_SpamSignalsVocabulary(t *testing.T) {
 	if !ok {
 		t.Fatalf("spam_signals.items missing or wrong type: %#v", spamSignalsProp["items"])
 	}
-	anyOf, ok := items["anyOf"].([]any)
-	if !ok || len(anyOf) != 2 {
-		t.Fatalf("spam_signals.items.anyOf = %#v, want a 2-entry anyOf (vocabulary enum, other: pattern)", items["anyOf"])
+	if items["type"] != "string" {
+		t.Fatalf("spam_signals.items.type = %#v, want \"string\"", items["type"])
 	}
-	enumEntry, ok := anyOf[0].(map[string]any)
+	if _, hasAnyOf := items["anyOf"]; hasAnyOf {
+		t.Fatalf("spam_signals.items carries \"anyOf\" alongside \"type\": %#v -- this exact shape is what the Anthropic-compatible endpoint rejected in production (re #489)", items)
+	}
+	if _, hasEnum := items["enum"]; hasEnum {
+		t.Fatalf("spam_signals.items carries \"enum\": %#v, want the vocabulary stated only in \"description\" (an enum would block the \"other:\" escape)", items)
+	}
+	desc, ok := items["description"].(string)
 	if !ok {
-		t.Fatalf("spam_signals.items.anyOf[0] = %#v, want the vocabulary enum", anyOf[0])
+		t.Fatalf("spam_signals.items.description missing or wrong type: %#v", items["description"])
 	}
-	enumVals, ok := enumEntry["enum"].([]any)
-	if !ok {
-		t.Fatalf("spam_signals.items.anyOf[0].enum missing or wrong type: %#v", enumEntry["enum"])
-	}
-	gotEnum := map[string]bool{}
-	for _, e := range enumVals {
-		gotEnum[fmt.Sprint(e)] = true
-	}
-	if !gotEnum["unsolicited_bulk_marketing"] {
-		t.Fatalf("spam_signals vocabulary = %v, missing the canonical decisive name unsolicited_bulk_marketing", enumVals)
+	if !strings.Contains(desc, "unsolicited_bulk_marketing") {
+		t.Fatalf("spam_signals.items.description = %q, missing the canonical decisive name unsolicited_bulk_marketing", desc)
 	}
 	for _, synonym := range []string{"unsolicited_marketing_pitch", "cold_marketing_pitch", "unsolicited_commercial_email"} {
-		if gotEnum[synonym] {
-			t.Fatalf("spam_signals vocabulary = %v, must exclude the synonym %q so a strict-mode model cannot spell the decisive trait that way", enumVals, synonym)
+		if strings.Contains(desc, synonym) {
+			t.Fatalf("spam_signals.items.description = %q, must not name the synonym %q as a described option", desc, synonym)
 		}
 	}
-	patternEntry, ok := anyOf[1].(map[string]any)
-	if !ok || patternEntry["pattern"] != "^other:.+$" {
-		t.Fatalf("spam_signals.items.anyOf[1] = %#v, want the other: escape pattern", anyOf[1])
+	if !strings.Contains(desc, "other:") {
+		t.Fatalf("spam_signals.items.description = %q, missing the \"other:\" escape", desc)
 	}
+}
+
+// anthropicCompatSchemaViolations recursively walks a json_schema
+// "schema" value (or any nested sub-schema within it) and reports every
+// way its shape breaks a recorded Anthropic OpenAI-compatible-endpoint
+// quirk (re #489, re #302): a "type" keyword sitting alongside
+// "anyOf"/"oneOf"/"allOf" at the same level, or a numeric
+// "minimum"/"maximum"/"exclusiveMinimum"/"exclusiveMaximum" bound
+// anywhere. Used only by anthropicCompatHandler below, the in-tree fake
+// that reproduces the production rejection so the plugin's schema shape
+// is exercised against it before it ships, rather than only against a
+// fake that merely captures the request.
+func anthropicCompatSchemaViolations(v any) []string {
+	var out []string
+	switch val := v.(type) {
+	case map[string]any:
+		for _, combiner := range []string{"anyOf", "oneOf", "allOf"} {
+			if _, hasCombiner := val[combiner]; hasCombiner {
+				if _, hasType := val["type"]; hasType {
+					out = append(out, fmt.Sprintf("For '%s', 'type' is not supported", combiner))
+				}
+			}
+		}
+		for _, bound := range []string{"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum"} {
+			if _, hasBound := val[bound]; hasBound {
+				out = append(out, fmt.Sprintf("'%s' is not supported", bound))
+			}
+		}
+		for _, nested := range val {
+			out = append(out, anthropicCompatSchemaViolations(nested)...)
+		}
+	case []any:
+		for _, item := range val {
+			out = append(out, anthropicCompatSchemaViolations(item)...)
+		}
+	}
+	return out
+}
+
+// anthropicCompatHandler is a fakeLLM handler that validates an incoming
+// response_format=json_schema payload the same way
+// https://api.anthropic.com/v1 has been observed to (re #489): a schema
+// that anthropicCompatSchemaViolations flags gets the same HTTP 400
+// invalid_request_error shape production logged
+// ("herold-spam-llm non-200 status=400
+// body_prefix={\"error\":{\"code\":\"invalid_request_error\", ...")
+// instead of a canned verdict.
+func anthropicCompatHandler(t *testing.T, verdictJSON string) http.HandlerFunc {
+	t.Helper()
+	return func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		var decoded map[string]any
+		if err := json.Unmarshal(body, &decoded); err != nil {
+			t.Fatalf("decode request body: %v (raw=%s)", err, body)
+		}
+		if rf, _ := decoded["response_format"].(map[string]any); rf["type"] == "json_schema" {
+			js, _ := rf["json_schema"].(map[string]any)
+			schema, _ := js["schema"].(map[string]any)
+			if violations := anthropicCompatSchemaViolations(schema); len(violations) > 0 {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(fmt.Sprintf(
+					`{"error":{"code":"invalid_request_error","message":"response_format.json_schema.schema: %s"}}`,
+					violations[0])))
+				return
+			}
+		}
+		replyJSON(w, verdictJSON)
+	}
+}
+
+// TestClassify_JSONSchemaPayload_AcceptedByAnthropicCompatFake is the
+// #489 regression test (items 2/3): every response_format=json_schema
+// payload the plugin can emit -- the legacy spam.classify schema and the
+// mail.classify schema -- must be accepted by anthropicCompatHandler's
+// fake validator. Before the fix, spamVerdictJSONSchema/classifyJSONSchema
+// paired "anyOf" with a sibling "type" on the spam_signals/ham_signals
+// items, and this test fails with the exact production symptom (a
+// non-nil classify error carrying the 400 invalid_request_error body);
+// after the fix, both calls succeed against the fake.
+func TestClassify_JSONSchemaPayload_AcceptedByAnthropicCompatFake(t *testing.T) {
+	t.Run("legacy_spam_classify", func(t *testing.T) {
+		llm := newFakeLLM(t)
+		llm.setHandler(anthropicCompatHandler(t, `{"verdict":"ham","score":0.1,"reason":"ok","spam_signals":[],"ham_signals":[]}`))
+
+		bin := buildPlugin(t)
+		p := spawnPlugin(t, bin)
+		defer p.close()
+		p.initialize(t)
+		if err := p.configure(t, map[string]any{
+			"endpoint":        llm.endpoint(),
+			"model":           "fake",
+			"spam_threshold":  0.5,
+			"response_format": "json_schema",
+		}); err != nil {
+			t.Fatalf("configure: %v", err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, err := p.classify(ctx, canonicalPayload("please review")); err != nil {
+			t.Fatalf("spam.classify rejected by the Anthropic-compat fake: %v", err)
+		}
+	})
+
+	t.Run("mail_classify", func(t *testing.T) {
+		llm := newFakeLLM(t)
+		llm.setHandler(anthropicCompatHandler(t, `{"verdict":"ham","score":0.1,"reason":"ok","category":"","spam_signals":[],"ham_signals":[]}`))
+
+		bin := buildPlugin(t)
+		p := spawnPlugin(t, bin)
+		defer p.close()
+		p.initialize(t)
+		if err := p.configure(t, map[string]any{
+			"endpoint":        llm.endpoint(),
+			"model":           "fake",
+			"spam_threshold":  0.5,
+			"response_format": "json_schema",
+		}); err != nil {
+			t.Fatalf("configure: %v", err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, err := p.mailClassify(ctx, canonicalPayload("please review")); err != nil {
+			t.Fatalf("mail.classify rejected by the Anthropic-compat fake: %v", err)
+		}
+	})
 }
 
 // TestClassify_ResponseFormatNone asserts that response_format="none"
