@@ -1,6 +1,7 @@
 package com.netzhansa.herold.shared.jmap
 
 import io.ktor.client.HttpClient
+import io.ktor.client.plugins.timeout
 import io.ktor.client.request.header
 import io.ktor.client.request.prepareGet
 import io.ktor.client.statement.bodyAsChannel
@@ -47,6 +48,13 @@ class EventSourceClient(
             header(HttpHeaders.Accept, "text/event-stream")
             header(HttpHeaders.CacheControl, "no-cache")
             lastEventId?.let { header("Last-Event-ID", it) }
+            // The read timeout is derived from the negotiated ping interval
+            // (issue #493), not the engine's default: an idle stream is
+            // healthy for up to pingSeconds between frames, so a shorter
+            // read timeout ends it on a ping that has merely not arrived
+            // yet. This override reaches only this request; ordinary JMAP
+            // calls keep the engine's own timeout (createHttpClient()).
+            timeout { socketTimeoutMillis = eventStreamReadTimeoutMillis(pingSeconds) }
         }.execute { response ->
             // The stream is open, so the server is there - which the
             // shell's offline indication follows even when no sync pass
@@ -79,3 +87,22 @@ class EventSourceClient(
         val DEFAULT_TYPES = listOf("Email", "Mailbox", "Thread", "Identity")
     }
 }
+
+/**
+ * Margin added on top of two ping periods (issue #493): scheduling jitter on
+ * the server's ping timer, or a client-side coroutine dispatch delay, must
+ * not itself cost a reconnect.
+ */
+private const val EVENT_STREAM_TIMEOUT_MARGIN_SECONDS = 15
+
+/**
+ * The event stream's socket-read timeout for a connection that negotiated
+ * [pingSeconds]: an idle but healthy stream can go a full ping period
+ * without a frame, so a timeout of one ping period risks firing on a ping
+ * that is merely running late rather than lost. Two ping periods plus a
+ * margin tolerates one missed ping outright.
+ */
+internal fun eventStreamReadTimeoutMillis(
+    pingSeconds: Int,
+    marginSeconds: Int = EVENT_STREAM_TIMEOUT_MARGIN_SECONDS,
+): Long = (pingSeconds.toLong() * 2 + marginSeconds) * 1000L
