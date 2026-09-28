@@ -1,6 +1,7 @@
 package com.netzhansa.herold.android.push
 
 import android.content.Context
+import com.netzhansa.herold.android.diag.DiagLog
 import org.unifiedpush.android.connector.UnifiedPush
 
 /**
@@ -55,6 +56,7 @@ object UnifiedPushTransport {
      */
     fun register(context: Context): Boolean {
         val distributor = effective(context) ?: return false
+        DiagLog.i(TAG, "UnifiedPush registration attempt started: distributor=$distributor")
         UnifiedPush.saveDistributor(context, distributor)
         UnifiedPush.registerApp(context, INSTANCE)
         return true
@@ -77,4 +79,6 @@ object UnifiedPushTransport {
         val packages = context.packageManager
         packages.getApplicationLabel(packages.getApplicationInfo(distributor, 0)).toString()
     }.getOrDefault(distributor)
+
+    private const val TAG = "herold.push"
 }

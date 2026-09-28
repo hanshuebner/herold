@@ -339,6 +339,7 @@ private fun PushTransportSection() {
         text = transportSummary(
             resolved = push.transport()?.wire,
             distributorLabel = distributor?.let { push.distributorLabel(it) },
+            pushUnavailableInBuild = push.pushUnavailableInBuild,
         ),
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -400,12 +401,20 @@ private fun PushTransportSection() {
 }
 
 /** What the current setting actually resolves to on this device. */
-private fun transportSummary(resolved: String?, distributorLabel: String?): String = when (resolved) {
+private fun transportSummary(
+    resolved: String?,
+    distributorLabel: String?,
+    pushUnavailableInBuild: Boolean,
+): String = when (resolved) {
     "fcm" -> "Pushes arrive over Google's Firebase Cloud Messaging."
     "unifiedpush" -> distributorLabel
         ?.let { "Pushes arrive through $it, your UnifiedPush distributor." }
         ?: "Pushes arrive through your UnifiedPush distributor."
-    else -> "No transport on this device: install a UnifiedPush distributor to receive push."
+    else -> if (pushUnavailableInBuild) {
+        "Push is not available in this build."
+    } else {
+        "No transport on this device: install a UnifiedPush distributor to receive push."
+    }
 }
 
 /**

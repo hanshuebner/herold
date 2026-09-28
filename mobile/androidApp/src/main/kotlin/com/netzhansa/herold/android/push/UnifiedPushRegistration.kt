@@ -43,6 +43,7 @@ class UnifiedPushRegistration(private val context: Context) {
         val keys = keys() ?: return null
         container.restore()
         val registrar = container.session.value?.pushRegistrar ?: return null
+        DiagLog.i(TAG, "UnifiedPush server registration attempt started")
         val outcome = registrar.registerUnifiedPush(endpoint, keys)
         when (outcome) {
             is RegistrationOutcome.Rejected ->

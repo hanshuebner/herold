@@ -14,8 +14,11 @@ import com.netzhansa.herold.shared.push.RegistrationOutcome
  * Registration needs a session, because the subscription is bound to the
  * authenticated principal, and it needs a transport: FCM where Play
  * Services carries it and the build has a Firebase project, a UnifiedPush
- * distributor otherwise. With neither, the app runs unchanged and reports
- * push unavailable.
+ * distributor on a device with no Play Services. A Play-Services device
+ * whose build has no Firebase project never falls through to UnifiedPush:
+ * it reports push unavailable, because the device would use FCM the
+ * moment the build offered it and a silent UnifiedPush registration would
+ * hide that the build shipped without push (re #499).
  */
 class PushController(
     private val context: Context,
@@ -35,6 +38,16 @@ class PushController(
     /** True when a UnifiedPush distributor is installed. */
     val unifiedPushAvailable: Boolean get() = UnifiedPushTransport.available(context)
 
+    /**
+     * True when this device has Play Services but the build was not given
+     * a Firebase project, which is the one combination Automatic never
+     * falls through to UnifiedPush for: the device would use FCM if the
+     * build offered it, so settings says the build lacks push rather than
+     * implying a distributor would help.
+     */
+    val pushUnavailableInBuild: Boolean
+        get() = !FirebaseSetup.configured && playServicesAvailable()
+
     /** What the user asked for; Automatic until they say otherwise. */
     var choice: PushTransportChoice
         get() = PushTransportChoice.fromStored(prefs.getString(KEY_TRANSPORT, null))
@@ -53,15 +66,12 @@ class PushController(
      * The transport [choice] resolves to on this device, null when the
      * chosen one cannot carry a push here.
      */
-    fun transport(): PushTransport? = when (choice) {
-        PushTransportChoice.FCM -> PushTransport.FCM.takeIf { fcmAvailable }
-        PushTransportChoice.UNIFIED_PUSH -> PushTransport.UNIFIED_PUSH.takeIf { unifiedPushAvailable }
-        PushTransportChoice.AUTOMATIC -> when {
-            fcmAvailable -> PushTransport.FCM
-            unifiedPushAvailable -> PushTransport.UNIFIED_PUSH
-            else -> null
-        }
-    }
+    fun transport(): PushTransport? = resolveTransport(
+        choice = choice,
+        fcmAvailable = fcmAvailable,
+        playServicesAvailable = playServicesAvailable(),
+        unifiedPushAvailable = unifiedPushAvailable,
+    )
 
     /** The user turned the system permission down; do not ask again unprompted. */
     var permissionDenied: Boolean
