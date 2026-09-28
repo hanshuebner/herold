@@ -21,12 +21,27 @@ package protosmtp_test
 // Message-ID for an unrelated message now also folds (matching the
 // importer's own acceptance of that rare case), landing in both the
 // original and the redelivery's resolved mailboxes.
+//
+// TestDelivery_DedupNoMessageID_BlobHashFallback_* covers work item 4's
+// third scenario: a message with no Message-ID header at all falls back
+// to the blob-hash dedup (REQ-IMAP-IMP-30's own no-Message-ID fallback),
+// folding a byte-identical redelivery onto the existing row.
+//
+// TestDelivery_DedupMessageID_CrossPrincipal_TwoRows_* pins the dedup
+// lookup's principal scope: the same Message-ID delivered to two
+// different principals must never fold across accounts -- each principal
+// gets its own row.
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
+	"fmt"
+	"io"
 	"strings"
 	"testing"
 
+	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/protosmtp"
 	"github.com/hanshuebner/herold/internal/store"
 )
@@ -195,5 +210,202 @@ func testDeliveryDedupMirrorFirst(t *testing.T, storeFactory func(t *testing.T) 
 			e.ParentEntityID == uint64(mb.ID) && e.Op == store.ChangeOpCreated {
 			t.Fatalf("redelivery produced a second ChangeOpCreated(message=%d, mailbox=Inbox) entry -- the push dispatcher would send a duplicate new-mail notification", mirrorID)
 		}
+	}
+}
+
+func TestDelivery_DedupNoMessageID_BlobHashFallback_SQLite(t *testing.T) {
+	testDeliveryDedupNoMessageIDBlobHashFallback(t, func(*testing.T) store.Store { return nil })
+}
+
+func TestDelivery_DedupNoMessageID_BlobHashFallback_Postgres(t *testing.T) {
+	testDeliveryDedupNoMessageIDBlobHashFallback(t, newPGStoreFactory)
+}
+
+// testDeliveryDedupNoMessageIDBlobHashFallback covers the no-Message-ID
+// branch of dedupOntoExistingMessage: without a Message-ID header to key
+// on, the lookup falls back to matching the stored blob hash, exactly as
+// imapimport/sync.go's ingestMessage does for the same case
+// (REQ-IMAP-IMP-30) -- without it a no-Message-ID message redelivered
+// with byte-identical content would insert a fresh row every time.
+func testDeliveryDedupNoMessageIDBlobHashFallback(t *testing.T, storeFactory func(t *testing.T) store.Store) {
+	f := newFixture(t, fixtureOpts{mode: protosmtp.RelayIn, store: storeFactory(t)})
+	ctx := context.Background()
+
+	mb, err := f.ha.Store.Meta().GetMailboxByName(ctx, f.principal, "INBOX")
+	if err != nil {
+		t.Fatalf("GetMailboxByName: %v", err)
+	}
+
+	// Deliberately no Message-ID header.
+	body := "From: bob@sender.test\r\nTo: alice@example.test\r\n" +
+		"Subject: no message-id dedup probe\r\n\r\nBody text.\r\n.\r\n"
+
+	deliver := func(t *testing.T) {
+		t.Helper()
+		cli, closeFn := f.dial(t)
+		defer closeFn()
+		mustOK(t, cli, 220)
+		cli.send(t, "EHLO client.example.test")
+		mustOK(t, cli, 250)
+		cli.send(t, "MAIL FROM:<bob@sender.test>")
+		mustOK(t, cli, 250)
+		cli.send(t, "RCPT TO:<alice@example.test>")
+		mustOK(t, cli, 250)
+		cli.send(t, "DATA")
+		mustOK(t, cli, 354)
+		cli.sendRaw(t, []byte(body))
+		mustOK(t, cli, 250)
+		cli.send(t, "QUIT")
+		mustOK(t, cli, 221)
+	}
+
+	// Probe delivery: learn the exact bytes this pipeline stores for this
+	// content -- the Received/Authentication-Results prefix it stamps
+	// depends on session/clock state this test does not otherwise
+	// control.
+	deliver(t)
+	probes, err := f.ha.Store.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 10, WithEnvelope: true})
+	if err != nil {
+		t.Fatalf("ListMessages (probe): %v", err)
+	}
+	if len(probes) != 1 {
+		t.Fatalf("probe delivery: want 1 message, got %d", len(probes))
+	}
+	probe := probes[0]
+	if probe.Envelope.MessageID != "" {
+		t.Fatalf("test fixture bug: probe message unexpectedly carries a Message-ID %q", probe.Envelope.MessageID)
+	}
+	rdr, err := f.ha.Store.Blobs().Get(ctx, probe.Blob.Hash)
+	if err != nil {
+		t.Fatalf("Blobs().Get(probe): %v", err)
+	}
+	raw, err := io.ReadAll(rdr)
+	rdr.Close()
+	if err != nil {
+		t.Fatalf("read probe blob: %v", err)
+	}
+
+	// Roll back the probe: remove its only membership, which deletes the
+	// row (and its blob refcount) entirely, so the pre-existing row
+	// seeded below is the only prior copy.
+	if err := f.ha.Store.Meta().RemoveMessageFromMailbox(ctx, probe.ID, mb.ID); err != nil {
+		t.Fatalf("RemoveMessageFromMailbox (probe): %v", err)
+	}
+
+	// Seed a pre-existing row carrying this exact no-Message-ID content,
+	// unread in Inbox -- e.g. an IMAP-mirrored message whose source never
+	// set a Message-ID header.
+	blobRef, err := f.ha.Store.Blobs().Put(ctx, bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("Blobs.Put (existing): %v", err)
+	}
+	existingMsg := store.Message{
+		PrincipalID:     f.principal,
+		Size:            blobRef.Size,
+		Blob:            blobRef,
+		InternalDate:    f.ha.Clock.Now(),
+		ReceivedAt:      f.ha.Clock.Now(),
+		Envelope:        probe.Envelope,
+		IngestSource:    store.IngestSourceIMAPImport,
+		IngestSourceRef: "classic-computing.de",
+	}
+	if _, _, err := f.ha.Store.Meta().InsertMessage(ctx, existingMsg, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
+		t.Fatalf("InsertMessage (existing): %v", err)
+	}
+	existingRows, err := f.ha.Store.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListMessages (after seeding existing): %v", err)
+	}
+	if len(existingRows) != 1 {
+		t.Fatalf("after seeding the existing row: want 1 message in INBOX, got %d", len(existingRows))
+	}
+	existingID := existingRows[0].ID
+
+	// The SMTP redelivery arrives with byte-identical content (the fake
+	// clock held by the harness is not advanced, and the connection
+	// parameters are unchanged).
+	deliver(t)
+
+	finalMsgs, err := f.ha.Store.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 10, WithEnvelope: true})
+	if err != nil {
+		t.Fatalf("ListMessages (final): %v", err)
+	}
+	if len(finalMsgs) != 1 {
+		t.Fatalf("after redelivering a no-Message-ID message with identical content: want 1 row in INBOX, got %d", len(finalMsgs))
+	}
+	if finalMsgs[0].ID != existingID {
+		t.Fatalf("dedup created a new row (id=%d) instead of folding onto the existing no-Message-ID row (id=%d) via the blob-hash fallback",
+			finalMsgs[0].ID, existingID)
+	}
+	final, err := f.ha.Store.Meta().GetMessage(ctx, finalMsgs[0].ID)
+	if err != nil {
+		t.Fatalf("GetMessage(final): %v", err)
+	}
+	if final.IngestSource != store.IngestSourceIMAPImport {
+		t.Fatalf("dedup fold rewrote IngestSource = %q, want %q (the existing row's provenance)",
+			final.IngestSource, store.IngestSourceIMAPImport)
+	}
+}
+
+func TestDelivery_DedupMessageID_CrossPrincipal_TwoRows_SQLite(t *testing.T) {
+	testDeliveryDedupCrossPrincipalTwoRows(t, func(*testing.T) store.Store { return nil })
+}
+
+func TestDelivery_DedupMessageID_CrossPrincipal_TwoRows_Postgres(t *testing.T) {
+	testDeliveryDedupCrossPrincipalTwoRows(t, newPGStoreFactory)
+}
+
+// testDeliveryDedupCrossPrincipalTwoRows pins the dedup lookup's
+// principal scope: GetMessageByMessageIDHeader/GetMessageByBlobHash are
+// both (principalID, key) lookups, so the same Message-ID delivered to
+// two different principals must never fold across accounts -- each
+// principal's delivery is independent and gets its own row.
+func testDeliveryDedupCrossPrincipalTwoRows(t *testing.T, storeFactory func(t *testing.T) store.Store) {
+	f := newFixture(t, fixtureOpts{mode: protosmtp.RelayIn, store: storeFactory(t)})
+	ctx := context.Background()
+
+	dir := directory.New(f.ha.Store.Meta(), f.ha.Logger, f.ha.Clock, rand.Reader)
+	if _, err := dir.CreatePrincipal(ctx, "carol@example.test", "correct-horse-staple-battery"); err != nil {
+		t.Fatalf("CreatePrincipal(carol): %v", err)
+	}
+
+	deliverTo := func(t *testing.T, rcpt string) {
+		t.Helper()
+		cli, closeFn := f.dial(t)
+		defer closeFn()
+		mustOK(t, cli, 220)
+		cli.send(t, "EHLO client.example.test")
+		mustOK(t, cli, 250)
+		cli.send(t, "MAIL FROM:<bob@sender.test>")
+		mustOK(t, cli, 250)
+		cli.send(t, fmt.Sprintf("RCPT TO:<%s>", rcpt))
+		mustOK(t, cli, 250)
+		cli.send(t, "DATA")
+		mustOK(t, cli, 354)
+		body := fmt.Sprintf("From: bob@sender.test\r\nTo: %s\r\n"+
+			"Message-ID: <cross-principal-496@sender.test>\r\n"+
+			"Subject: cross principal probe\r\n\r\nBody text.\r\n.\r\n", rcpt)
+		cli.sendRaw(t, []byte(body))
+		mustOK(t, cli, 250)
+		cli.send(t, "QUIT")
+		mustOK(t, cli, 221)
+	}
+
+	deliverTo(t, "alice@example.test")
+	deliverTo(t, "carol@example.test")
+
+	hits, err := f.ha.Store.Meta().SearchAdminMessages(ctx, store.AdminMessageFilter{MessageID: "cross-principal-496@sender.test", Limit: 10})
+	if err != nil {
+		t.Fatalf("SearchAdminMessages: %v", err)
+	}
+	if len(hits) != 2 {
+		t.Fatalf("SearchAdminMessages(cross-principal-496) hits = %d, want 2 (one row per principal, no cross-principal fold)", len(hits))
+	}
+	principals := map[store.PrincipalID]bool{}
+	for _, h := range hits {
+		principals[h.PrincipalID] = true
+	}
+	if len(principals) != 2 {
+		t.Fatalf("hits span %d distinct principal(s), want 2: %+v", len(principals), hits)
 	}
 }
