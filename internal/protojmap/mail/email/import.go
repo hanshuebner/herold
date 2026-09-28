@@ -318,6 +318,35 @@ func (i *importHandler) importOne(
 		}, nil
 	}
 	env := buildEnvelopeFromParsed(parsed)
+	flags, customKW := flagsAndKeywordsFromJMAP(in.Keywords)
+
+	// Dedup against a live message the principal already holds (re #496):
+	// the IMAP mirror already folds a re-imported Message-ID onto the
+	// existing row instead of inserting a second one (REQ-IMAP-IMP-30);
+	// Email/import inserted unconditionally. Primary dedup is by
+	// normalised Message-ID, unconditional on a hit -- mirroring
+	// imapimport/sync.go's ingestMessage exactly: a sender reusing a
+	// Message-ID for an unrelated message is the same rare collision the
+	// import already accepts, not something this guards against with a
+	// blob-hash comparison. Only when the message carries no Message-ID
+	// header does this fall back to matching by blob hash (ref is the
+	// just-uploaded blob re-put verbatim via putCanonical above), exactly
+	// as the import's own no-Message-ID fallback does.
+	var existing store.Message
+	var lookupErr error
+	rawMsgID := parsed.Envelope.MessageID
+	if rawMsgID != "" {
+		normID := mailparse.NormalizeMessageID(rawMsgID)
+		existing, lookupErr = i.h.store.Meta().GetMessageByMessageIDHeader(ctx, ownerPID, normID)
+	} else {
+		existing, lookupErr = i.h.store.Meta().GetMessageByBlobHash(ctx, ownerPID, ref.Hash)
+	}
+	if lookupErr == nil {
+		return i.foldOntoExisting(ctx, existing, mailboxIDs, flags, customKW)
+	}
+	if !errors.Is(lookupErr, store.ErrNotFound) {
+		return jmapEmail{}, nil, fmt.Errorf("email: import dedup lookup: %w", lookupErr)
+	}
 
 	receivedAt := i.h.clk.Now()
 	if in.ReceivedAt != nil {
@@ -325,7 +354,6 @@ func (i *importHandler) importOne(
 			receivedAt = t
 		}
 	}
-	flags, customKW := flagsAndKeywordsFromJMAP(in.Keywords)
 	msg := store.Message{
 		PrincipalID:  ownerPID,
 		InternalDate: receivedAt,
@@ -376,4 +404,48 @@ func (i *importHandler) importOne(
 		return jmapEmail{}, nil, fmt.Errorf("email: bump thread state: %w", err)
 	}
 	return renderEmailMetadata(msg), nil, nil
+}
+
+// foldOntoExisting applies an Email/import create's requested mailboxIDs
+// and keywords/flags onto an already-live message instead of inserting a
+// second row under the same Message-ID (re #496). Every mailbox in
+// mailboxIDs becomes a membership on existing (idempotent -- one it
+// already belongs to is left alone); each such membership's flags and
+// keywords are OR'd in, never cleared, so an already-seen or already-
+// labelled copy never regresses. AddMessageToMailbox and UpdateMessageFlags
+// each append their own state-change entry, so the client sees the new
+// membership without a separate JMAP-state bump here (matching how the
+// IMAP importer's own dedup hit, sync.go's placeExistingMessage, folds a
+// re-mirrored Message-ID without one either).
+func (i *importHandler) foldOntoExisting(
+	ctx context.Context,
+	existing store.Message,
+	mailboxIDs []store.MailboxID,
+	flags store.MessageFlags,
+	customKW []string,
+) (jmapEmail, *setError, error) {
+	already := make(map[store.MailboxID]bool, len(existing.Mailboxes))
+	for _, mm := range existing.Mailboxes {
+		already[mm.MailboxID] = true
+	}
+	for _, mbID := range mailboxIDs {
+		if !already[mbID] {
+			if _, _, err := i.h.store.Meta().AddMessageToMailbox(ctx, existing.ID, mbID); err != nil {
+				if !errors.Is(err, store.ErrConflict) {
+					return jmapEmail{}, nil, fmt.Errorf("email: import dedup AddMessageToMailbox: %w", err)
+				}
+				// ErrConflict: another request already added it.
+			}
+		}
+		if flags != 0 || len(customKW) > 0 {
+			if _, err := i.h.store.Meta().UpdateMessageFlags(ctx, existing.ID, mbID, flags, 0, customKW, nil, 0); err != nil {
+				return jmapEmail{}, nil, fmt.Errorf("email: import dedup UpdateMessageFlags: %w", err)
+			}
+		}
+	}
+	refreshed, err := i.h.store.Meta().GetMessage(ctx, existing.ID)
+	if err != nil {
+		return jmapEmail{}, nil, fmt.Errorf("email: import dedup reload: %w", err)
+	}
+	return renderEmailMetadata(refreshed), nil, nil
 }

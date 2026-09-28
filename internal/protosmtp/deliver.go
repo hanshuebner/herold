@@ -689,6 +689,26 @@ func (sess *session) deliverOne(
 			ReceivedTo: strings.ToLower(rc.addr),
 		})
 	}
+
+	// Dedup against a live message the principal already holds under
+	// this delivery's Message-ID (re #496): the IMAP/JMAP importers
+	// already fold a re-delivered Message-ID onto the existing row
+	// (REQ-IMAP-IMP-30) instead of inserting a second one; SMTP delivery
+	// inserted unconditionally, so a message the mirror had already
+	// imported became a second live row in the same thread the moment
+	// the same mail also arrived by SMTP. handled==true means the
+	// delivery was folded onto the existing row and this recipient is
+	// done; handled==false falls through to the normal insert below (no
+	// Message-ID and no matching blob hash either, matching the
+	// import's own no-Message-ID fallback miss).
+	if rc.principalID != 0 {
+		if handled, derr := sess.dedupOntoExistingMessage(ctx, rc, msg, blobRef, messageMailboxes, classification); derr != nil {
+			return false, derr
+		} else if handled {
+			return true, nil
+		}
+	}
+
 	storeMsg := store.Message{
 		PrincipalID:  rc.principalID,
 		Size:         blobRef.Size,
@@ -770,6 +790,98 @@ func (sess *session) deliverOne(
 		seedFromAddress(ctx, sess.srv.store, sess.srv.log,
 			rc.principalID, sess.envelope.mailFrom, msg)
 	}
+	return true, nil
+}
+
+// dedupOntoExistingMessage looks up whether rc.principalID already holds a
+// live message for this delivery and, on a hit, folds the delivery onto
+// that row: every target mailbox in targets becomes a membership on the
+// existing message (idempotent -- a mailbox the existing row already
+// belongs to is left alone), each membership's flags and keywords are OR'd
+// in (never cleared, so an already-seen or already-labelled copy never
+// regresses, and the existing row's thread is untouched since no new row
+// is ever created), and the redelivery is recorded in the message-research
+// transparency trail (system_events, REQ-ADM-304) even though no new
+// messages row is created -- mirroring how the IMAP importer records a
+// dedup hit's per-account state despite not inserting one either.
+//
+// The lookup mirrors imapimport/sync.go's ingestMessage exactly
+// (REQ-IMAP-IMP-30): primary dedup by normalised Message-ID, unconditional
+// on a hit -- a sender reusing a Message-ID for an unrelated message is
+// the same rare collision the import already accepts, so this does not
+// guard the hit with a blob-hash comparison (an exact-byte match would
+// almost never fire for a real mirror-vs-SMTP pair in any case: SMTP
+// delivery always stamps its own Received:/Authentication-Results: prefix
+// onto the blob it stores, buildHeaderPrefix, while an IMAP mirror stores
+// the upstream's own raw bytes untouched). Only when the message carries
+// no Message-ID header at all does this fall back to the blob-hash dedup
+// (GetMessageByBlobHash), exactly as the import's own no-Message-ID
+// fallback does -- without it a no-Message-ID message redelivered with
+// byte-identical content would insert a fresh row every time.
+//
+// Returns handled=false (the caller performs its normal InsertMessage)
+// when neither lookup finds a live row.
+func (sess *session) dedupOntoExistingMessage(
+	ctx context.Context,
+	rc rcptEntry,
+	msg mailparse.Message,
+	blobRef store.BlobRef,
+	targets []store.MessageMailbox,
+	classification spam.Classification,
+) (handled bool, err error) {
+	var existing store.Message
+	var lookupErr error
+	rawMsgID := msg.Envelope.MessageID
+	if rawMsgID != "" {
+		normID := mailparse.NormalizeMessageID(rawMsgID)
+		existing, lookupErr = sess.srv.store.Meta().GetMessageByMessageIDHeader(ctx, rc.principalID, normID)
+	} else {
+		existing, lookupErr = sess.srv.store.Meta().GetMessageByBlobHash(ctx, rc.principalID, blobRef.Hash)
+	}
+	if lookupErr != nil {
+		if errors.Is(lookupErr, store.ErrNotFound) {
+			return false, nil
+		}
+		return false, fmt.Errorf("dedup: lookup existing message: %w", lookupErr)
+	}
+
+	already := make(map[store.MailboxID]bool, len(existing.Mailboxes))
+	for _, mm := range existing.Mailboxes {
+		already[mm.MailboxID] = true
+	}
+	for _, t := range targets {
+		if !already[t.MailboxID] {
+			if _, _, addErr := sess.srv.store.Meta().AddMessageToMailbox(ctx, existing.ID, t.MailboxID); addErr != nil {
+				if !errors.Is(addErr, store.ErrConflict) {
+					return false, fmt.Errorf("dedup: AddMessageToMailbox: %w", addErr)
+				}
+				// ErrConflict: another delivery already added it.
+			}
+		}
+		if t.Flags != 0 || len(t.Keywords) > 0 {
+			if _, uerr := sess.srv.store.Meta().UpdateMessageFlags(ctx, existing.ID, t.MailboxID, t.Flags, 0, t.Keywords, nil, 0); uerr != nil {
+				sess.log.WarnContext(ctx, "smtp dedup: apply flags/keywords to existing row failed",
+					slog.String("activity", observe.ActivitySystem),
+					slog.String("recipient", rc.addr),
+					slog.Uint64("message_id", uint64(existing.ID)),
+					slog.String("err", uerr.Error()))
+			}
+		}
+	}
+
+	// Best-effort: never fail the delivery over the transparency record.
+	_ = sess.srv.store.Meta().AppendSystemEvent(ctx, store.SystemEvent{
+		At:      sess.srv.clk.Now(),
+		ActorID: "smtp",
+		Action:  "smtp.deliver.dedup",
+		Subject: fmt.Sprintf("message:%d", existing.ID),
+		Outcome: store.OutcomeSuccess,
+		Message: fmt.Sprintf("recipient=%s existing_ingest=%s existing_ingest_ref=%s", rc.addr, existing.IngestSource, existing.IngestSourceRef),
+		Domain:  rc.domain,
+		Metadata: map[string]string{
+			"spam": classification.Verdict.String(),
+		},
+	})
 	return true, nil
 }
 

@@ -3,11 +3,20 @@ package protosmtp_test
 // deliver_llm_record_msgid_test.go covers re #394: persistLLMRecord used to
 // locate the just-delivered message by looking up its Message-ID header, so
 // a message with no Message-ID header got no llm_classifications row at
-// all, and two messages sharing one Message-ID value both raced to attach
-// their record to whichever row the header lookup happened to find first.
-// The fix keys the record on the store-assigned message id the delivery
-// already resolves from InsertMessage's returned UID, so both cases are
-// unambiguous.
+// all. The fix keys the record on the store-assigned message id the
+// delivery already resolves from InsertMessage's returned UID.
+//
+// TestDelivery_LLMRecord_DuplicateMessageID_* covered, pre re #496, a
+// second concern from the same bug: two messages sharing one Message-ID
+// value both raced to attach their record to whichever row the header
+// lookup happened to find first. re #496 corrected SMTP delivery's dedup
+// to match the Message-ID header unconditionally (mirroring the IMAP
+// importer, REQ-IMAP-IMP-30) rather than requiring an exact stored-blob
+// match, so two deliveries sharing one Message-ID now fold onto a single
+// row instead of ever becoming two rows that could race -- the scenario
+// below now asserts that fold: the first delivery's classification record
+// survives untouched and the second delivery's own classification is never
+// persisted, since it never becomes its own row.
 
 import (
 	"context"
@@ -130,8 +139,13 @@ func testDeliveryLLMRecordDuplicateMessageID(t *testing.T, storeFactory func(t *
 	}
 
 	// Two distinct messages sharing one Message-ID value, delivered from
-	// different senders (so each row is independently locatable), each
-	// classified with a different verdict.
+	// different senders (so a misattributed record would be easy to spot),
+	// each classified with a different verdict. re #496: the second
+	// delivery is the same rare Message-ID collision the IMAP importer
+	// already accepts and folds onto the first row -- it does not become
+	// a second row, and its own (different) verdict is not persisted,
+	// exactly as the importer's own dedup hit never re-persists a
+	// classification (imapimport/sync.go's placeExistingMessage).
 	deliver(t, "dup1@sender.test", `{"verdict":"spam","score":0.95,"reason":"promo blast"}`)
 	deliver(t, "dup2@sender.test", `{"verdict":"ham","score":0.05}`)
 
@@ -140,32 +154,38 @@ func testDeliveryLLMRecordDuplicateMessageID(t *testing.T, storeFactory func(t *
 	if err != nil {
 		t.Fatalf("SearchAdminMessages: %v", err)
 	}
-	if len(hits) != 2 {
-		t.Fatalf("SearchAdminMessages(shared-id) hits = %d, want 2", len(hits))
+	if len(hits) != 1 {
+		t.Fatalf("SearchAdminMessages(shared-id) hits = %d, want 1 (re #496: the second delivery must fold onto the first, not become a second row)", len(hits))
 	}
+	hit := hits[0]
 
 	// mail.Address.String() (used to build Envelope.From) always wraps a
-	// bare address in angle brackets.
-	wantVerdict := map[string]string{
-		"<dup1@sender.test>": "spam",
-		"<dup2@sender.test>": "ham",
+	// bare address in angle brackets. The surviving row's envelope is the
+	// first delivery's -- a fold never rewrites the existing row's
+	// envelope.
+	if hit.Envelope.From != "<dup1@sender.test>" {
+		t.Fatalf("surviving row From = %q, want %q (the fold must not touch the existing row's envelope)",
+			hit.Envelope.From, "<dup1@sender.test>")
 	}
-	seen := map[string]bool{}
-	for _, hit := range hits {
-		want, ok := wantVerdict[hit.Envelope.From]
-		if !ok {
-			t.Fatalf("unexpected From %q in hits", hit.Envelope.From)
-		}
-		rec, err := f.ha.Store.Meta().GetLLMClassification(ctx, hit.MessageID)
-		if err != nil {
-			t.Fatalf("GetLLMClassification(%d) for %q: %v -- transparency record missing/misattached for a duplicate Message-ID", hit.MessageID, hit.Envelope.From, err)
-		}
-		if rec.SpamVerdict == nil || *rec.SpamVerdict != want {
-			t.Fatalf("From %q: SpamVerdict = %v, want %q", hit.Envelope.From, rec.SpamVerdict, want)
-		}
-		seen[hit.Envelope.From] = true
+	rec, err := f.ha.Store.Meta().GetLLMClassification(ctx, hit.MessageID)
+	if err != nil {
+		t.Fatalf("GetLLMClassification(%d): %v -- transparency record missing for the surviving row", hit.MessageID, err)
 	}
-	if len(seen) != 2 {
-		t.Fatalf("verified %d distinct senders, want 2", len(seen))
+	if rec.SpamVerdict == nil || *rec.SpamVerdict != "spam" {
+		t.Fatalf("SpamVerdict = %v, want %q (the first delivery's record, unreplaced by the folded redelivery's own verdict)",
+			rec.SpamVerdict, "spam")
+	}
+
+	// The spam verdict routed the first delivery to Junk (resolveSieveTargets'
+	// default); the second delivery's ham verdict resolved to INBOX and, on
+	// folding, added that membership alongside the existing Junk one -- the
+	// fold's "add the new memberships" contract applies across mailboxes,
+	// not just within the one the first delivery landed in.
+	mailboxNames := make(map[string]bool, len(hit.Mailboxes))
+	for _, mb := range hit.Mailboxes {
+		mailboxNames[mb.Name] = true
+	}
+	if !mailboxNames["Junk"] || !mailboxNames["INBOX"] {
+		t.Fatalf("surviving row mailboxes = %v, want both Junk (first delivery) and INBOX (folded second delivery)", mailboxNames)
 	}
 }

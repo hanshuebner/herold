@@ -668,6 +668,75 @@ func TestDedup(t *testing.T) {
 	}
 }
 
+// TestDedupAgainstPreexistingSMTPMessage covers the SMTP-first ordering of
+// re #496 (the reverse of thread 3994's mirror-then-SMTP pairs): a message
+// already delivered by SMTP and stored under a Message-ID must not become
+// a second row when the IMAP mirror later imports the upstream account's
+// own copy of the same Message-ID. This is the IMAP importer's existing,
+// unconditional Message-ID dedup (ingestMessage's primary lookup, no
+// blob-hash gate) -- unaffected by #496's SMTP-side fix -- pinned here as
+// a regression guard for the ordering the production data shows.
+func TestDedupAgainstPreexistingSMTPMessage(t *testing.T) {
+	ts := startTestIMAPServer(t)
+	ts.addUser("u4c", "pw")
+
+	ha, _ := testharness.Start(t, testharness.Options{})
+
+	acc := makeAccountWithFloor(t, ha.Store, ts, accountCfg{
+		email:               "u4c@example.test",
+		username:            "u4c",
+		credentialPlaintext: "pw",
+	}, nil)
+
+	ctx := context.Background()
+	inbox, err := ha.Store.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: acc.PrincipalID,
+		Name:        "INBOX",
+		Attributes:  store.MailboxAttrInbox,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox: %v", err)
+	}
+	ref, err := ha.Store.Blobs().Put(ctx, strings.NewReader(
+		"From: sender@example.test\r\nTo: recipient@example.test\r\n\r\nsmtp body\r\n"))
+	if err != nil {
+		t.Fatalf("Blobs.Put: %v", err)
+	}
+	if _, _, err := ha.Store.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID:  acc.PrincipalID,
+		Blob:         ref,
+		Size:         ref.Size,
+		InternalDate: ha.Clock.Now(),
+		ReceivedAt:   ha.Clock.Now(),
+		Envelope:     store.Envelope{MessageID: "smtp-first-496@test", Subject: "SMTP-first probe"},
+		IngestSource: store.IngestSourceSMTP,
+	}, []store.MessageMailbox{{MailboxID: inbox.ID}}); err != nil {
+		t.Fatalf("InsertMessage (smtp): %v", err)
+	}
+
+	// The mirror sees the same Message-ID seconds later, carrying its own
+	// (necessarily different) upstream bytes -- a real mirror's raw fetch
+	// is never byte-identical to what SMTP delivery stamps and stores.
+	d := time.Date(2025, 3, 15, 10, 0, 0, 0, time.UTC)
+	raw := buildRFC822("smtp-first-496@test", "SMTP-first probe (mirror copy)", d)
+	appendToServer(t, ts, "u4c", "pw", "INBOX", raw, nil, d)
+
+	if err := runSyncOnce(t, ha, ts, acc, nil); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if got := countMailboxMessages(t, ha.Store, acc.PrincipalID, "INBOX"); got != 1 {
+		t.Fatalf("after mirroring an SMTP-first Message-ID: want 1, got %d (re #496)", got)
+	}
+	msg, err := ha.Store.Meta().GetMessageByMessageIDHeader(ctx, acc.PrincipalID, "smtp-first-496@test")
+	if err != nil {
+		t.Fatalf("GetMessageByMessageIDHeader: %v", err)
+	}
+	if msg.IngestSource != store.IngestSourceSMTP {
+		t.Fatalf("IngestSource = %q, want %q (the mirror should fold onto the SMTP row, not replace it)",
+			msg.IngestSource, store.IngestSourceSMTP)
+	}
+}
+
 // buildRFC822NoMsgID returns a minimal RFC 822 message with NO Message-ID
 // header, to exercise the blob_hash dedup fallback (REQ-IMAP-IMP-30 / D4).
 func buildRFC822NoMsgID(subject string, date time.Time) []byte {
