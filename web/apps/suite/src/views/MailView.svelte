@@ -16,6 +16,7 @@
     PRIMARY_ROLE_NAME,
   } from '../lib/settings/category-settings.svelte';
   import { decodeChips } from '../lib/mail/search-query';
+  import { navigateBackFromThread } from '../lib/mail/navigate-back';
   import { threadDnd, dragIdsForRow } from '../lib/mail/dnd-thread.svelte';
   import ThreadReader from '../lib/mail/ThreadReader.svelte';
   import CategoryPicker from '../lib/mail/CategoryPicker.svelte';
@@ -458,7 +459,7 @@
       {
         key: 'Escape',
         description: `Back to ${mail.listFolderLabel}`,
-        action: () => router.navigate(folderHref(mail.listFolder)),
+        action: () => navigateBackFromThread(),
       },
       {
         key: 'r',
@@ -487,7 +488,7 @@
       {
         key: 'u',
         description: `Back to ${mail.listFolderLabel}`,
-        action: () => router.navigate(folderHref(mail.listFolder)),
+        action: () => navigateBackFromThread(),
       },
       {
         key: 'v',
@@ -639,9 +640,25 @@
     // archived the thread while reading it (re #29). On the first render
     // where membership is already false (e.g. self-sent dedup edge case
     // or direct URL open), do not bounce.
+    //
+    // Route through navigateBackFromThread() (router.lastListPath) rather
+    // than a bare folderHref(currentFolder) (re #495). An explicit
+    // thread-closing action (ThreadToolbar's archive/delete/move/etc.)
+    // already navigates via leaveThread() -> navigateBackFromThread()
+    // synchronously before this effect's own rerun (queued by the same
+    // action's optimistic store mutation) reaches the browser's event
+    // loop -- window.location.hash is a synchronous setter, but the
+    // hashchange event that updates router.current is dispatched as a
+    // separate task, so this effect still observes the pre-navigation
+    // thread route and fires a second, redundant navigation. Reading the
+    // same lastListPath the explicit action already used (instead of
+    // reconstructing a bare folder path) makes that redundant write
+    // idempotent -- both writes target the same tab-qualified path -- so
+    // whichever one the browser processes last no longer drops the
+    // originating category tab from the URL.
     if (confirmedFolderKey === key) {
       untrack(() => {
-        router.navigate(folderHref(currentFolder));
+        navigateBackFromThread();
       });
     }
   });
