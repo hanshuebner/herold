@@ -106,17 +106,40 @@ async function sendSmtp(
   });
 }
 
-/** Sum of every visible category-tab badge's count. */
+/**
+ * Sum of every visible category-tab badge's count.
+ *
+ * Reads via `page.evaluate()` rather than the Locator API (`allTextContents()`
+ * would go through Playwright's own actionability/auto-wait machinery).
+ * Under CPU load (re #498), a `count`/`unreadThreads` span that the app has
+ * ALREADY removed or updated -- confirmed via an in-page MutationObserver
+ * firing within ~100ms of the mark-read round trip -- can still read stale
+ * through `Locator.count()`/`textContent()` for the remainder of a 15s poll:
+ * those methods resolve through Chromium's CDP DOM domain, whose mutation
+ * bookkeeping can lag arbitrarily far behind the live document when the
+ * renderer's main thread is saturated. `page.evaluate()` runs synchronous JS
+ * against the current document directly, the same path the MutationObserver
+ * used to prove the app already converged, so it does not inherit that lag.
+ */
 async function tabBadgeSum(page: Page): Promise<number> {
-  const texts = await page.locator('.tab-strip .tab .tab-badge').allTextContents();
-  return texts.reduce((sum, t) => sum + (Number(t.trim()) || 0), 0);
+  return page.evaluate(() => {
+    const nodes = document.querySelectorAll('.tab-strip .tab .tab-badge');
+    let sum = 0;
+    for (const n of nodes) sum += Number((n.textContent ?? '').trim()) || 0;
+    return sum;
+  });
 }
 
-/** The sidebar Inbox row's unread badge, or 0 when no badge is shown. */
+/** The sidebar Inbox row's unread badge, or 0 when no badge is shown. See
+ *  `tabBadgeSum` for why this reads the live DOM via `page.evaluate()`
+ *  instead of the Locator API. */
 async function sidebarInboxCount(page: Page): Promise<number> {
-  const badge = page.locator('.mailbox-list > li').first().locator('.count');
-  if ((await badge.count()) === 0) return 0;
-  return Number((await badge.textContent())?.trim() ?? '0');
+  return page.evaluate(() => {
+    const li = document.querySelector('.mailbox-list > li');
+    const badge = li?.querySelector('.count');
+    if (!badge) return 0;
+    return Number((badge.textContent ?? '').trim()) || 0;
+  });
 }
 
 async function markSeen(
