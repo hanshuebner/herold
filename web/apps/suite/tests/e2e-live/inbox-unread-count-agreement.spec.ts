@@ -30,7 +30,16 @@
 
 import { test, expect } from '@playwright/test';
 import net from 'node:net';
-import { login, clearMailbox, jmapSession, jmapCall, findEmailIdsBySubject, ALICE } from './live-helpers';
+import {
+  login,
+  clearMailbox,
+  jmapSession,
+  jmapCall,
+  findEmailIdsBySubject,
+  tabBadgeSum,
+  sidebarInboxCount,
+  ALICE,
+} from './live-helpers';
 
 const SMTP_ADDR = process.env.SMTP_ADDR;
 
@@ -100,20 +109,6 @@ async function sendSmtp(
       }
     });
   });
-}
-
-/** Sum of every visible category-tab badge's count. */
-async function tabBadgeSum(page: import('@playwright/test').Page): Promise<number> {
-  const texts = await page.locator('.tab-strip .tab .tab-badge').allTextContents();
-  return texts.reduce((sum, t) => sum + (Number(t.trim()) || 0), 0);
-}
-
-/** The sidebar Inbox row's unread badge, or 0 when no badge is shown
- *  (the app renders no `.count` span at all when unreadThreads is 0). */
-async function sidebarInboxCount(page: import('@playwright/test').Page): Promise<number> {
-  const badge = page.locator('.mailbox-list > li').first().locator('.count');
-  if ((await badge.count()) === 0) return 0;
-  return Number((await badge.textContent())?.trim() ?? '0');
 }
 
 test.describe('Inbox unread-count agreement (issue #494)', () => {

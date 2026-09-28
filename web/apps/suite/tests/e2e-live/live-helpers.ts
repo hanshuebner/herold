@@ -134,6 +134,44 @@ export function bulkCountText(page: Page) {
 }
 
 /**
+ * Sum of every visible category-tab badge's count.
+ *
+ * Reads via `page.evaluate()` rather than the Locator API
+ * (`allTextContents()` goes through Playwright's own actionability/
+ * auto-wait machinery, which resolves through Chromium's CDP DOM domain).
+ * Under CPU load (re #498), a `.tab-badge`/`.count` node the app has
+ * ALREADY updated or removed -- confirmed via an in-page MutationObserver
+ * firing within ~100ms of the underlying JMAP round trip -- can still read
+ * stale through `Locator.count()`/`.textContent()`/`.allTextContents()` for
+ * the remainder of an `expect.poll` budget: those methods' mutation
+ * bookkeeping can lag arbitrarily far behind the live document when the
+ * renderer's main thread is saturated. `page.evaluate()` runs synchronous
+ * JS directly against the current document, so it does not inherit that
+ * lag.
+ */
+export async function tabBadgeSum(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const nodes = document.querySelectorAll('.tab-strip .tab .tab-badge');
+    let sum = 0;
+    for (const n of nodes) sum += Number((n.textContent ?? '').trim()) || 0;
+    return sum;
+  });
+}
+
+/** The sidebar Inbox row's unread badge, or 0 when no badge is shown (the
+ *  app renders no `.count` span at all when unreadThreads is 0). See
+ *  `tabBadgeSum` for why this reads the live DOM via `page.evaluate()`
+ *  instead of the Locator API. */
+export async function sidebarInboxCount(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const li = document.querySelector('.mailbox-list > li');
+    const badge = li?.querySelector('.count');
+    if (!badge) return 0;
+    return Number((badge.textContent ?? '').trim()) || 0;
+  });
+}
+
+/**
  * Find Email ids by an `Email/query` `subject` filter, retrying until at
  * least one match shows up. `subject` (like every other text-bearing
  * predicate) is routed through the server's FTS index

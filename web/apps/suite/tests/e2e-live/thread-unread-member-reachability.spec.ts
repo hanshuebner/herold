@@ -31,9 +31,18 @@
  * server-side threading (In-Reply-To/References), not a page.route() mock.
  */
 
-import { test, expect, type Page, type APIRequestContext } from '@playwright/test';
+import { test, expect, type APIRequestContext } from '@playwright/test';
 import net from 'node:net';
-import { login, clearMailbox, jmapSession, jmapCall, findEmailIdsBySubject, ALICE } from './live-helpers';
+import {
+  login,
+  clearMailbox,
+  jmapSession,
+  jmapCall,
+  findEmailIdsBySubject,
+  tabBadgeSum,
+  sidebarInboxCount,
+  ALICE,
+} from './live-helpers';
 
 const SMTP_ADDR = process.env.SMTP_ADDR;
 
@@ -103,42 +112,6 @@ async function sendSmtp(
         socket.write(msg);
       }
     });
-  });
-}
-
-/**
- * Sum of every visible category-tab badge's count.
- *
- * Reads via `page.evaluate()` rather than the Locator API (`allTextContents()`
- * would go through Playwright's own actionability/auto-wait machinery).
- * Under CPU load (re #498), a `count`/`unreadThreads` span that the app has
- * ALREADY removed or updated -- confirmed via an in-page MutationObserver
- * firing within ~100ms of the mark-read round trip -- can still read stale
- * through `Locator.count()`/`textContent()` for the remainder of a 15s poll:
- * those methods resolve through Chromium's CDP DOM domain, whose mutation
- * bookkeeping can lag arbitrarily far behind the live document when the
- * renderer's main thread is saturated. `page.evaluate()` runs synchronous JS
- * against the current document directly, the same path the MutationObserver
- * used to prove the app already converged, so it does not inherit that lag.
- */
-async function tabBadgeSum(page: Page): Promise<number> {
-  return page.evaluate(() => {
-    const nodes = document.querySelectorAll('.tab-strip .tab .tab-badge');
-    let sum = 0;
-    for (const n of nodes) sum += Number((n.textContent ?? '').trim()) || 0;
-    return sum;
-  });
-}
-
-/** The sidebar Inbox row's unread badge, or 0 when no badge is shown. See
- *  `tabBadgeSum` for why this reads the live DOM via `page.evaluate()`
- *  instead of the Locator API. */
-async function sidebarInboxCount(page: Page): Promise<number> {
-  return page.evaluate(() => {
-    const li = document.querySelector('.mailbox-list > li');
-    const badge = li?.querySelector('.count');
-    if (!badge) return 0;
-    return Number((badge.textContent ?? '').trim()) || 0;
   });
 }
 
