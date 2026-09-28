@@ -131,6 +131,12 @@ jobs:
       - name: androidApp unit tests
         run: ./gradlew --no-daemon :androidApp:testDebugUnitTest
 
+      # No Firebase secret is passed to this job, so this debug build carries
+      # no push credentials and firebaseConfig resolves to absent -- expected
+      # and fine here, since this job's output (branch/PR builds) is never
+      # published. Only the release job below (a signed android-v* tag) is
+      # gated on Firebase being present, because that is the APK a user
+      # installs (issue #499).
       - name: androidApp assembleDebug
         run: ./gradlew --no-daemon :androidApp:assembleDebug
 
@@ -163,7 +169,11 @@ jobs:
   # ANDROID_KEYSTORE_B64 (base64 of the keystore), ANDROID_KEYSTORE_PASSWORD,
   # ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD. The build decodes the keystore
   # into the build directory and reads the rest from the environment
-  # (mobile/androidApp/build.gradle.kts).
+  # (mobile/androidApp/build.gradle.kts). The Firebase project file
+  # (google-services.json) is the repository secret ANDROID_GOOGLE_SERVICES_JSON_B64
+  # (base64, one line), decoded to a file by this workflow the same way; a
+  # release without it fails rather than publishing an APK with push
+  # switched off (issue #499).
   release:
     name: signed APK for an android-v* tag
     if: startsWith(github.ref, 'refs/tags/android-v')
@@ -219,6 +229,46 @@ jobs:
             exit 1
           fi
 
+      # Decodes the Firebase project file (google-services.json) from the
+      # repository secret into a file, the same shape the keystore uses
+      # (ANDROID_KEYSTORE_B64), and points HEROLD_GOOGLE_SERVICES_JSON at it
+      # for every later step. Fails the job when the secret is unset or the
+      # decoded file is empty, rather than letting the build silently fall
+      # back to a push-less APK (issue #499).
+      - name: decode Firebase project file
+        env:
+          ANDROID_GOOGLE_SERVICES_JSON_B64: ${{ secrets.ANDROID_GOOGLE_SERVICES_JSON_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ANDROID_GOOGLE_SERVICES_JSON_B64}" ]; then
+            echo "ANDROID_GOOGLE_SERVICES_JSON_B64 is not set; a tagged build must carry the Firebase project file" >&2
+            exit 1
+          fi
+          TARGET="${RUNNER_TEMP}/google-services.json"
+          echo "${ANDROID_GOOGLE_SERVICES_JSON_B64}" | base64 -d > "${TARGET}"
+          if [ ! -s "${TARGET}" ]; then
+            echo "decoded Firebase project file at ${TARGET} is empty; check ANDROID_GOOGLE_SERVICES_JSON_B64" >&2
+            exit 1
+          fi
+          echo "HEROLD_GOOGLE_SERVICES_JSON=${TARGET}" >> "$GITHUB_ENV"
+
+      # Runs printBuildFacts on its own, ahead of assembleRelease, so a
+      # build that resolves Firebase to absent -- a bad decode, or the
+      # config being scoped to a different application id -- fails the job
+      # before any APK is assembled, let alone published (issue #499).
+      - name: verify Firebase is wired (printBuildFacts)
+        working-directory: mobile
+        env:
+          ANDROID_VERSION_TAG: ${{ github.ref_name }}
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          set -euo pipefail
+          ./gradlew --no-daemon :androidApp:printBuildFacts | tee build-facts.txt
+          if grep -q "firebase: absent" build-facts.txt; then
+            echo "printBuildFacts reports firebase: absent; a release APK must carry the Firebase project (see ANDROID_GOOGLE_SERVICES_JSON_B64)" >&2
+            exit 1
+          fi
+
       - name: assembleRelease
         working-directory: mobile
         env:
@@ -227,10 +277,7 @@ jobs:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-          # The maintainer's Firebase project, held on the runner rather
-          # than in the tree. Absent, the APK builds with push switched off.
-          HEROLD_GOOGLE_SERVICES_JSON: ${{ secrets.ANDROID_GOOGLE_SERVICES_JSON_PATH }}
-        run: ./gradlew --no-daemon :androidApp:printBuildFacts :androidApp:assembleRelease
+        run: ./gradlew --no-daemon :androidApp:assembleRelease
 
       - name: verify the signature
         env:
