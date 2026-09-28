@@ -206,3 +206,17 @@ type AdminMessageHit struct {
 	// reason.
 	SpamReason *string
 }
+
+// DuplicateMessageIDGroup is one Message-ID for which a principal holds
+// more than one live message row (diag `duplicate-messages` tooling, re
+// #496). MessageIDs is the normalised (no angle brackets, lowercased)
+// Message-ID header value the group shares.
+type DuplicateMessageIDGroup struct {
+	// MessageID is the normalised Message-ID header value shared by
+	// every row in Messages.
+	MessageID string
+	// Messages lists every live row sharing MessageID for the principal,
+	// ordered oldest (by InternalDate) first -- the order
+	// `duplicate-messages merge` keeps as the canonical survivor.
+	Messages []MessageID
+}

@@ -193,6 +193,54 @@ func (m *metadata) GetMessageByBlobHash(
 	return m.GetMessage(ctx, store.MessageID(msgID))
 }
 
+// ListDuplicateMessageIDs returns every Message-ID for which principalID
+// holds more than one live message row, oldest first within each group;
+// see store.Metadata for the contract.
+func (m *metadata) ListDuplicateMessageIDs(
+	ctx context.Context,
+	principalID store.PrincipalID,
+) ([]store.DuplicateMessageIDGroup, error) {
+	const q = `
+		SELECT env_message_id, id
+		FROM messages
+		WHERE principal_id = $1
+		  AND env_message_id IS NOT NULL AND env_message_id != ''
+		  AND env_message_id IN (
+			SELECT env_message_id FROM messages
+			WHERE principal_id = $1
+			  AND env_message_id IS NOT NULL AND env_message_id != ''
+			GROUP BY env_message_id
+			HAVING COUNT(*) > 1
+		  )
+		ORDER BY env_message_id, internal_date_us ASC, id ASC`
+	rows, err := m.s.pool.Query(ctx, q, int64(principalID))
+	if err != nil {
+		return nil, fmt.Errorf("storepg: list duplicate message ids: %w", err)
+	}
+	defer rows.Close()
+
+	var out []store.DuplicateMessageIDGroup
+	byID := make(map[string]int)
+	for rows.Next() {
+		var envMsgID string
+		var msgID int64
+		if err := rows.Scan(&envMsgID, &msgID); err != nil {
+			return nil, fmt.Errorf("storepg: scan duplicate message id: %w", err)
+		}
+		idx, ok := byID[envMsgID]
+		if !ok {
+			idx = len(out)
+			byID[envMsgID] = idx
+			out = append(out, store.DuplicateMessageIDGroup{MessageID: envMsgID})
+		}
+		out[idx].Messages = append(out[idx].Messages, store.MessageID(msgID))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("storepg: list duplicate message ids rows: %w", err)
+	}
+	return out, nil
+}
+
 // ListPrincipalBlobHashes returns every distinct blob_hash owned by
 // principalID. Bulk-importer entry point; see store.Metadata for the
 // contract.

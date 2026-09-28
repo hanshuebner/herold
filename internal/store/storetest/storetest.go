@@ -603,6 +603,8 @@ func Run(t *testing.T, f Factory) {
 		{"SearchAdminMessages_Mailboxes", testSearchAdminMessages_Mailboxes},
 		{"MessageIngestSource_RoundTrip", testMessageIngestSource_RoundTrip},
 		{"MessageIngestSource_UnknownForUnsetRows", testMessageIngestSource_UnknownForUnsetRows},
+		// -- duplicate-message-id diag tooling (re #496) --
+		{"ListDuplicateMessageIDs", testListDuplicateMessageIDs},
 		{"QueueFilter_SenderDomainsAndContains", testQueueFilter_SenderDomainsAndContains},
 		{"QueueFilter_Newest", testQueueFilter_Newest},
 		{"QueueFilter_MessageIDs", testQueueFilter_MessageIDs},

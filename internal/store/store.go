@@ -2798,6 +2798,17 @@ type Metadata interface {
 	// row matches.
 	GetMessageIDByMailboxUID(ctx context.Context, mailboxID MailboxID, uid UID) (MessageID, error)
 
+	// ListDuplicateMessageIDs returns every normalised Message-ID for
+	// which principalID holds more than one live message row, oldest
+	// message first within each group. Diag-only (`herold diag
+	// duplicate-messages list`/`merge`, re #496): SMTP delivery and the
+	// IMAP/JMAP importers each dedup independently, so a message that
+	// reaches a principal by two different ingest paths can still end up
+	// as two live rows sharing one Message-ID (a redelivery whose stored
+	// bytes differ, so the ingest-time dedup guard did not fire). Rows
+	// with an empty env_message_id are never grouped together.
+	ListDuplicateMessageIDs(ctx context.Context, principalID PrincipalID) ([]DuplicateMessageIDGroup, error)
+
 	// ListPrincipalBlobHashes returns the distinct blob_hash values
 	// owned by principalID in arbitrary order. Used by the bulk gmail
 	// importer to seed a content-addressed dedup set
