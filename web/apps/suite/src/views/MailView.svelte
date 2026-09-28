@@ -118,7 +118,12 @@
     });
   });
 
-  /** Unread count per category tab (for the badge). */
+  /**
+   * Unread count per category tab (for the badge), counting a collapsed
+   * thread row once when any of its members in the current folder is
+   * unread (re #497) -- matching `isUnread()` below so the badge sum
+   * agrees with the rows it badges and with the sidebar/title figure.
+   */
   function tabUnreadCount(tabName: string | null): number {
     if (!showTabs) return 0;
     let n = 0;
@@ -126,7 +131,7 @@
       const e = mail.emails.get(id);
       if (!e) continue;
       if (!emailMatchesTab(e.keywords, tabName, categorySettings.derivedCategories)) continue;
-      if (!e.keywords.$seen) n++;
+      if (isUnread(e)) n++;
     }
     return n;
   }
@@ -800,8 +805,26 @@
     }
     void mail.bulkDelete(ids);
   }
+  /**
+   * Expand each selected id to every other member of its thread in the
+   * current folder (re #497): the list-toolbar mark-read action must
+   * clear a thread's unread contribution fully, not just the checked
+   * collapsed representative, or a thread whose sole unread message is
+   * an older one stays counted (sidebar/title) after the user marks the
+   * row read.
+   */
+  function expandForMarkRead(ids: string[]): string[] {
+    const out = new Set<string>(ids);
+    for (const id of ids) {
+      const email = mail.emails.get(id);
+      if (!email) continue;
+      for (const m of folderThreadMembers(email)) out.add(m.id);
+    }
+    return [...out];
+  }
+
   function bulkMarkRead(): void {
-    void mail.bulkSetSeen(selectedIds(), true);
+    void mail.bulkSetSeen(expandForMarkRead(selectedIds()), true);
   }
   function bulkMarkUnread(): void {
     void mail.bulkSetSeen(selectedIds(), false);
@@ -917,8 +940,34 @@
     return email.snoozeWokeFor ? formatWakeTime(new Date(email.snoozeWokeFor)) : '';
   }
 
+  /**
+   * The thread's members that count toward this folder's unread state (re
+   * #497): every email in the thread that also sits in the folder
+   * currently rendered by the list, scoped by `mail.listMailboxId` (null
+   * for the virtual `all`/`important`/`snoozed` folders, which have no
+   * single mailbox to scope by -- every thread member counts there).
+   * Falls back to the representative `email` alone before thread
+   * membership has loaded, matching `rowSubject`'s fallback above.
+   */
+  function folderThreadMembers(email: Email): Email[] {
+    const members = mail.threadEmails(email.threadId);
+    const pool = members.length > 0 ? members : [email];
+    const mailboxId = mail.listMailboxId;
+    if (!mailboxId) return pool;
+    return pool.filter((m) => Boolean(m.mailboxIds[mailboxId]));
+  }
+
+  /**
+   * A collapsed thread row is unread when any of its members in the
+   * current folder is unread (re #497) -- not just the collapsed-thread
+   * representative (the newest message by the list sort). Reading only
+   * the representative's `$seen` left a thread whose sole unread message
+   * was an older one showing as read in the list while the server-side
+   * `Mailbox.unreadThreads` (the sidebar and title figure) still counted
+   * it, so the count pointed at a row the user had no way to find.
+   */
   function isUnread(email: Email): boolean {
-    return !email.keywords.$seen;
+    return folderThreadMembers(email).some((m) => !m.keywords.$seen);
   }
 
   function isFlagged(email: Email): boolean {

@@ -68,6 +68,17 @@ describe('pickInitialExpanded (re #135)', () => {
     expect(pickInitialExpanded([makeEmail('e1', false)])).toEqual(['e1']);
   });
 
+  it('expands the older message when it is the thread\'s only unread one and a newer message is already read (re #497)', () => {
+    // Issue #497: the collapsed-list representative is the newest message
+    // (e2, seen); the thread's sole unread message is the older one (e1).
+    // Opening the thread must expand e1 -- not just leave the (already
+    // read) representative expanded -- so the auto-read effect in
+    // MessageAccordion gets a chance to mark it seen and clear the
+    // thread's contribution to Mailbox.unreadThreads.
+    const emails = [makeEmail('e1', false), makeEmail('e2', true)];
+    expect(pickInitialExpanded(emails)).toEqual(['e1']);
+  });
+
   it('returns only the unread messages when they are scattered among read messages', () => {
     // e1 read, e2 unread, e3 read, e4 unread — both unread are expanded.
     const emails = [
