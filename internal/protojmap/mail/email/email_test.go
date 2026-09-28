@@ -4913,3 +4913,86 @@ func TestEmailSet_Update_MailboxIds_PreservesCustomKeywords(t *testing.T) {
 		t.Fatalf("custom keyword 'projectx' lost after move: keywords=%v (regression)", got.Mailboxes[0].Keywords)
 	}
 }
+
+// -- issue #494: Mailbox unreadThreads excludes a snoozed member -----
+
+// mailboxUnreadThreads fetches the given mailbox via Mailbox/get and
+// returns its unreadThreads field.
+func mailboxUnreadThreads(t *testing.T, f *fixture, mailboxID store.MailboxID) int64 {
+	t.Helper()
+	_, raw := f.invoke(t, "Mailbox/get", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"ids":       []string{fmt.Sprintf("%d", mailboxID)},
+	})
+	var resp struct {
+		List []struct {
+			UnreadThreads int64 `json:"unreadThreads"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal Mailbox/get: %v: %s", err, raw)
+	}
+	if len(resp.List) != 1 {
+		t.Fatalf("got %d mailboxes, want 1: %s", len(resp.List), raw)
+	}
+	return resp.List[0].UnreadThreads
+}
+
+// TestMailboxGet_UnreadThreads_ExcludesSnoozedUntilWake covers issue
+// #494: the Inbox's unreadThreads (read by the Suite sidebar badge and
+// document title) excludes an unread message while it is snoozed, and
+// includes it again once the snooze is released -- so it agrees with
+// the category-tab badges, which already exclude a "$snoozed" member
+// from their underlying Email/query (#468).
+func TestMailboxGet_UnreadThreads_ExcludesSnoozedUntilWake(t *testing.T) {
+	f := setupFixture(t)
+	ctx := context.Background()
+
+	// One ordinary unread message establishes the baseline.
+	f.insertMessage(t, "From: a@example.test\r\nTo: b@example.test\r\nSubject: ordinary\r\n\r\nhi",
+		"ordinary", "a@example.test", "b@example.test", nil, "")
+	if got := mailboxUnreadThreads(t, f, f.inbox.ID); got != 1 {
+		t.Fatalf("unreadThreads before second message = %d, want 1", got)
+	}
+
+	// A second unread message: unreadThreads climbs to 2.
+	m := f.insertMessage(t, "From: a@example.test\r\nTo: b@example.test\r\nSubject: to-snooze\r\n\r\nhi",
+		"to-snooze", "a@example.test", "b@example.test", nil, "")
+	if got := mailboxUnreadThreads(t, f, f.inbox.ID); got != 2 {
+		t.Fatalf("unreadThreads before snooze = %d, want 2", got)
+	}
+
+	// Snooze the second message via Email/set: unreadThreads must drop
+	// back to 1, excluding the snoozed-but-unread member.
+	wakeAt := "2030-01-01T00:00:00Z"
+	_, raw := f.invoke(t, "Email/set", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"update": map[string]any{
+			fmt.Sprintf("%d", m.ID): map[string]any{
+				"snoozedUntil": wakeAt,
+			},
+		},
+	})
+	var setResp struct {
+		Updated    map[string]any            `json:"updated"`
+		NotUpdated map[string]map[string]any `json:"notUpdated"`
+	}
+	if err := json.Unmarshal(raw, &setResp); err != nil {
+		t.Fatalf("unmarshal Email/set: %v: %s", err, raw)
+	}
+	if len(setResp.NotUpdated) != 0 {
+		t.Fatalf("notUpdated = %v", setResp.NotUpdated)
+	}
+	if got := mailboxUnreadThreads(t, f, f.inbox.ID); got != 1 {
+		t.Fatalf("unreadThreads after snooze = %d, want 1 (snoozed member excluded)", got)
+	}
+
+	// Wake: mirror the snooze worker's ReleaseSnooze call directly.
+	// unreadThreads must return to 2.
+	if _, err := f.srv.Store.Meta().ReleaseSnooze(ctx, m.ID, f.inbox.ID); err != nil {
+		t.Fatalf("ReleaseSnooze: %v", err)
+	}
+	if got := mailboxUnreadThreads(t, f, f.inbox.ID); got != 2 {
+		t.Fatalf("unreadThreads after wake = %d, want 2 (member counted again)", got)
+	}
+}

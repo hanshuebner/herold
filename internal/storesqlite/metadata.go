@@ -3945,7 +3945,13 @@ func (m *metadata) GetMailboxByName(ctx context.Context, pid store.PrincipalID, 
 // MailboxAttrTrash, a message that also holds a membership in a
 // Junk- or Trash-attributed mailbox is excluded from both total and
 // unread (issue #313); Junk's and Trash's own counts see every
-// member message. See store.Metadata for the contract.
+// member message. A membership row with an active snooze
+// (snoozed_until_us set -- non-null iff the row's keywords_csv holds
+// "$snoozed", per the atomicity invariant enforced at the store
+// boundary) is excluded from every mailbox's counts until it wakes
+// (issue #494), matching the folder-view query's own "$snoozed"
+// exclusion (issue #468); there is no dedicated Snoozed mailbox whose
+// own counts need the row back. See store.Metadata for the contract.
 func (m *metadata) CountMessages(ctx context.Context, mailboxID store.MailboxID) (int64, int64, error) {
 	const q = `
 		SELECT
@@ -3953,6 +3959,7 @@ func (m *metadata) CountMessages(ctx context.Context, mailboxID store.MailboxID)
 			COALESCE(SUM(CASE WHEN (mm.flags & 1) = 0 THEN 1 ELSE 0 END), 0) AS unread
 		FROM message_mailboxes mm
 		WHERE mm.mailbox_id = ?
+		  AND mm.snoozed_until_us IS NULL
 		  AND (
 		    (SELECT attributes FROM mailboxes WHERE id = ?) & ? != 0
 		    OR NOT EXISTS (
@@ -3975,8 +3982,8 @@ func (m *metadata) CountMessages(ctx context.Context, mailboxID store.MailboxID)
 // thread_id is 0, per migration 0070). Hits idx_message_mailboxes_mailbox_uid
 // for the mailbox_id filter and the messages primary key for the join;
 // same access shape as ListMessages. Applies the same Junk/Trash
-// membership exclusion as CountMessages (issue #313). See
-// store.Metadata for the contract.
+// membership exclusion (issue #313) and the same snooze exclusion
+// (issue #494) as CountMessages. See store.Metadata for the contract.
 func (m *metadata) CountThreads(ctx context.Context, mailboxID store.MailboxID) (int64, int64, error) {
 	const q = `
 		SELECT
@@ -3987,6 +3994,7 @@ func (m *metadata) CountThreads(ctx context.Context, mailboxID store.MailboxID) 
 		FROM message_mailboxes mm
 		JOIN messages m ON m.id = mm.message_id
 		WHERE mm.mailbox_id = ?
+		  AND mm.snoozed_until_us IS NULL
 		  AND (
 		    (SELECT attributes FROM mailboxes WHERE id = ?) & ? != 0
 		    OR NOT EXISTS (

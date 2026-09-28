@@ -52,6 +52,7 @@ func Run(t *testing.T, f Factory) {
 		{"CountMessages", testCountMessages},
 		{"CountThreads", testCountThreads},
 		{"CountMessagesAndThreads_ExcludeJunkTrash", testCountMessagesAndThreadsExcludeJunkTrash},
+		{"CountMessagesAndThreads_ExcludeSnoozed", testCountMessagesAndThreadsExcludeSnoozed},
 		{"InsertMessages_SkipThreading", testInsertMessagesSkipThreading},
 		{"RethreadPrincipal", testRethreadPrincipal},
 		// re #88, REQ-STORE-40: duplicate message-id copies share one thread.
@@ -2012,6 +2013,70 @@ func testCountMessagesAndThreadsExcludeJunkTrash(t *testing.T, s store.Store) {
 	}
 	if junkTotalThreads != 3 || junkUnreadThreads != 3 {
 		t.Errorf("CountThreads(Junk) = total=%d unread=%d, want 3/3", junkTotalThreads, junkUnreadThreads)
+	}
+}
+
+// testCountMessagesAndThreadsExcludeSnoozed covers issue #494: the
+// counts a mailbox reports (CountMessages' total/unread and
+// CountThreads' totalThreads/unreadThreads) exclude a membership row
+// that carries an active snooze (SnoozedUntil set on that specific
+// (message, mailbox) row, per the atomicity invariant that
+// SnoozedUntil is non-nil iff the row's Keywords contains
+// "$snoozed"). This mirrors #313's Junk/Trash exclusion so the
+// server's own "Inbox unread" figure (Mailbox.unreadThreads) agrees
+// with the client's folder-view query, which already excludes
+// $snoozed members (#468).
+func testCountMessagesAndThreadsExcludeSnoozed(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "count-snoozed@example.com")
+
+	inbox, err := s.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: p.ID, Name: "INBOX", Attributes: store.MailboxAttrInbox,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox INBOX: %v", err)
+	}
+
+	// ordinary: one ordinary unread message in the Inbox.
+	ordinaryRef := putBlob(t, s, "count-snoozed-ordinary")
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID: p.ID, Blob: ordinaryRef, Size: ordinaryRef.Size,
+		ReceivedAt: time.Unix(6000, 0).UTC(),
+		Envelope:   store.Envelope{MessageID: "cs-ordinary@x"},
+	}, []store.MessageMailbox{{MailboxID: inbox.ID}}); err != nil {
+		t.Fatalf("InsertMessage ordinary: %v", err)
+	}
+
+	// snoozed: one unread message whose Inbox membership carries an
+	// active snooze -- excluded from the Inbox's counts until it wakes.
+	snoozedRef := putBlob(t, s, "count-snoozed-snoozed")
+	wake := time.Unix(9000, 0).UTC()
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID: p.ID, Blob: snoozedRef, Size: snoozedRef.Size,
+		ReceivedAt: time.Unix(6001, 0).UTC(),
+		Envelope:   store.Envelope{MessageID: "cs-snoozed@x"},
+	}, []store.MessageMailbox{{
+		MailboxID:    inbox.ID,
+		Keywords:     []string{"$snoozed"},
+		SnoozedUntil: &wake,
+	}}); err != nil {
+		t.Fatalf("InsertMessage snoozed: %v", err)
+	}
+
+	total, unread, err := s.Meta().CountMessages(ctx, inbox.ID)
+	if err != nil {
+		t.Fatalf("CountMessages(INBOX): %v", err)
+	}
+	if total != 1 || unread != 1 {
+		t.Errorf("CountMessages(INBOX) = total=%d unread=%d, want 1/1 (snoozed member excluded)", total, unread)
+	}
+
+	totalThreads, unreadThreads, err := s.Meta().CountThreads(ctx, inbox.ID)
+	if err != nil {
+		t.Fatalf("CountThreads(INBOX): %v", err)
+	}
+	if totalThreads != 1 || unreadThreads != 1 {
+		t.Errorf("CountThreads(INBOX) = total=%d unread=%d, want 1/1 (snoozed member excluded)", totalThreads, unreadThreads)
 	}
 }
 
