@@ -151,10 +151,11 @@ be wrong.
 			var results []dupmessages.MergeResult
 			for _, gr := range groups {
 				if dryRun {
-					results = append(results, dupmessages.MergeResult{
-						MessageID:     gr.MessageID,
-						KeptMessageID: gr.Messages[0].ID,
-					})
+					res, err := dupmessages.Preview(gr)
+					if err != nil {
+						return fmt.Errorf("diag duplicate-messages merge: %q: %w", gr.MessageID, err)
+					}
+					results = append(results, res)
 					continue
 				}
 				res, err := dupmessages.Merge(ctx, st, gr)

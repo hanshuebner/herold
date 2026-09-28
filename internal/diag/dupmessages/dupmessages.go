@@ -88,21 +88,20 @@ type MergeResult struct {
 	Removed       []RemovedMessage
 }
 
-// Merge folds every duplicate in g (g.Messages[1:]) onto g.Messages[0] and
-// removes them. g must hold at least 2 messages -- callers should skip
-// groups List did not return, which are never smaller than 2.
-func Merge(ctx context.Context, st store.Store, g Group) (MergeResult, error) {
+// Preview computes the MergeResult a call to Merge(ctx, st, g) would
+// return, without touching the store: g already carries every message's
+// full Mailboxes/Flags/Keywords (List loads it that way), so the result
+// -- which duplicate rows would be removed, with their blob hash and
+// original mailbox memberships -- is derivable purely from g. Used both
+// by Merge itself (to build its result before writing) and by a caller
+// that wants to report a dry run's effect without performing it (`herold
+// diag duplicate-messages merge --dry-run`).
+func Preview(g Group) (MergeResult, error) {
 	if len(g.Messages) < 2 {
 		return MergeResult{}, fmt.Errorf("dupmessages: group %q has %d message(s), need at least 2", g.MessageID, len(g.Messages))
 	}
 	kept := g.Messages[0]
 	res := MergeResult{MessageID: g.MessageID, KeptMessageID: kept.ID}
-
-	keptMailboxes := make(map[store.MailboxID]bool, len(kept.Mailboxes))
-	for _, mm := range kept.Mailboxes {
-		keptMailboxes[mm.MailboxID] = true
-	}
-
 	for _, dup := range g.Messages[1:] {
 		removed := RemovedMessage{MessageID: dup.ID, BlobHash: dup.Blob.Hash}
 		for _, mm := range dup.Mailboxes {
@@ -111,6 +110,29 @@ func Merge(ctx context.Context, st store.Store, g Group) (MergeResult, error) {
 				Flags:     mm.Flags,
 				Keywords:  mm.Keywords,
 			})
+		}
+		res.Removed = append(res.Removed, removed)
+	}
+	return res, nil
+}
+
+// Merge folds every duplicate in g (g.Messages[1:]) onto g.Messages[0] and
+// removes them. g must hold at least 2 messages -- callers should skip
+// groups List did not return, which are never smaller than 2.
+func Merge(ctx context.Context, st store.Store, g Group) (MergeResult, error) {
+	res, err := Preview(g)
+	if err != nil {
+		return MergeResult{}, err
+	}
+	kept := g.Messages[0]
+
+	keptMailboxes := make(map[store.MailboxID]bool, len(kept.Mailboxes))
+	for _, mm := range kept.Mailboxes {
+		keptMailboxes[mm.MailboxID] = true
+	}
+
+	for _, dup := range g.Messages[1:] {
+		for _, mm := range dup.Mailboxes {
 			if !keptMailboxes[mm.MailboxID] {
 				if _, _, err := st.Meta().AddMessageToMailbox(ctx, kept.ID, mm.MailboxID); err != nil {
 					if !errors.Is(err, store.ErrConflict) {
@@ -141,7 +163,6 @@ func Merge(ctx context.Context, st store.Store, g Group) (MergeResult, error) {
 				}
 			}
 		}
-		res.Removed = append(res.Removed, removed)
 	}
 	return res, nil
 }
