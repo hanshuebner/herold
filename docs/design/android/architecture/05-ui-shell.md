@@ -38,6 +38,15 @@ natively and reads from the local store; it holds no server logic.
   `img-src`-restricted, proxied fetch the Suite uses, and single-action save per
   inline image (`../requirements/04-system-integration.md` REQ-AND-SYS-31; Suite
   G16).
+- An attachment row is a tap target for a part of any type
+  (`../requirements/04-system-integration.md` REQ-AND-SYS-36). The bytes come
+  from the sync engine's blob cache, are written to an app-private cache
+  directory, and leave the app as a `FileProvider` content URI: `ACTION_VIEW`
+  with a per-intent read grant for the tap, `ACTION_CREATE_DOCUMENT` for the
+  save. No part of the app's storage other than that cache directory is
+  reachable through the provider, and the download URL is built by the shared
+  module (`02-jmap-client.md`), so the bearer token is the only credential in
+  play.
 - Compose provides the inline-vs-attach distinction (Suite G15): pasted images
   inline, picker attaches, with reversible moves between body and attachment.
 

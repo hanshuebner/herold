@@ -8,9 +8,12 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -75,6 +78,7 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -97,7 +101,11 @@ import com.netzhansa.herold.android.diag.DiagLog
 import com.netzhansa.herold.android.push.ActiveThread
 import com.netzhansa.herold.android.push.MailNotifier
 import com.netzhansa.herold.android.links.ExternalBrowser
+import com.netzhansa.herold.android.media.AttachmentFiles
+import com.netzhansa.herold.android.media.AttachmentNames
+import com.netzhansa.herold.android.media.CreateAttachmentDocument
 import com.netzhansa.herold.android.media.ImageScaling
+import com.netzhansa.herold.android.media.SaveRequest
 import com.netzhansa.herold.android.ui.common.SnoozeSheet
 import com.netzhansa.herold.android.ui.common.bottomSystemBarsPadding
 import com.netzhansa.herold.android.ui.common.StatusIndicator
@@ -271,6 +279,97 @@ fun ThreadScreen(
                 .getOrNull()
         }
     }
+
+    // Which part is being fetched for a hand-off, so its row shows the
+    // download rather than looking inert while it runs (issue #500).
+    var busyBlobId by remember { mutableStateOf<String?>(null) }
+    // Which part a Save is in flight for. The picker is another activity
+    // and this one can be recreated behind it, so the part is remembered
+    // by its blob id and resolved back out of the conversation.
+    var savingBlobId by rememberSaveable { mutableStateOf<String?>(null) }
+
+    /** The part [blobId] names, wherever in the conversation it hangs. */
+    fun attachmentOf(blobId: String?): Attachment? {
+        if (blobId == null) return null
+        val everything = conversation.asSequence() + drafts.asSequence() +
+            pending.asSequence().map { it.asEmail() }
+        return everything.flatMap { it.attachments.asSequence() }.firstOrNull { it.blobId == blobId }
+    }
+
+    val saveLauncher = rememberLauncherForActivityResult(CreateAttachmentDocument()) { target ->
+        val attachment = attachmentOf(savingBlobId)
+        savingBlobId = null
+        if (target == null || attachment == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val written = withContext(Dispatchers.IO) {
+                val bytes = blobOf(attachment) ?: return@withContext false
+                AttachmentFiles.write(context, target, bytes)
+            }
+            snackbar.showSnackbar(
+                if (written) "Saved ${attachment.name}" else "${attachment.name} could not be saved",
+            )
+        }
+    }
+
+    /**
+     * Downloading [attachment] and handing it to another app (issue #500,
+     * REQ-AND-SYS-36). The bytes come through the same cache the
+     * thumbnails use, are written into the provider's cache subtree, and
+     * go out on an `ACTION_VIEW` intent carrying a read grant. A part
+     * that cannot be fetched, and a type no app on the device handles,
+     * are both said out loud on the snackbar.
+     */
+    fun handOff(attachment: Attachment) {
+        if (busyBlobId != null) return
+        busyBlobId = attachment.blobId
+        scope.launch {
+            val bytes = withContext(Dispatchers.IO) { blobOf(attachment) }
+            if (bytes == null) {
+                busyBlobId = null
+                snackbar.showSnackbar("${attachment.name} could not be downloaded")
+                return@launch
+            }
+            val type = AttachmentFiles.openType(attachment.type, attachment.name)
+            val uri = withContext(Dispatchers.IO) {
+                runCatching {
+                    AttachmentFiles.cache(context, attachment.blobId, attachment.name, bytes)
+                }.onFailure {
+                    DiagLog.e(THREAD_TAG, "the part ${attachment.blobId} could not be cached: ${it.message}")
+                }.getOrNull()
+            }
+            busyBlobId = null
+            if (uri == null) {
+                snackbar.showSnackbar("${attachment.name} could not be opened")
+                return@launch
+            }
+            if (!AttachmentFiles.open(context, uri, type)) {
+                snackbar.showSnackbar("No app on this device opens $type")
+            }
+        }
+    }
+
+    /**
+     * Writing [attachment] to the document the user picked
+     * (REQ-AND-SYS-31). The picker's result arrives after this screen may
+     * have been recreated, so what is remembered across it is the part's
+     * blob id and the conversation is what resolves it back.
+     */
+    fun save(attachment: Attachment) {
+        savingBlobId = attachment.blobId
+        val type = AttachmentFiles.openType(attachment.type, attachment.name)
+        saveLauncher.launch(SaveRequest(AttachmentNames.saveName(attachment.name, type), type))
+    }
+
+    val attachmentActions = AttachmentActions(
+        busyBlobId = busyBlobId,
+        onOpen = { attachment ->
+            // An image is read in the app's own viewer, which offers the
+            // same hand-off from inside; anything else goes straight out.
+            if (ImageScaling.isImage(attachment.type)) viewing = attachment else handOff(attachment)
+        },
+        onOpenWith = { attachment -> handOff(attachment) },
+        onSave = { attachment -> save(attachment) },
+    )
 
     // A thread reached from search or a notification can be outside the
     // synced set, and a thread the fill partly covered can be missing a
@@ -562,7 +661,7 @@ fun ThreadScreen(
                     },
                     resolveInlineImage = { cid -> inlineImageOf(message.attachments, cid) },
                     loadBlob = { attachment -> blobOf(attachment) },
-                    onOpenAttachment = { attachment -> viewing = attachment },
+                    attachmentActions = attachmentActions,
                     onLink = openBodyLink,
                     actions = MessageActions(
                         onReply = { onCompose(ComposeMode.REPLY, message.id) },
@@ -608,7 +707,7 @@ fun ThreadScreen(
                         inlineImageOf(queued.attachments, cid)
                     },
                     loadBlob = { attachment -> blobOf(attachment) },
-                    onOpenAttachment = { attachment -> viewing = attachment },
+                    attachmentActions = attachmentActions,
                     onLink = openBodyLink,
                     tag = "thread-pending-${message.entryId}",
                     status = {
@@ -626,6 +725,8 @@ fun ThreadScreen(
             attachment = attachment,
             maxEdgePx = displayWidthPx,
             loadBlob = { blobOf(it) },
+            onOpenWith = { viewing = null; handOff(attachment) },
+            onSave = { viewing = null; save(attachment) },
             onDismiss = { viewing = null },
         )
     }
@@ -1165,7 +1266,8 @@ private fun MessageCard(
     resolveRemoteImage: (String) -> Pair<String, ByteArray>?,
     resolveInlineImage: (String) -> Pair<String, ByteArray>?,
     loadBlob: suspend (Attachment) -> ByteArray?,
-    onOpenAttachment: (Attachment) -> Unit,
+    /** What the message's attachments can be acted on with (issue #500). */
+    attachmentActions: AttachmentActions,
     /** Where a link in the body goes (issue #425). */
     onLink: (String) -> Unit,
     /** What this message can be acted on with; absent for a queued one. */
@@ -1347,7 +1449,10 @@ private fun MessageCard(
                     AttachmentRow(
                         attachment = attachment,
                         loadBlob = loadBlob,
-                        onOpen = { onOpenAttachment(attachment) },
+                        busy = attachmentActions.busyBlobId == attachment.blobId,
+                        onOpen = { attachmentActions.onOpen(attachment) },
+                        onOpenWith = { attachmentActions.onOpenWith(attachment) },
+                        onSave = { attachmentActions.onSave(attachment) },
                     )
                 }
             }
@@ -1606,16 +1711,38 @@ internal fun MessageBodyWebView(
 private class BodyDocument(val html: String)
 
 /**
+ * What a received attachment can be acted on with (issue #500, suite
+ * `AttachmentList.svelte`): the tap, the hand-off to another app and the
+ * save, for a part of any type. [busyBlobId] names the part whose bytes
+ * are being fetched, which is the one row that shows the download.
+ */
+private class AttachmentActions(
+    val busyBlobId: String?,
+    val onOpen: (Attachment) -> Unit,
+    val onOpenWith: (Attachment) -> Unit,
+    val onSave: (Attachment) -> Unit,
+)
+
+/**
  * One attachment: name, type and size, with a bounded thumbnail for an
  * image. The thumbnail comes from a sampled decode of the cached blob, so
  * a camera photo costs a few hundred kilobytes of bitmap rather than its
- * full resolution (issue #341, suite REQ-ATT-20/21). Tapping opens it.
+ * full resolution (issue #341, suite REQ-ATT-20/21).
+ *
+ * Every row is a tap target whatever the part's type (issue #500): a tap
+ * reads it, and the overflow - reachable by long-press as well, so the
+ * gesture is never the only way there (REQ-AND-SYS-43) - opens it in
+ * another app or saves it through the document picker.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun AttachmentRow(
     attachment: Attachment,
     loadBlob: suspend (Attachment) -> ByteArray?,
+    busy: Boolean,
     onOpen: () -> Unit,
+    onOpenWith: () -> Unit,
+    onSave: () -> Unit,
 ) {
     val isImage = ImageScaling.isImage(attachment.type)
     // Three states, because a part that cannot be produced must say so
@@ -1634,43 +1761,91 @@ private fun AttachmentRow(
         }
     }
     val unavailable = thumbnail is AttachmentPreview.Unavailable
-    ListItem(
-        leadingContent = {
-            (thumbnail as? AttachmentPreview.Ready)?.let { ready ->
-                Image(
-                    bitmap = ready.bitmap,
-                    contentDescription = attachment.name,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier
-                        .size(THUMBNAIL_DP.dp)
-                        .testTag("attachment-thumbnail-${attachment.name}"),
+    var menuOpen by remember(attachment.blobId) { mutableStateOf(false) }
+    Box {
+        ListItem(
+            leadingContent = {
+                (thumbnail as? AttachmentPreview.Ready)?.let { ready ->
+                    Image(
+                        bitmap = ready.bitmap,
+                        contentDescription = attachment.name,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .size(THUMBNAIL_DP.dp)
+                            .testTag("attachment-thumbnail-${attachment.name}"),
+                    )
+                }
+            },
+            headlineContent = { Text(attachment.name) },
+            supportingContent = {
+                val detail = "${attachment.type} - ${formatBytes(attachment.size)}"
+                if (unavailable) {
+                    Text(
+                        text = "$detail - unavailable",
+                        modifier = Modifier.testTag("attachment-unavailable-${attachment.name}"),
+                    )
+                } else {
+                    Text(detail)
+                }
+            },
+            trailingContent = {
+                if (busy) {
+                    // The download the tap started, on the row that
+                    // started it (issue #500).
+                    CircularProgressIndicator(
+                        modifier = Modifier
+                            .size(ICON_DP.dp)
+                            .testTag("attachment-busy-${attachment.name}"),
+                        strokeWidth = 2.dp,
+                    )
+                } else {
+                    IconButton(
+                        onClick = { menuOpen = true },
+                        modifier = Modifier.testTag("attachment-menu-${attachment.name}"),
+                    ) {
+                        Icon(Icons.Filled.MoreVert, contentDescription = "Attachment actions")
+                    }
+                }
+            },
+            modifier = Modifier
+                .combinedClickable(
+                    onClick = onOpen,
+                    onLongClick = { menuOpen = true },
                 )
-            }
-        },
-        headlineContent = { Text(attachment.name) },
-        supportingContent = {
-            val detail = "${attachment.type} - ${formatBytes(attachment.size)}"
-            if (unavailable) {
-                Text(
-                    text = "$detail - unavailable",
-                    modifier = Modifier.testTag("attachment-unavailable-${attachment.name}"),
-                )
-            } else {
-                Text(detail)
-            }
-        },
-        modifier = Modifier
-            .clickable(enabled = isImage && !unavailable, onClick = onOpen)
-            .testTag("attachment-${attachment.name}"),
-    )
+                .testTag("attachment-${attachment.name}"),
+        )
+        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+            DropdownMenuItem(
+                text = { Text("Open with") },
+                onClick = {
+                    menuOpen = false
+                    onOpenWith()
+                },
+                modifier = Modifier.testTag("attachment-open-with-${attachment.name}"),
+            )
+            DropdownMenuItem(
+                text = { Text("Save") },
+                onClick = {
+                    menuOpen = false
+                    onSave()
+                },
+                modifier = Modifier.testTag("attachment-save-${attachment.name}"),
+            )
+        }
+    }
 }
 
-/** The full image, decoded at the screen's width rather than its own. */
+/**
+ * The full image, decoded at the screen's width rather than its own,
+ * with the two ways out of the app the row itself offers (issue #500).
+ */
 @Composable
 private fun AttachmentViewer(
     attachment: Attachment,
     maxEdgePx: Int,
     loadBlob: suspend (Attachment) -> ByteArray?,
+    onOpenWith: () -> Unit,
+    onSave: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val image by produceState<AttachmentPreview>(AttachmentPreview.Loading, attachment.blobId) {
@@ -1682,27 +1857,50 @@ private fun AttachmentViewer(
         }
     }
     Dialog(onDismissRequest = onDismiss) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable(onClick = onDismiss)
-                .testTag("attachment-viewer"),
-            contentAlignment = Alignment.Center,
+        Surface(
+            modifier = Modifier.fillMaxWidth().testTag("attachment-viewer"),
+            color = MaterialTheme.colorScheme.surface,
         ) {
-            when (val state = image) {
-                is AttachmentPreview.Ready -> Image(
-                    bitmap = state.bitmap,
-                    contentDescription = attachment.name,
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier.fillMaxWidth(),
-                )
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(onClick = onDismiss),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    when (val state = image) {
+                        is AttachmentPreview.Ready -> Image(
+                            bitmap = state.bitmap,
+                            contentDescription = attachment.name,
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
 
-                AttachmentPreview.Unavailable, AttachmentPreview.None -> Text(
-                    text = "This attachment could not be loaded.",
-                    modifier = Modifier.padding(24.dp).testTag("attachment-viewer-unavailable"),
-                )
+                        AttachmentPreview.Unavailable, AttachmentPreview.None -> Text(
+                            text = "This attachment could not be loaded.",
+                            modifier = Modifier.padding(24.dp).testTag("attachment-viewer-unavailable"),
+                        )
 
-                AttachmentPreview.Loading -> CircularProgressIndicator()
+                        AttachmentPreview.Loading -> CircularProgressIndicator(
+                            modifier = Modifier.padding(24.dp),
+                        )
+                    }
+                }
+                // The picture is read in the app; the file still goes out
+                // of it from here (issue #500).
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+                    horizontalArrangement = Arrangement.End,
+                ) {
+                    TextButton(
+                        onClick = onOpenWith,
+                        modifier = Modifier.testTag("attachment-viewer-open-with"),
+                    ) { Text("Open with") }
+                    TextButton(
+                        onClick = onSave,
+                        modifier = Modifier.testTag("attachment-viewer-save"),
+                    ) { Text("Save") }
+                }
             }
         }
     }

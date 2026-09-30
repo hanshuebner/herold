@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    The only path the FileProvider exposes: the cache subtree a received
+    attachment is written to before it is handed to a viewer app
+    (REQ-AND-SYS-36, issue #500). Nothing else of the app's storage - not
+    the database, not the token store, not the outbox spool - is reachable
+    through the provider.
+-->
+<paths>
+    <cache-path name="attachments" path="attachments/" />
+</paths>

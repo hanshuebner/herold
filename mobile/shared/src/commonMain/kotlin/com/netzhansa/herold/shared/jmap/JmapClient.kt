@@ -476,10 +476,7 @@ class JmapClient(
         type: String,
         filename: String?,
     ): UploadedBlob {
-        val template = session().uploadUrl.ifBlank {
-            "${baseUrl.trimEnd('/')}/jmap/upload/{accountId}"
-        }
-        val url = template.replace("{accountId}", accountId.urlEncode())
+        val url = BlobUrls.upload(BlobUrls.uploadTemplate(session().uploadUrl, baseUrl), accountId)
         val response = authorized { token ->
             httpClient.post(url) {
                 header(HttpHeaders.Authorization, "Bearer $token")
@@ -678,14 +675,13 @@ class JmapClient(
         type: String,
         name: String,
     ): DownloadedBlob {
-        val template = session().downloadUrl.ifBlank {
-            "${baseUrl.trimEnd('/')}/jmap/download/{accountId}/{blobId}/{type}/{name}"
-        }
-        val url = template
-            .replace("{accountId}", accountId.urlEncode())
-            .replace("{blobId}", blobId.urlEncode())
-            .replace("{type}", type.urlEncode())
-            .replace("{name}", name.urlEncode())
+        val url = BlobUrls.download(
+            template = BlobUrls.downloadTemplate(session().downloadUrl, baseUrl),
+            accountId = accountId,
+            blobId = blobId,
+            type = type,
+            name = name,
+        )
         val response = authorizedGet(url)
         if (!response.status.isSuccess()) {
             throw JmapException("blob download failed: ${response.status}", status = response.status.value)
@@ -939,18 +935,5 @@ class JmapClient(
             "snoozeWokeAt", "snoozeWokeFor",
         )
         private val BODY_PROPERTIES = listOf("htmlBody", "textBody", "attachments", "bodyValues")
-    }
-}
-
-private fun String.urlEncode(): String = buildString {
-    this@urlEncode.encodeToByteArray().forEach { byte ->
-        val value = byte.toInt() and 0xFF
-        val char = value.toChar()
-        if (char.isLetterOrDigit() || char in "-_.~") {
-            append(char)
-        } else {
-            append('%')
-            append(value.toString(16).uppercase().padStart(2, '0'))
-        }
     }
 }

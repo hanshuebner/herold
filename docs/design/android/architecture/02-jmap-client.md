@@ -47,7 +47,13 @@ The two JMAP error tiers (RFC 8620 3.6) are handled as in the Suite:
   through the outbox when composed offline: the blob is staged locally and
   uploaded on drain (`../requirements/02-offline-and-sync.md` REQ-AND-SYNC-21).
 - Download: bodies and attachments are fetched via `/jmap/download/*` and written
-  to the local blob cache under the size budget (REQ-AND-SYNC-12).
+  to the local blob cache under the size budget (REQ-AND-SYNC-12). The URL is
+  built by `BlobUrls` from the session object's `downloadUrl` template with each
+  variable percent-encoded, so a filename carrying spaces, a slash or non-ASCII
+  characters stays inside its own path segment; the request itself carries the
+  bearer token, which is the only credential the blob endpoints see. The same
+  cached bytes are what the reading pane hands to another app or to a saved
+  document (`05-ui-shell.md`, REQ-AND-SYS-36).
 
 ## Batching and concurrency
 

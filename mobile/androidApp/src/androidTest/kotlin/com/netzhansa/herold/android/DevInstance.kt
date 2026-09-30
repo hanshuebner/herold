@@ -101,6 +101,27 @@ object DevInstance {
     }
 
     /**
+     * A message carrying [bytes] as an attached file of [type] - a PDF,
+     * an archive, anything a sender attaches that the pane does not
+     * render itself (issue #500).
+     */
+    fun deliverMailWithAttachment(
+        subject: String,
+        bytes: ByteArray,
+        name: String,
+        type: String,
+        from: String = "Bob Example <bob@example.local>",
+    ): String = deliverMailWithImage(
+        subject = subject,
+        bytes = bytes,
+        name = name,
+        inline = false,
+        from = from,
+        type = type,
+        html = "<html><body><p>The file is attached.</p></body></html>",
+    )
+
+    /**
      * An HTML message carrying [bytes] as an image, inline or attached, so
      * the reading pane's handling of a camera-sized photo can be driven
      * from a seeded message (issue #341).

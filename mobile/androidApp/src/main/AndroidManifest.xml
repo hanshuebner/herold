@@ -152,6 +152,22 @@
                 android:resource="@xml/inbox_widget_info" />
         </receiver>
 
+        <!-- How a received attachment reaches a viewer app: the bytes go
+             to an app-private cache directory and travel as a content URI
+             with a per-intent read grant (REQ-AND-SYS-36, issue #500).
+             The authority carries ${applicationId}, so the debug build's
+             own package (issue #484) does not collide with the release's.
+             -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
         <!-- The Quick Settings tile, carrying the action the user chose
              (REQ-AND-SYS-21). -->
         <service
