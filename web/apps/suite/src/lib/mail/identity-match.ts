@@ -9,12 +9,25 @@ import type { Address, Identity } from './types';
 /**
  * Build a Set of lowercased, trimmed email addresses from an iterable of
  * Identity objects. The set is used for O(1) membership tests.
+ *
+ * Includes each identity's primary `email` AND every address in its
+ * `aliases` list (#387, `Identity.aliases`) -- an alias never appears as
+ * a From address on the wire, but it is still an address that belongs to
+ * the user: mail delivered to it, or a recipient list containing it,
+ * must be treated as "mine" the same way the primary address is (re
+ * #501). This keeps the set aligned with the own-address determination
+ * `selectReplyIdentity` (`../compose/reply-identity.ts`) already applies
+ * when picking the reply's From identity.
  */
 export function buildSelfEmailSet(identities: Iterable<Identity>): Set<string> {
   const out = new Set<string>();
   for (const id of identities) {
     const normalized = id.email.trim().toLowerCase();
     if (normalized) out.add(normalized);
+    for (const alias of id.aliases ?? []) {
+      const normalizedAlias = alias.trim().toLowerCase();
+      if (normalizedAlias) out.add(normalizedAlias);
+    }
   }
   return out;
 }

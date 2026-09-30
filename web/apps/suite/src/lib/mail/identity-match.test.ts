@@ -11,11 +11,12 @@ import type { Identity } from './types';
 
 // ── buildSelfEmailSet ─────────────────────────────────────────────────────────
 
-function makeIdentity(email: string, name = 'Test User'): Identity {
+function makeIdentity(email: string, name = 'Test User', aliases?: string[]): Identity {
   return {
     id: 'i1',
     name,
     email,
+    aliases,
     replyTo: null,
     bcc: null,
     textSignature: '',
@@ -54,6 +55,36 @@ describe('buildSelfEmailSet', () => {
   it('skips identities whose email normalises to empty string', () => {
     const set = buildSelfEmailSet([makeIdentity('   ')]);
     expect(set.size).toBe(0);
+  });
+
+  // re #501: the exclusion set backing Reply All must recognise an
+  // identity's registered aliases (#387), not only its primary address.
+  it('includes an identity\'s alias addresses alongside its primary address', () => {
+    const set = buildSelfEmailSet([
+      makeIdentity('vorsitz@classic-computing.de', 'Vorsitz', [
+        'vorsitz@classic-computing.org',
+      ]),
+    ]);
+    expect(set.has('vorsitz@classic-computing.de')).toBe(true);
+    expect(set.has('vorsitz@classic-computing.org')).toBe(true);
+  });
+
+  it('lowercases and trims alias addresses', () => {
+    const set = buildSelfEmailSet([
+      makeIdentity('me@example.test', 'Me', ['  Alias@Example.ORG  ']),
+    ]);
+    expect(set.has('alias@example.org')).toBe(true);
+  });
+
+  it('handles identities with no aliases field', () => {
+    const set = buildSelfEmailSet([makeIdentity('me@example.test')]);
+    expect(set.size).toBe(1);
+    expect(set.has('me@example.test')).toBe(true);
+  });
+
+  it('handles identities with an empty aliases array', () => {
+    const set = buildSelfEmailSet([makeIdentity('me@example.test', 'Me', [])]);
+    expect(set.size).toBe(1);
   });
 });
 

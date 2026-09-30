@@ -964,6 +964,26 @@ describe('localAliasesForCc', () => {
     const aliases = localAliasesForCc(parent, [VORSITZ, verifiedInfo]);
     expect(aliases).toEqual([]);
   });
+
+  it('excludes a delivery address registered as an Identity.aliases entry, even on an UNVERIFIED identity (re #501)', () => {
+    // Regression for #501: an address the user explicitly registered as
+    // an alias (#387) must not be re-added here just because the owning
+    // identity itself is not (yet) verified -- unlike an unverified
+    // identity's own PRIMARY address (#280 above), the alias binding is
+    // an explicit registration the own-address exclusion already
+    // stripped from the base reply-all Cc (buildSelfEmailSet,
+    // `../mail/identity-match.ts`); re-adding it here would undo that.
+    const roleWithAlias = makeIdentity('alice-role@example.local', {
+      verifiedAt: null,
+      aliases: ['vorsitz@example.local'],
+    });
+    const parent = makeEmail({
+      from: [{ name: null, email: 'member@example.test' }],
+      to: [{ name: null, email: 'vorsitz@example.local' }],
+    });
+    const aliases = localAliasesForCc(parent, [ALICE, roleWithAlias]);
+    expect(aliases).toEqual([]);
+  });
 });
 
 // ── deliveryAliasForCc ──────────────────────────────────────────────────

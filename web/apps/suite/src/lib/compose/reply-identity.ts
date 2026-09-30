@@ -594,14 +594,24 @@ export function localAliasesForCc(
   ownMessage?: boolean,
 ): string[] {
   const byEmail = identitiesByEmail(identities);
+  const byAlias = identitiesByAlias(identities);
   const result: string[] = [];
   const seen = new Set<string>();
 
-  // An address counts as "already covered" only when it matches a
-  // VERIFIED identity — an unverified one is not yet configured for use.
+  // An address counts as "already covered" when it matches a VERIFIED
+  // identity's primary address — an unverified one is not yet configured
+  // for use (re #280) -- OR when it matches any identity's registered
+  // `aliases` entry (#387), regardless of that identity's verification
+  // state: an alias is an address the user explicitly registered as
+  // theirs (`buildSelfEmailSet`, `../mail/identity-match.ts`, applies the
+  // same unconditional-on-verification treatment), so it must not also
+  // surface here as a preserved "local alias" Cc entry -- that would
+  // re-add the very address the own-address exclusion already stripped
+  // from the base reply-all Cc list (re #501).
   const coveredByVerifiedIdentity = (email: string): boolean => {
     const id = byEmail.get(email);
-    return !!id && isVerified(id);
+    if (id && isVerified(id)) return true;
+    return byAlias.has(email);
   };
 
   // Source 1 — X-Herold-Recipient. Same logic as deliveryAliasForCc.

@@ -6,9 +6,9 @@
  * body to render the way users expect.
  */
 import { describe, it, expect } from 'vitest';
-import { _internals_forTest } from './compose.svelte';
-import { isFromSelf } from '../mail/identity-match';
-import type { Email } from '../mail/types';
+import { _internals_forTest, computeActualReplyAllCc } from './compose.svelte';
+import { isFromSelf, buildSelfEmailSet } from '../mail/identity-match';
+import type { Email, Identity } from '../mail/types';
 
 const {
   parseAddressList,
@@ -778,6 +778,111 @@ describe('reply recipient derivation for own sent messages', () => {
     const cc = computeReplyAllCc(parent, self);
     // me@example.test stripped (self); alice stripped (From = primary).
     expect(cc.map((a) => a.email)).toEqual(['carol@c.test', 'dave@d.test']);
+  });
+});
+
+// ── Reply All own-address exclusion via aliases (re #501) ────────────
+
+describe('Reply All own-address exclusion via Identity.aliases (re #501)', () => {
+  function makeIdentity(email: string, aliases?: string[]): Identity {
+    return {
+      id: 'i1',
+      name: 'Test User',
+      email,
+      aliases,
+      replyTo: null,
+      bcc: null,
+      textSignature: '',
+      htmlSignature: '',
+      mayDelete: false,
+    };
+  }
+
+  function emailWith(args: { from?: string; to?: string[]; cc?: string[] }): Email {
+    return {
+      id: 'x',
+      threadId: 't',
+      mailboxIds: {},
+      keywords: {},
+      from: args.from ? [{ name: null, email: args.from }] : null,
+      to: args.to?.map((email) => ({ name: null, email })) ?? null,
+      cc: args.cc?.map((email) => ({ name: null, email })) ?? null,
+      subject: null,
+      preview: '',
+      receivedAt: '2026-04-28T00:00:00Z',
+      hasAttachment: false,
+    } as unknown as Email;
+  }
+
+  it('strips an address reachable only through an alias, and the sender\'s own primary address', () => {
+    // The user's identity is vorsitz@classic-computing.de and carries the
+    // registered alias vorsitz@classic-computing.org (#387). The message
+    // is a member inquiry addressed to the alias, Cc'ing the user's own
+    // primary address as well (the sender's own primary address case from
+    // the acceptance criteria).
+    const identity = makeIdentity('vorsitz@classic-computing.de', [
+      'vorsitz@classic-computing.org',
+    ]);
+    const self = buildSelfEmailSet([identity]);
+    const parent = emailWith({
+      from: 'member@example.test',
+      to: ['vorsitz@classic-computing.org'],
+      cc: ['vorsitz@classic-computing.de'],
+    });
+    const cc = computeReplyAllCc(parent, self);
+    expect(cc.map((a) => a.email)).toEqual([]);
+  });
+
+  it('keeps an unrelated role address that matches no identity or alias (#164)', () => {
+    const identity = makeIdentity('vorsitz@classic-computing.de', [
+      'vorsitz@classic-computing.org',
+    ]);
+    const self = buildSelfEmailSet([identity]);
+    const parent = emailWith({
+      from: 'member@example.test',
+      to: ['vorsitz@classic-computing.org'],
+      cc: ['presse@classic-computing.de'],
+    });
+    const cc = computeReplyAllCc(parent, self);
+    expect(cc.map((a) => a.email)).toEqual(['presse@classic-computing.de']);
+  });
+
+  it('strips an alias address from computeOwnMessageReplyAllCc as well', () => {
+    const identity = makeIdentity('vorsitz@classic-computing.de', [
+      'vorsitz@classic-computing.org',
+    ]);
+    const self = buildSelfEmailSet([identity]);
+    const parent = emailWith({
+      from: 'vorsitz@classic-computing.de',
+      to: ['member@example.test'],
+      cc: ['vorsitz@classic-computing.org', 'carol@z.test'],
+    });
+    const cc = computeOwnMessageReplyAllCc(parent, self);
+    expect(cc.map((a) => a.email)).toEqual(['carol@z.test']);
+  });
+
+  it('computeActualReplyAllCc (the function openReplyAll actually calls) also strips the alias, even when the owning identity is unverified', () => {
+    // Same-domain alias on an unverified, non-default identity: this is
+    // the exact shape a fresh `Identity/set{create}` produces before the
+    // verification email is confirmed. computeActualReplyAllCc wraps
+    // computeReplyAllCc with localAliasesForCc's own-domain Cc
+    // preservation (../compose/reply-identity.ts); both must agree the
+    // alias is "mine" or the preservation step silently re-adds what the
+    // base filter just stripped (re #501).
+    const primary = makeIdentity('alice@example.local');
+    const roleWithAlias: Identity = {
+      ...makeIdentity('alice-role@example.local', ['vorsitz@example.local']),
+      verifiedAt: null,
+    };
+    const identities = [primary, roleWithAlias];
+    const self = buildSelfEmailSet(identities);
+    const parent = emailWith({
+      from: 'member@example.test',
+      to: ['vorsitz@example.local'],
+      cc: ['colleague@example.test'],
+    });
+    const cc = computeActualReplyAllCc(parent, self, identities);
+    expect(cc.map((a) => a.email)).toEqual(['colleague@example.test']);
   });
 });
 
