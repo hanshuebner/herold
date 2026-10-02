@@ -3,15 +3,12 @@ package com.netzhansa.herold.android
 import android.app.Activity
 import android.app.Instrumentation.ActivityResult
 import android.content.Intent
-import android.net.Uri
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
-import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
-import androidx.compose.ui.test.performTouchInput
 import androidx.test.espresso.Espresso
 import androidx.test.espresso.intent.Intents
 import androidx.test.espresso.intent.Intents.intended
@@ -37,23 +34,22 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.junit.runners.MethodSorters
-import java.io.File
 
 /**
- * Getting a received attachment out of the app (issue #500,
- * REQ-AND-SYS-31/36). A PDF is a part the reading pane cannot render
- * itself, so the two ways out - another app, and a file the user keeps -
- * are the whole of what the row offers.
+ * An attached file that carries a Content-ID of its own (issue #503).
  *
- * Each check seeds its own message and reads only that one, so the class
- * needs no particular suite position and leaves no account-wide state
- * behind (issue #414). The outgoing intents are stubbed, so the
- * assertions read what the app asked the system for without a viewer
- * taking the foreground.
+ * Gmail stamps one on every attachment, so the shape reaching the pane
+ * is `Content-Disposition: attachment` next to a `Content-ID` the body
+ * never names. Such a part belongs in the Attachments section, where the
+ * hand-off of issue #500 reaches it; a part is the body's own only when
+ * its disposition says so, or when the HTML draws it as `cid:`.
+ *
+ * The checks seed their own mail and read only that, so the class needs
+ * no particular suite position (issue #414).
  */
 @RunWith(AndroidJUnit4::class)
 @FixMethodOrder(MethodSorters.NAME_ASCENDING)
-class AttachmentOpenAcceptanceTest {
+class AttachmentCidAcceptanceTest {
 
     @get:Rule
     val compose = createAndroidComposeRule<MainActivity>()
@@ -83,20 +79,28 @@ class AttachmentOpenAcceptanceTest {
     }
 
     @Test
-    fun t10_tappingAPdfRowHandsTheDownloadedFileToAViewerApp() {
+    fun t10_anAttachedFileCarryingAContentIdIsListedAndOpens() {
         intending(allOf(not(isInternal()), hasAction(Intent.ACTION_VIEW)))
             .respondWith(ActivityResult(Activity.RESULT_OK, null))
 
         val pdf = acceptancePdf()
-        val message = seed(pdf)
-        openAttachments(message)
+        val subject = "cid attachment " + System.currentTimeMillis()
+        DevInstance.deliverMailWithCidAttachment(subject, pdf, PDF_NAME, PDF_TYPE)
+        val message = awaitInbox(subject)
 
+        openThread(message)
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("attachment-$PDF_NAME").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("thread-messages")
+            .performScrollToNode(hasTestTag("attachment-$PDF_NAME"))
+        compose.captureScreen("503-attachments")
+
+        // The listed row is the one the hand-off of issue #500 acts on.
         compose.onNodeWithTag("attachment-$PDF_NAME").performClick()
         compose.waitUntil(TIMEOUT_MS) {
             Intents.getIntents().any { it.action == Intent.ACTION_VIEW }
         }
-        compose.captureScreen("500-attachment-open-with")
-
         intended(
             allOf(
                 hasAction(Intent.ACTION_VIEW),
@@ -104,10 +108,6 @@ class AttachmentOpenAcceptanceTest {
                 hasDataString(startsWith("content://$authority/")),
             ),
         )
-
-        // The URI the viewer was handed carries the bytes the sender
-        // attached, which the bearer-authenticated blob download is the
-        // only way to have obtained.
         val handedOff = Intents.getIntents().last { it.action == Intent.ACTION_VIEW }
         assertTrue(
             "the read grant must travel with the intent",
@@ -118,37 +118,29 @@ class AttachmentOpenAcceptanceTest {
         assertArrayEquals("the viewer was handed different bytes", pdf, served)
     }
 
+    /**
+     * The other half of the rule: a part the HTML draws as `cid:` stays
+     * out of the Attachments section however its disposition reads, so a
+     * body's own image is not listed under it a second time.
+     */
     @Test
-    fun t20_theSaveActionWritesTheFileToThePickedDocument() {
-        val target = File(instrumentation.targetContext.cacheDir, "saved-$PDF_NAME").apply { delete() }
-        intending(hasAction(Intent.ACTION_CREATE_DOCUMENT)).respondWith(
-            ActivityResult(Activity.RESULT_OK, Intent().setData(Uri.fromFile(target))),
-        )
+    fun t20_aPartTheBodyDrawsIsNotListedAsAnAttachment() {
+        val subject = "cid referenced " + System.currentTimeMillis()
+        DevInstance.deliverMailWithInlineImage(subject)
+        val message = awaitInbox(subject)
 
-        val pdf = acceptancePdf()
-        val message = seed(pdf)
-        openAttachments(message)
-
-        compose.onNodeWithTag("attachment-$PDF_NAME").performTouchInput { longClick() }
+        openThread(message)
         compose.waitUntil(TIMEOUT_MS) {
-            compose.onAllNodesWithTag("attachment-save-$PDF_NAME").fetchSemanticsNodes().isNotEmpty()
+            compose.onAllNodesWithTag("message-body-${message.id}").fetchSemanticsNodes().isNotEmpty()
         }
-        compose.onNodeWithTag("attachment-save-$PDF_NAME").performClick()
-
-        compose.waitUntil(TIMEOUT_MS) { target.isFile && target.length() == pdf.size.toLong() }
-        compose.captureScreen("500-attachment-saved")
-
-        intended(allOf(hasAction(Intent.ACTION_CREATE_DOCUMENT), hasType(PDF_TYPE)))
-        assertArrayEquals("the saved document differs from the attachment", pdf, target.readBytes())
+        compose.waitForIdle()
+        assertTrue(
+            "a part the body draws must not be listed as an attachment",
+            compose.onAllNodesWithTag("attachment-dot.png").fetchSemanticsNodes().isEmpty(),
+        )
     }
 
     // ---- helpers ---------------------------------------------------------
-
-    private fun seed(pdf: ByteArray): Email {
-        val subject = "pdf attachment " + System.currentTimeMillis()
-        DevInstance.deliverMailWithAttachment(subject, pdf, PDF_NAME, PDF_TYPE)
-        return awaitInbox(subject)
-    }
 
     private fun awaitInbox(subject: String): Email = runBlocking {
         repeat(POLL_ATTEMPTS) {
@@ -160,8 +152,7 @@ class AttachmentOpenAcceptanceTest {
         error("the seeded message \"$subject\" never reached the store")
     }
 
-    /** Opens the seeded thread and waits for its attachment row. */
-    private fun openAttachments(message: Email) {
+    private fun openThread(message: Email) {
         while (compose.onAllNodesWithTag("inbox-list").fetchSemanticsNodes().isEmpty()) {
             Espresso.pressBack()
             compose.waitForIdle()
@@ -169,14 +160,12 @@ class AttachmentOpenAcceptanceTest {
         compose.onNodeWithTag("inbox-list").performScrollToNode(hasTestTag("thread-row-${message.threadId}"))
         compose.onNodeWithTag("thread-row-${message.threadId}").performClick()
         compose.waitUntil(TIMEOUT_MS) {
-            compose.onAllNodesWithTag("attachment-$PDF_NAME").fetchSemanticsNodes().isNotEmpty()
+            compose.onAllNodesWithTag("thread-messages").fetchSemanticsNodes().isNotEmpty()
         }
-        compose.onNodeWithTag("thread-messages")
-            .performScrollToNode(hasTestTag("attachment-$PDF_NAME"))
     }
 
     private companion object {
-        const val PDF_NAME = "report.pdf"
+        const val PDF_NAME = "invoice.pdf"
         const val PDF_TYPE = "application/pdf"
         const val TIMEOUT_MS = 60_000L
         const val POLL_MS = 500L

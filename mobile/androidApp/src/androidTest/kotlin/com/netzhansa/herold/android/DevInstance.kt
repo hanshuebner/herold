@@ -122,6 +122,50 @@ object DevInstance {
     )
 
     /**
+     * The shape Gmail sends: a `multipart/mixed` holding the body's
+     * `multipart/alternative` and one attached file whose part carries a
+     * `Content-ID` of its own next to `Content-Disposition: attachment`
+     * (issue #503). The body never names that id, so the part is an
+     * attachment the reader has to be shown, not an image the body draws.
+     */
+    fun deliverMailWithCidAttachment(
+        subject: String,
+        bytes: ByteArray,
+        name: String,
+        type: String,
+        from: String = "Bob Example <bob@example.local>",
+        cid: String = "f_" + System.nanoTime(),
+        /** The HTML part; `%CID%` in it is replaced by the part's Content-ID. */
+        html: String = "<html><body><p>The file is attached.</p></body></html>",
+    ): String {
+        val outer = "herold-mixed-" + System.nanoTime()
+        val inner = "herold-alt-" + System.nanoTime()
+        val headers = "MIME-Version: 1.0\r\n" +
+            "Content-Type: multipart/mixed; boundary=\"$outer\"\r\n"
+        val encoded = android.util.Base64.encodeToString(bytes, android.util.Base64.DEFAULT)
+        val body = buildString {
+            append("--$outer\r\n")
+            append("Content-Type: multipart/alternative; boundary=\"$inner\"\r\n\r\n")
+            append("--$inner\r\n")
+            append("Content-Type: text/plain; charset=utf-8\r\n\r\n")
+            append("The file is attached.\r\n")
+            append("--$inner\r\n")
+            append("Content-Type: text/html; charset=utf-8\r\n\r\n")
+            append(html.replace("%CID%", cid))
+            append("\r\n--$inner--\r\n")
+            append("--$outer\r\n")
+            append("Content-Type: $type; name=\"$name\"\r\n")
+            append("Content-Disposition: attachment; filename=\"$name\"\r\n")
+            append("Content-Transfer-Encoding: base64\r\n")
+            append("Content-ID: <$cid>\r\n")
+            append("X-Attachment-Id: $cid\r\n\r\n")
+            append(encoded)
+            append("\r\n--$outer--\r\n")
+        }
+        return deliverRaw(subject, from, body, extraHeaders = headers)
+    }
+
+    /**
      * An HTML message carrying [bytes] as an image, inline or attached, so
      * the reading pane's handling of a camera-sized photo can be driven
      * from a seeded message (issue #341).

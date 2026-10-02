@@ -99,6 +99,10 @@ internal fun WireEmail.toDomain(accountId: String): Email {
     // brackets it happens to contain (issue #458).
     val htmlPart = declaredHtml
         ?: htmlBody?.firstOrNull()?.takeIf { it.partId != textPart?.partId }
+    val html = htmlPart?.partId?.let { bodyValues?.get(it)?.value }
+    // The ids the body draws, which is what tells a part of the message
+    // from a file the sender attached (issue #503).
+    val drawn = html?.let { cidReferences(it) }.orEmpty()
     return Email(
         accountId = accountId,
         id = id,
@@ -125,7 +129,7 @@ internal fun WireEmail.toDomain(accountId: String): Email {
         snoozeWokeFor = snoozeWokeFor,
         keywords = keywords.filterValues { it }.keys,
         mailboxIds = mailboxIds.filterValues { it }.keys,
-        bodyHtml = htmlPart?.partId?.let { bodyValues?.get(it)?.value },
+        bodyHtml = html,
         bodyText = textPart?.partId?.let { bodyValues?.get(it)?.value },
         attachments = attachments.orEmpty().mapNotNull { part ->
             val blob = part.blobId ?: return@mapNotNull null
@@ -135,11 +139,32 @@ internal fun WireEmail.toDomain(accountId: String): Email {
                 type = part.type,
                 size = part.size,
                 cid = part.cid,
-                isInline = part.disposition == "inline" || part.cid != null,
+                // A part belongs to the body when its disposition says
+                // so, or when the body draws its cid. A Content-ID on
+                // its own says nothing: Gmail stamps one on every file
+                // it attaches, and reading that as "the body holds
+                // this" keeps the file off the Attachments section
+                // altogether (issue #503). JMAP's own `attachments`
+                // list applies the same rule.
+                isInline = part.disposition == "inline" ||
+                    part.cid?.trim('<', '>')?.let { it in drawn } == true,
             )
         },
     )
 }
+
+/**
+ * The `cid:` targets an HTML body draws, each without its angle
+ * brackets. `src`, `background` and a CSS `url()` all reach a part the
+ * same way, so the scan reads the scheme rather than one attribute.
+ */
+internal fun cidReferences(html: String): Set<String> =
+    cidReference.findAll(html)
+        .map { it.groupValues[1].trim().trim('<', '>') }
+        .filter { it.isNotBlank() }
+        .toSet()
+
+private val cidReference = Regex("""cid:([^\s"'>)]+)""", RegexOption.IGNORE_CASE)
 
 /**
  * The wire-to-store mapping, public so a caller outside the engine - an
