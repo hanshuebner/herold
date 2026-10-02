@@ -91,6 +91,43 @@ class AttachmentMappingTest {
         assertFalse(email.attachments.single().isInline)
     }
 
+    /**
+     * The body the rule reads is the one `Email/get` returned, which
+     * stops at `maxBodyValueBytes` (512 KB). A `cid:` further in than
+     * that is not in what the client holds, so its part reads as
+     * attached: it is listed in the Attachments section while the pane
+     * still draws it in the body, and the reader sees it twice. The
+     * reverse reading would hide a file on a body the server happened
+     * to truncate, which is the costlier of the two, so this is the
+     * chosen outcome rather than an accident of the scan.
+     */
+    @Test
+    fun aReferencePastTheBodyCapReadsAsAttached() {
+        val cut = WireEmail(
+            id = "e1",
+            threadId = "t1",
+            htmlBody = listOf(WireBodyPart(partId = "1", type = "text/html")),
+            bodyValues = mapOf(
+                "1" to WireBodyValue(
+                    value = "<html><body><p>A long newsletter.</p>",
+                    isTruncated = true,
+                ),
+            ),
+            attachments = listOf(
+                WireBodyPart(
+                    partId = "2",
+                    blobId = "blob-png",
+                    type = "image/png",
+                    name = "banner.png",
+                    disposition = "attachment",
+                    cid = "banner@example",
+                ),
+            ),
+        ).toStoreRow("a")
+
+        assertFalse(cut.attachments.single().isInline)
+    }
+
     /** A message read without its body still lists what it carries. */
     @Test
     fun aPartOfAMessageWithNoHtmlBodyIsNotInline() {

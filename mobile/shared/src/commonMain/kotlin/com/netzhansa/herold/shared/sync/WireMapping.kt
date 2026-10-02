@@ -101,7 +101,14 @@ internal fun WireEmail.toDomain(accountId: String): Email {
         ?: htmlBody?.firstOrNull()?.takeIf { it.partId != textPart?.partId }
     val html = htmlPart?.partId?.let { bodyValues?.get(it)?.value }
     // The ids the body draws, which is what tells a part of the message
-    // from a file the sender attached (issue #503).
+    // from a file the sender attached (issue #503). The body is the one
+    // `Email/get` returned, which stops at the client's
+    // `maxBodyValueBytes` (512 KB, `JmapClient.MAX_BODY_VALUE_BYTES`):
+    // a `cid:` that lies past that point is not among these ids, and
+    // its part lists as an attachment while the pane still draws it in
+    // the body - the part shows twice. An unseen reference costs a
+    // duplicate row; an unseen attachment would cost the file, so the
+    // cap errs towards listing.
     val drawn = html?.let { cidReferences(it) }.orEmpty()
     return Email(
         accountId = accountId,
@@ -157,6 +164,10 @@ internal fun WireEmail.toDomain(accountId: String): Email {
  * The `cid:` targets an HTML body draws, each without its angle
  * brackets. `src`, `background` and a CSS `url()` all reach a part the
  * same way, so the scan reads the scheme rather than one attribute.
+ *
+ * [html] is the body as fetched, truncated at `maxBodyValueBytes`
+ * (512 KB), so a reference further in than that is not in the result
+ * and its part reads as attached (issue #503).
  */
 internal fun cidReferences(html: String): Set<String> =
     cidReference.findAll(html)
