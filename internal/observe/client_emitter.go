@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
 	otellog "go.opentelemetry.io/otel/log"
 )
 
@@ -211,41 +212,41 @@ func (e *ClientEmitter) emitOTLP(ctx context.Context, ev ClientEvent) {
 	rec.SetObservedTimestamp(ev.ServerRecvTS)
 	rec.SetSeverity(clientOTLPSeverity(ev))
 	rec.SetSeverityText(clientOTLPSeverityText(ev))
-	rec.SetBody(otellog.StringValue(ev.Msg))
+	rec.SetBody(attribute.StringValue(ev.Msg))
 
 	// Per-record attributes (architecture §OTLP shape).
-	kvs := []otellog.KeyValue{
-		otellog.String("client.session_id", ev.SessionID),
-		otellog.String("client.page_id", ev.PageID),
-		otellog.String("client.route", ev.Route),
-		otellog.String("client.ua", ev.UA),
-		otellog.String("client.kind", ev.Kind),
-		otellog.String("client.build_sha", ev.BuildSHA),
-		otellog.String("client.client_ts", ev.ClientTS.Format(time.RFC3339Nano)),
-		otellog.Int64("client.clock_skew_ms", ev.ClockSkewMS),
-		otellog.String("client.endpoint", ev.Endpoint),
-		otellog.String("client.listener", ev.Listener),
+	kvs := []attribute.KeyValue{
+		attribute.String("client.session_id", ev.SessionID),
+		attribute.String("client.page_id", ev.PageID),
+		attribute.String("client.route", ev.Route),
+		attribute.String("client.ua", ev.UA),
+		attribute.String("client.kind", ev.Kind),
+		attribute.String("client.build_sha", ev.BuildSHA),
+		attribute.String("client.client_ts", ev.ClientTS.Format(time.RFC3339Nano)),
+		attribute.Int64("client.clock_skew_ms", ev.ClockSkewMS),
+		attribute.String("client.endpoint", ev.Endpoint),
+		attribute.String("client.listener", ev.Listener),
 	}
 	if ev.UserID != "" {
-		kvs = append(kvs, otellog.String("user.id", ev.UserID))
+		kvs = append(kvs, attribute.String("user.id", ev.UserID))
 	}
 	if ev.RequestID != "" {
-		kvs = append(kvs, otellog.String("request_id", ev.RequestID))
+		kvs = append(kvs, attribute.String("request_id", ev.RequestID))
 	}
 	if ev.Kind == "error" {
 		excType := parseExceptionType(ev.Msg)
 		if excType != "" {
-			kvs = append(kvs, otellog.String("exception.type", excType))
+			kvs = append(kvs, attribute.String("exception.type", excType))
 		}
 		if ev.Stack != "" {
-			kvs = append(kvs, otellog.String("exception.stacktrace", ev.Stack))
+			kvs = append(kvs, attribute.String("exception.stacktrace", ev.Stack))
 		}
 	}
 	if ev.Kind == "vital" && ev.VitalName != "" {
 		kvs = append(kvs,
-			otellog.String("vital.name", ev.VitalName),
-			otellog.Float64("vital.value", ev.VitalValue),
-			otellog.String("vital.id", ev.VitalID),
+			attribute.String("vital.name", ev.VitalName),
+			attribute.Float64("vital.value", ev.VitalValue),
+			attribute.String("vital.id", ev.VitalID),
 		)
 	}
 	rec.AddAttributes(kvs...)
