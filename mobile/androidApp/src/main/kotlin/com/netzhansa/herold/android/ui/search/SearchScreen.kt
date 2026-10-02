@@ -7,12 +7,14 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -33,6 +35,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -185,13 +188,30 @@ private fun SearchRow(hit: SearchHit, onOpen: () -> Unit) {
             .testTag("search-row-${hit.row.threadId}"),
         verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             Text(
                 text = hit.row.senders.ifBlank { "(unknown sender)" },
                 style = MaterialTheme.typography.titleSmall,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false),
             )
+            // A result states what its conversation holds, as a list
+            // row does (issue #504).
+            if (hit.row.hasAttachment) {
+                Icon(
+                    imageVector = Icons.Filled.AttachFile,
+                    contentDescription = "Has an attachment",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .size(GLYPH_SIZE)
+                        .testTag("search-attachment-${hit.row.threadId}"),
+                )
+            }
         }
         Text(
             text = highlighted(hit.subjectSnippet, hit.row.subject),
@@ -210,6 +230,9 @@ private fun SearchRow(hit: SearchHit, onOpen: () -> Unit) {
         )
     }
 }
+
+/** The size of a row's own glyphs, beside the text they stand with. */
+private val GLYPH_SIZE = 16.dp
 
 /**
  * The server's snippet with its `<mark>` runs emphasised; without a

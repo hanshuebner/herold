@@ -15,6 +15,7 @@ actions, touch gestures) is cited from the Suite, not restated.
 | REQ-AND-NAV-03 | Bottom navigation switches suite-app context (Mail; later Chat, Settings) per Suite `REQ-MOB-32`. A compose FAB anchors bottom-right above the bottom navigation (Suite `REQ-MOB-33`). |
 | REQ-AND-NAV-04 | The mailbox/label tree opens as a navigation drawer (Suite `REQ-MOB-34`). Pickers (label, snooze, from-identity) render as bottom sheets (Suite `REQ-MOB-37`). |
 | REQ-AND-NAV-05 | The tablet two/three-pane layouts (Suite `REQ-MOB-40..47`) are a later adaptation of the same navigation graph; phone is the v1 delivery target. |
+| REQ-AND-NAV-06 | A conversation's row in every message list - the inbox lanes, a mailbox or label the drawer opens, the snoozed view and the search results - states what the conversation holds without being opened: its senders, the message count past one, the subject, a preview line, its labels, the star, and a glyph when any of its messages within that list's scope carries an attachment. The glyph is derived from the rows the list already holds, as the row's unread and star state are (issue #504, Suite `REQ-UI-10`). |
 
 ## Inbox category lanes
 

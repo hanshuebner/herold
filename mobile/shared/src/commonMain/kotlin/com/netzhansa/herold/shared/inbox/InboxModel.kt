@@ -33,6 +33,12 @@ data class ThreadRow(
     val wokeFor: String? = null,
     /** True when an unsent answer to this conversation is waiting (issue #371). */
     val hasDraft: Boolean = false,
+    /**
+     * True when a message of the conversation within the list's scope
+     * carries an attachment, which is what the row's glyph states
+     * (issue #504).
+     */
+    val hasAttachment: Boolean = false,
 )
 
 /** A bundled category collapsed to one row, positioned by its newest member (REQ-CAT-10). */
@@ -320,6 +326,7 @@ object InboxAssembler {
                     wokeFor = ordered.filter { it.wokeFromSnooze }
                         .firstNotNullOfOrNull { it.snoozeWokeFor },
                     hasDraft = key in draftThreads || key.second in pendingThreads,
+                    hasAttachment = ordered.any { it.hasAttachment },
                 )
             }
     }

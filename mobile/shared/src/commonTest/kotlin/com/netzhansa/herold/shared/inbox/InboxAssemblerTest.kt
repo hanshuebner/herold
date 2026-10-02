@@ -48,6 +48,7 @@ private fun email(
     mailboxIds: Set<String> = setOf("inbox-1"),
     sender: String = "Sender $id",
     snoozedUntil: String? = null,
+    hasAttachment: Boolean = false,
 ) = Email(
     accountId = accountId,
     id = id,
@@ -60,9 +61,29 @@ private fun email(
     keywords = keywords,
     mailboxIds = mailboxIds,
     snoozedUntil = snoozedUntil,
+    hasAttachment = hasAttachment,
 )
 
 class InboxAssemblerTest {
+
+    /**
+     * A row states that its conversation holds a file, derived like its
+     * unread and star state: true when any member in the list's scope
+     * carries one (issue #504).
+     */
+    @Test
+    fun aRowCarriesTheAttachmentOfAnyOfItsMessages() {
+        val emails = listOf(
+            email("e1", receivedAt = 1000, threadId = "t1"),
+            email("e2", receivedAt = 2000, threadId = "t1", hasAttachment = true),
+            email("e3", receivedAt = 3000, threadId = "t2"),
+        )
+
+        val rows = InboxAssembler.threadRows(emails, accounts, mailboxes).associateBy { it.threadId }
+
+        assertTrue(rows.getValue("t1").hasAttachment, "a member carries a file, so the row says so")
+        assertTrue(!rows.getValue("t2").hasAttachment, "no member carries a file")
+    }
 
     @Test
     fun theSnoozedRowsCarryTheirWakeTimeNextToWakeFirst() {

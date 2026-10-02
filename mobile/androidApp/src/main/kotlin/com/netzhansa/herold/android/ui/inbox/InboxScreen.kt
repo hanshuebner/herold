@@ -24,6 +24,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Archive
+import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Outbox
 import androidx.compose.material.icons.filled.Edit
@@ -961,6 +962,9 @@ private const val PULL_SWEEP = 270f
 private const val REFRESH_UNFINISHED = "Refresh did not finish; showing what the app already has"
 
 
+/** The size of a row's own glyphs, beside the text they stand with. */
+private val GLYPH_SIZE = 16.dp
+
 /** How far, and how often, the running indicator turns. */
 private const val SPIN_STEP = 30f
 private const val SPIN_STEP_MS = 80L
@@ -1050,6 +1054,19 @@ private fun ThreadRowItem(
                     modifier = Modifier.weight(1f, fill = false),
                 )
                 if (row.messageCount > 1) Text("${row.messageCount}", style = MaterialTheme.typography.labelSmall)
+                // What the conversation holds beyond its text, stated
+                // in the row so a reader spots mail with files without
+                // opening it (issue #504, suite REQ-UI-10).
+                if (row.hasAttachment) {
+                    Icon(
+                        imageVector = Icons.Filled.AttachFile,
+                        contentDescription = "Has an attachment",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .size(GLYPH_SIZE)
+                            .testTag("thread-attachment-${row.threadId}"),
+                    )
+                }
             }
             Text(
                 text = row.subject,
