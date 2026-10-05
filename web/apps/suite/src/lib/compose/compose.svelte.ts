@@ -1728,6 +1728,44 @@ class ComposeStore {
                   undoFailure.description ?? `Could not cancel send: ${undoFailure.type}`,
                 );
               }
+
+              // EmailSubmission/create applied its onSuccessUpdateEmail patch
+              // (move to Sent, clear $draft) at submission-creation time, before
+              // the undo window elapsed. The destroy above cancelled the relay
+              // but left that patch in place, so the Email still sits in Sent
+              // with no $draft. Revert it here -- move back to Drafts and
+              // restore $draft -- before re-opening the composer (re #507).
+              // Best-effort: a failure leaves the orphaned Sent copy in place
+              // (same as before this fix) but must not block re-opening the
+              // composer with the user's content, so it's caught separately
+              // and only gates whether the reopened composer continues
+              // editing the same draft row (restoredDraftId stays null on
+              // failure, so send() creates a fresh draft instead of updating
+              // a row that didn't actually move back to Drafts).
+              let restoredDraftId: string | null = null;
+              if (sentEmailId) {
+                try {
+                  const revertPatch: Record<string, true | null> = {};
+                  if (sentMailboxId) revertPatch[`mailboxIds/${sentMailboxId}`] = null;
+                  revertPatch[`mailboxIds/${draftsId}`] = true;
+                  revertPatch['keywords/$draft'] = true;
+                  const revert = await jmap.batch((b) => {
+                    b.call(
+                      'Email/set',
+                      { accountId, update: { [sentEmailId]: revertPatch } },
+                      [Capability.Mail],
+                    );
+                  });
+                  strict(revert.responses);
+                  restoredDraftId = sentEmailId;
+                } catch (err) {
+                  console.warn(
+                    'compose: could not restore the cancelled send to Drafts',
+                    err,
+                  );
+                }
+              }
+
               // Re-open compose with the full saved state (including reply context).
               // savedBody already carries the signature the user had on send;
               // appending again would duplicate it.
@@ -1738,6 +1776,7 @@ class ComposeStore {
                 subject: savedSubject,
                 body: savedBody,
                 replyContext: savedReplyContext,
+                draftId: restoredDraftId,
                 skipSignature: true,
               });
             } catch (err) {
