@@ -40,6 +40,7 @@ object RuleText {
         RuleActions.MARK_READ -> "Mark as read"
         RuleActions.DELETE -> "Move to Trash"
         RuleActions.FORWARD -> "Forward to"
+        RuleActions.NEVER_SPAM -> "Never mark as spam"
         else -> kind
     }
 

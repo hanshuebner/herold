@@ -142,6 +142,26 @@ class Outbox(
     )
 
     /**
+     * Queues a spam-feedback record (issue #506). It carries no
+     * membership snapshot: the message's move is its own entry, queued
+     * ahead of this one, and a feedback record the server refuses
+     * changes nothing the user can see.
+     */
+    suspend fun enqueueSpamFeedback(
+        label: String,
+        payload: SpamFeedbackPayload,
+    ): Long = store.enqueueOutbox(
+        NewOutboxEntry(
+            accountId = payload.accountId,
+            kind = OutboxKind.SPAM_FEEDBACK,
+            label = label,
+            payload = outboxJson.encodeToString(payload),
+            entityIds = listOf(payload.emailId),
+            createdAt = now(),
+        ),
+    )
+
+    /**
      * Queues a composed message. [holdUntilMs] is the instant the drain may
      * first submit it, which is how the undo window after Send is realised
      * (issue #354): until then the entry sits in the queue and an undo

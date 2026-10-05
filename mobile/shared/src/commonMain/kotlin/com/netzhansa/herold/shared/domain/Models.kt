@@ -209,6 +209,12 @@ object Keywords {
     const val DRAFT = "\$draft"
     const val ANSWERED = "\$answered"
     const val SNOOZED = "\$snoozed"
+
+    /** What the server marks a message its spam filing put in Junk with. */
+    const val JUNK = "\$junk"
+
+    /** The escalation a phishing report adds beside [JUNK]. */
+    const val PHISHING = "\$phishing"
     const val CATEGORY_PREFIX = "\$category-"
 
     /**
@@ -306,5 +312,8 @@ object RuleActions {
     const val DELETE = "delete"
     const val FORWARD = "forward"
 
-    val EDITABLE = listOf(APPLY_LABEL, SKIP_INBOX, MARK_READ, DELETE, FORWARD)
+    /** Keeps a matching message out of Junk whatever the classifier says (REQ-FLT-16). */
+    const val NEVER_SPAM = "never-spam"
+
+    val EDITABLE = listOf(APPLY_LABEL, SKIP_INBOX, MARK_READ, DELETE, FORWARD, NEVER_SPAM)
 }

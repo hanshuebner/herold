@@ -69,7 +69,7 @@ class JmapClient(
      * the indication.
      */
     private val reachability: ReachabilityObserver? = null,
-) : JmapApi, BugReportApi {
+) : JmapApi, BugReportApi, SpamFeedbackApi {
 
     /** A client over a token that cannot be refreshed (tooling, tests). */
     constructor(httpClient: HttpClient, baseUrl: String, tokenStore: TokenStore) :
@@ -513,6 +513,24 @@ class JmapClient(
         return wireJson.parseToJsonElement(text).jsonObject["id"]?.jsonPrimitive?.contentOrNull.orEmpty()
     }
 
+    override suspend fun postSpamFeedback(emailId: String, kind: SpamFeedbackKind) {
+        val url = "${baseUrl.trimEnd('/')}$SPAM_FEEDBACK_PATH"
+        val response = authorized { token ->
+            httpClient.post(url) {
+                header(HttpHeaders.Authorization, "Bearer $token")
+                contentType(ContentType.Application.Json)
+                setBody(wireJson.encodeToString(JsonObject.serializer(), spamFeedbackBody(emailId, kind)))
+            }
+        }
+        if (!response.status.isSuccess()) {
+            val text = response.bodyAsText()
+            throw JmapException(
+                "the spam feedback was refused: ${problemDetail(text) ?: response.status}",
+                status = response.status.value,
+            )
+        }
+    }
+
     /**
      * The multipart body of a bug report: the part's form name and its
      * filename are both the drop filename, which is how the server
@@ -922,6 +940,9 @@ class JmapClient(
 
         /** Where a bug report bundle is posted (issue #416). */
         private const val BUG_REPORTS_PATH = "/api/v1/bug-reports"
+
+        /** Where a spam-feedback record is posted (REQ-FILT-70, issue #506). */
+        private const val SPAM_FEEDBACK_PATH = "/api/v1/spam-feedback"
         private const val UNAUTHORIZED = 401
         private const val MAX_BODY_VALUE_BYTES = 512 * 1024
 

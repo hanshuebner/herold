@@ -205,6 +205,33 @@ class FilterActions(
         ),
     )
 
+    /**
+     * Writes the never-spam rule the "Not spam" sheet offered
+     * (issue #506, suite REQ-FLT-16): a new rule for the sender's
+     * address or its domain, the never-spam action added to the rule
+     * that already matches the same condition, or nothing when such a
+     * rule already keeps the sender out of Junk. Returns the outbox
+     * entry it is waiting in, or null when there was nothing to write.
+     */
+    suspend fun applyNeverSpam(accountId: String, plan: NeverSpamPlan, order: Int): Long? = when (plan) {
+        is NeverSpamPlan.Create -> create(
+            accountId = accountId,
+            name = plan.name,
+            conditions = plan.conditions,
+            actions = plan.actions,
+            order = order,
+        )
+
+        is NeverSpamPlan.AddAction -> update(
+            rule = plan.rule,
+            name = plan.rule.name,
+            conditions = plan.rule.conditions,
+            actions = plan.nextActions,
+        )
+
+        is NeverSpamPlan.Reuse -> null
+    }
+
     private suspend fun enqueue(
         accountId: String,
         label: String,

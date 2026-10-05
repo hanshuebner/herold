@@ -69,6 +69,17 @@ object DevInstance {
     val bugReportsKey: String? get() = argument("heroldBugReportsKey")
 
     /**
+     * The instance's admin API surface, for reading back what a
+     * correction left on the server: `scripts/dev-instance.sh` prints
+     * it as ADMIN_URL and writes the key to `$STATE_DIR/api-key.txt`.
+     * The harness passes them as `heroldAdminUrl` / `heroldAdminKey`;
+     * without them the checks that read the audit log skip, since the
+     * phone's own token cannot read it.
+     */
+    val adminUrl: String? get() = argument("heroldAdminUrl")
+    val adminKey: String? get() = argument("heroldAdminKey")
+
+    /**
      * An HTML message carrying an inline PNG, for the reading pane's
      * `cid:` path. Delivered like any other mail, so the client sees the
      * same shape a real sender produces.
@@ -383,6 +394,27 @@ object DevInstance {
     /** How long the separation is given to show up in the session. */
     private const val SEPARATION_POLLS = 30
     private const val SEPARATION_POLL_MS = 500L
+
+    /**
+     * Files [id] in [principal]'s Junk mailbox from a second client, so
+     * a check has a message the spam filing put there without
+     * depending on what the classifier makes of a seeded body. Returns
+     * the junk mailbox's id.
+     */
+    suspend fun fileInJunk(client: JmapClient, accountId: String, id: String): String {
+        val junk = client.mailboxGet(accountId).list.first { it.role == "junk" }.id
+        val outcome = client.emailSet(
+            accountId,
+            mapOf(
+                id to buildJsonObject {
+                    put("mailboxIds", buildJsonObject { put(junk, true) })
+                    put("keywords/\$junk", true)
+                },
+            ),
+        )
+        check(outcome.isCompleteSuccess) { "filing $id in Junk was refused: ${outcome.notUpdated}" }
+        return junk
+    }
 
     /** The server's view of one message, by id. */
     suspend fun serverEmail(client: JmapClient, accountId: String, id: String): Email? =

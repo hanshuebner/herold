@@ -100,9 +100,12 @@ import com.netzhansa.herold.android.ui.common.listState
 import com.netzhansa.herold.android.ui.common.rememberListPositions
 import com.netzhansa.herold.android.ui.common.bottomSystemBarsPadding
 import com.netzhansa.herold.shared.actions.UndoMessages
+import com.netzhansa.herold.android.ui.common.NotSpamSheet
 import com.netzhansa.herold.android.ui.common.SnoozeSheet
 import com.netzhansa.herold.android.ui.common.StatusIndicator
 import com.netzhansa.herold.android.ui.common.collectAsStateSafely
+import com.netzhansa.herold.shared.actions.NeverSpam
+import com.netzhansa.herold.shared.actions.NeverSpamScope
 import com.netzhansa.herold.shared.actions.SnoozeClock
 import com.netzhansa.herold.shared.actions.SnoozeWakeMessages
 import com.netzhansa.herold.shared.domain.Email
@@ -111,6 +114,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import com.netzhansa.herold.shared.domain.MailboxRoles
 import com.netzhansa.herold.shared.inbox.CategoryLanes
+import com.netzhansa.herold.shared.jmap.SpamFeedbackKind
 import com.netzhansa.herold.shared.inbox.DrawerModel
 import com.netzhansa.herold.shared.inbox.MailDestination
 import com.netzhansa.herold.shared.inbox.InboxAssembler
@@ -190,6 +194,7 @@ fun InboxScreen(
     val drawer = rememberDrawerState(DrawerValue.Closed)
     var snoozeTarget by remember { mutableStateOf<ThreadRow?>(null) }
     var labelTarget by remember { mutableStateOf<ThreadRow?>(null) }
+    var notSpamTarget by remember { mutableStateOf<Pair<ThreadRow, String>?>(null) }
 
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
@@ -313,6 +318,53 @@ fun InboxScreen(
             actions = session.actions,
         )
     }
+
+    /**
+     * "Report spam" from a row (suite REQ-MAIL-135, issue #506): the
+     * conversation goes to Junk and the correction is recorded, both
+     * through the outbox, under the undo offer archive carries.
+     */
+    suspend fun reportSpam(row: ThreadRow) {
+        val emails = emailsOf(row)
+        container.undo.offer(
+            message = UndoMessages.REPORTED_SPAM,
+            action = session.actions.reportSpamLocally(emails, mailboxes),
+            actions = session.actions,
+        )
+        session.actions.reportSpamFeedback(emails, SpamFeedbackKind.SPAM)
+    }
+
+    /**
+     * "Not spam" from a row of the Junk destination (issue #506): the
+     * conversation's Junk-filed messages go back to the inbox, the ham
+     * feedback follows the move, and the never-spam rule the sheet
+     * offered is written when the reader asked for one.
+     */
+    suspend fun notSpam(row: ThreadRow, ruleScope: NeverSpamScope?) {
+        val junkIds = mailboxes.filter { it.accountId == row.accountId && it.role == MailboxRoles.JUNK }
+            .map { it.id }.toSet()
+        val emails = emailsOf(row).filter { email -> email.mailboxIds.any { it in junkIds } }
+        if (emails.isEmpty()) return
+        container.undo.offer(
+            message = UndoMessages.NOT_SPAM,
+            action = session.actions.notSpamLocally(emails, mailboxes),
+            actions = session.actions,
+        )
+        session.actions.reportSpamFeedback(emails, SpamFeedbackKind.HAM)
+        if (ruleScope == null) return
+        val sender = emails.last().fromEmail
+        val rules = container.store.managedRuleList()
+        NeverSpam.plan(rules, ruleScope, sender)?.let { plan ->
+            session.filters.applyNeverSpam(
+                accountId = row.accountId,
+                plan = plan,
+                order = NeverSpam.nextOrder(rules, row.accountId),
+            )
+        }
+    }
+
+    /** True while the open destination is the account's Junk mailbox. */
+    val viewingJunk = openMailboxes.any { it.role == MailboxRoles.JUNK }
 
     UndoOffers(container = container, snackbar = snackbar)
 
@@ -558,6 +610,13 @@ fun InboxScreen(
                             },
                             onSnooze = { snoozeTarget = row },
                             onLabel = { labelTarget = row },
+                            inJunk = viewingJunk,
+                            onNotSpam = {
+                                scope.launch {
+                                    notSpamTarget = row to emailsOf(row).lastOrNull()?.fromEmail.orEmpty()
+                                }
+                            },
+                            onReportSpam = { scope.launch { reportSpam(row) } },
                         )
                         HorizontalDivider()
                     }
@@ -598,6 +657,7 @@ fun InboxScreen(
                             },
                             onSnooze = { snoozeTarget = item.row },
                             onLabel = { labelTarget = item.row },
+                            onReportSpam = { scope.launch { reportSpam(item.row) } },
                         )
 
                         is InboxItem.Bundle -> {
@@ -632,6 +692,7 @@ fun InboxScreen(
                                         },
                                         onSnooze = { snoozeTarget = thread },
                                         onLabel = { labelTarget = thread },
+                                        onReportSpam = { scope.launch { reportSpam(thread) } },
                                         indented = true,
                                     )
                                 }
@@ -654,6 +715,17 @@ fun InboxScreen(
             onPick = { wakeAt ->
                 snoozeTarget = null
                 scope.launch { session.actions.snooze(emailsOf(row), wakeAt) }
+            },
+        )
+    }
+
+    notSpamTarget?.let { (row, sender) ->
+        NotSpamSheet(
+            senderEmail = sender,
+            onDismiss = { notSpamTarget = null },
+            onConfirm = { ruleScope ->
+                notSpamTarget = null
+                scope.launch { notSpam(row, ruleScope) }
             },
         )
     }
@@ -980,6 +1052,10 @@ private fun SwipeableThreadRow(
     onToggleRead: () -> Unit,
     onSnooze: () -> Unit,
     onLabel: () -> Unit,
+    /** True while the row is listed under Junk, where the correction is out of it. */
+    inJunk: Boolean = false,
+    onNotSpam: () -> Unit = {},
+    onReportSpam: () -> Unit = {},
     indented: Boolean = false,
 ) {
     val dismissState = rememberSwipeToDismissBoxState(
@@ -1017,6 +1093,9 @@ private fun SwipeableThreadRow(
             onToggleRead = onToggleRead,
             onSnooze = onSnooze,
             onLabel = onLabel,
+            inJunk = inJunk,
+            onNotSpam = onNotSpam,
+            onReportSpam = onReportSpam,
         )
     }
 }
@@ -1032,6 +1111,9 @@ private fun ThreadRowItem(
     onToggleRead: () -> Unit,
     onSnooze: () -> Unit,
     onLabel: () -> Unit,
+    inJunk: Boolean,
+    onNotSpam: () -> Unit,
+    onReportSpam: () -> Unit,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     Row(
@@ -1161,6 +1243,22 @@ private fun ThreadRowItem(
                 onClick = { menuOpen = false; onLabel() },
                 modifier = Modifier.testTag("action-label-${row.threadId}"),
             )
+            // A wrong verdict is corrected from the list too: a row
+            // listed under Junk offers the way out of it, a row
+            // anywhere else the way in (issue #506).
+            if (inJunk) {
+                DropdownMenuItem(
+                    text = { Text("Not spam") },
+                    onClick = { menuOpen = false; onNotSpam() },
+                    modifier = Modifier.testTag("action-not-spam-${row.threadId}"),
+                )
+            } else {
+                DropdownMenuItem(
+                    text = { Text("Report spam") },
+                    onClick = { menuOpen = false; onReportSpam() },
+                    modifier = Modifier.testTag("action-report-spam-${row.threadId}"),
+                )
+            }
         }
     }
 }

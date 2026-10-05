@@ -13,6 +13,8 @@ import com.netzhansa.herold.shared.domain.Keywords
 import com.netzhansa.herold.shared.domain.MailAddress
 import com.netzhansa.herold.shared.jmap.BugReportApi
 import com.netzhansa.herold.shared.jmap.BugReportPart
+import com.netzhansa.herold.shared.jmap.SpamFeedbackApi
+import com.netzhansa.herold.shared.jmap.SpamFeedbackKind
 import com.netzhansa.herold.shared.jmap.Envelope
 import com.netzhansa.herold.shared.jmap.FailureKind
 import com.netzhansa.herold.shared.jmap.JmapApi
@@ -119,6 +121,11 @@ class OutboxDrainer(
      * than holding it forever.
      */
     private val bugReports: BugReportApi? = api as? BugReportApi,
+    /**
+     * The spam-feedback REST surface of the same server (issue #506),
+     * carried by the JMAP client the way the bug-reports one is.
+     */
+    private val spamFeedback: SpamFeedbackApi? = api as? SpamFeedbackApi,
     /** What a local delete holds away from a fetch in flight (issue #371). */
     private val tombstones: Tombstones = Tombstones(),
     private val reachability: Reachability = Reachability(),
@@ -314,6 +321,30 @@ class OutboxDrainer(
         OutboxKind.RULE -> submitRule(entry)
         OutboxKind.MAILBOX -> submitMailbox(entry)
         OutboxKind.BUG_REPORT -> submitBugReport(entry)
+        OutboxKind.SPAM_FEEDBACK -> submitSpamFeedback(entry)
+    }
+
+    /**
+     * A spam-feedback record (issue #506): the correction the reader
+     * made to the classifier's verdict, posted to
+     * `POST /api/v1/spam-feedback` on the account's bearer token. The
+     * message's own move is a separate entry queued ahead of this one,
+     * so there is no local row to take back and the entry is simply
+     * done.
+     */
+    private suspend fun submitSpamFeedback(entry: OutboxEntry): StepResult {
+        val payload = runCatching {
+            outboxJson.decodeFromString<SpamFeedbackPayload>(entry.payload)
+        }.getOrNull() ?: return StepResult.Rejected("the queued spam feedback could not be read")
+        val client = spamFeedback
+            ?: return StepResult.Rejected("this server does not take spam feedback")
+        try {
+            client.postSpamFeedback(payload.emailId, SpamFeedbackKind.from(payload.kind))
+        } catch (t: Throwable) {
+            return failureOf(t)
+        }
+        log("outbox: ${payload.emailId} was reported as ${payload.kind}")
+        return StepResult.Done
     }
 
     /**

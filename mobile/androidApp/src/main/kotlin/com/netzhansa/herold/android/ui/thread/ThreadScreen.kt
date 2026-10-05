@@ -106,6 +106,7 @@ import com.netzhansa.herold.android.media.AttachmentNames
 import com.netzhansa.herold.android.media.CreateAttachmentDocument
 import com.netzhansa.herold.android.media.ImageScaling
 import com.netzhansa.herold.android.media.SaveRequest
+import com.netzhansa.herold.android.ui.common.NotSpamSheet
 import com.netzhansa.herold.android.ui.common.SnoozeSheet
 import com.netzhansa.herold.android.ui.common.bottomSystemBarsPadding
 import com.netzhansa.herold.android.ui.common.StatusIndicator
@@ -119,11 +120,15 @@ import com.netzhansa.herold.shared.compose.ComposeMode
 import com.netzhansa.herold.shared.compose.HtmlText
 import com.netzhansa.herold.shared.domain.Attachment
 import com.netzhansa.herold.shared.domain.Keywords
+import com.netzhansa.herold.shared.domain.MailboxRoles
+import com.netzhansa.herold.shared.jmap.SpamFeedbackKind
 import com.netzhansa.herold.shared.links.AppLinks
 import com.netzhansa.herold.shared.links.BodyLinkAction
 import com.netzhansa.herold.shared.links.BodyLinks
 import com.netzhansa.herold.shared.domain.Email
 import com.netzhansa.herold.shared.actions.FilterActions
+import com.netzhansa.herold.shared.actions.NeverSpam
+import com.netzhansa.herold.shared.actions.NeverSpamScope
 import com.netzhansa.herold.shared.mail.BodyPreference
 import com.netzhansa.herold.shared.mail.BodyVariant
 import com.netzhansa.herold.shared.mail.HtmlSanitizer
@@ -208,6 +213,7 @@ fun ThreadScreen(
     var inspecting by remember { mutableStateOf<String?>(null) }
     var blocking by remember { mutableStateOf<String?>(null) }
     var unsubscribing by remember { mutableStateOf(false) }
+    var notSpamming by remember { mutableStateOf(false) }
     val darkTheme = isSystemInDarkTheme()
 
     /**
@@ -414,6 +420,18 @@ fun ThreadScreen(
     val newestSender = conversation.lastOrNull()?.fromEmail.orEmpty()
 
     /**
+     * The messages of this conversation the spam filing put in Junk
+     * (issue #506). They are what "Not spam" moves and what the
+     * feedback record names; a conversation holding none of them is
+     * offered "Report spam" instead.
+     */
+    val junked = remember(conversation, mailboxes, accountId) {
+        val junkIds = mailboxes.filter { it.accountId == accountId && it.role == MailboxRoles.JUNK }
+            .map { it.id }.toSet()
+        conversation.filter { message -> message.mailboxIds.any { it in junkIds } }
+    }
+
+    /**
      * The conversation's unsubscribe mechanism, from the newest message
      * that advertises one (REQ-UNS-11): the affordance belongs to the
      * thread even though the header is per message.
@@ -453,9 +471,59 @@ fun ThreadScreen(
      * (issue #345). Popping back happens on the main thread, which a
      * coroutine resumed off it must return to.
      */
-    suspend fun leaveWith(action: PendingAction, message: String) {
+    suspend fun leaveWith(
+        action: PendingAction,
+        message: String,
+        /** What follows the move on its way out: the spam feedback a correction queues. */
+        andThen: suspend () -> Unit = {},
+    ) {
         container.undo.offer(message, action, session.actions, handOnFrom = undoSurface)
+        andThen()
         withContext(Dispatchers.Main.immediate) { onBack() }
+    }
+
+    /**
+     * "Report spam" / "Report phishing" (suite REQ-MAIL-135): the
+     * conversation goes to Junk and the correction is recorded, both
+     * through the outbox, under the undo offer every move carries.
+     */
+    fun reportSpam(phishing: Boolean) {
+        scope.launch {
+            val kind = if (phishing) SpamFeedbackKind.PHISHING else SpamFeedbackKind.SPAM
+            leaveWith(
+                action = session.actions.reportSpamLocally(conversation, mailboxes, phishing),
+                message = if (phishing) UndoMessages.REPORTED_PHISHING else UndoMessages.REPORTED_SPAM,
+            ) {
+                session.actions.reportSpamFeedback(conversation, kind)
+            }
+        }
+    }
+
+    /**
+     * "Not spam" (issue #506): the Junk-filed messages go back to the
+     * inbox, the ham feedback record is queued behind the move, and the
+     * never-spam rule the sheet offered - for the sender's address or
+     * its whole domain - is written when the reader asked for one.
+     */
+    fun notSpam(ruleScope: NeverSpamScope?) {
+        val sender = junked.lastOrNull()?.fromEmail.orEmpty()
+        scope.launch {
+            leaveWith(
+                action = session.actions.notSpamLocally(junked, mailboxes),
+                message = UndoMessages.NOT_SPAM,
+            ) {
+                session.actions.reportSpamFeedback(junked, SpamFeedbackKind.HAM)
+                if (ruleScope != null) {
+                    NeverSpam.plan(rules, ruleScope, sender)?.let { plan ->
+                        session.filters.applyNeverSpam(
+                            accountId = accountId,
+                            plan = plan,
+                            order = NeverSpam.nextOrder(rules, accountId),
+                        )
+                    }
+                }
+            }
+        }
     }
 
     // A send started here returns here, so the "Sending / Undo" offer is
@@ -553,6 +621,9 @@ fun ThreadScreen(
                         },
                         onSnooze = { snoozing = true },
                         onShare = { shareConversation() },
+                        inJunk = junked.isNotEmpty(),
+                        onNotSpam = { notSpamming = true },
+                        onReportSpam = { phishing -> reportSpam(phishing) },
                         onReportProblem = onReportProblem,
                     )
                 },
@@ -761,6 +832,17 @@ fun ThreadScreen(
         )
     }
 
+    if (notSpamming) {
+        NotSpamSheet(
+            senderEmail = junked.lastOrNull()?.fromEmail.orEmpty(),
+            onDismiss = { notSpamming = false },
+            onConfirm = { ruleScope ->
+                notSpamming = false
+                notSpam(ruleScope)
+            },
+        )
+    }
+
     if (snoozing) {
         SnoozeSheet(
             onDismiss = { snoozing = false },
@@ -881,6 +963,10 @@ private fun ThreadOverflow(
     onMute: (Boolean) -> Unit,
     onSnooze: () -> Unit,
     onShare: () -> Unit,
+    /** True when the spam filing put this conversation in Junk (issue #506). */
+    inJunk: Boolean,
+    onNotSpam: () -> Unit,
+    onReportSpam: (phishing: Boolean) -> Unit,
     onReportProblem: () -> Unit,
 ) {
     var open by remember { mutableStateOf(false) }
@@ -912,6 +998,36 @@ private fun ThreadOverflow(
             },
             modifier = Modifier.testTag("thread-share"),
         )
+        // A wrong verdict is corrected where it is read: a conversation
+        // in Junk offers the way out of it, one outside Junk the way in
+        // (issue #506).
+        if (inJunk) {
+            DropdownMenuItem(
+                text = { Text("Not spam") },
+                onClick = {
+                    open = false
+                    onNotSpam()
+                },
+                modifier = Modifier.testTag("thread-not-spam"),
+            )
+        } else {
+            DropdownMenuItem(
+                text = { Text("Report spam") },
+                onClick = {
+                    open = false
+                    onReportSpam(false)
+                },
+                modifier = Modifier.testTag("thread-report-spam"),
+            )
+            DropdownMenuItem(
+                text = { Text("Report phishing") },
+                onClick = {
+                    open = false
+                    onReportSpam(true)
+                },
+                modifier = Modifier.testTag("thread-report-phishing"),
+            )
+        }
         DropdownMenuItem(
             text = { Text("Report a problem") },
             onClick = {

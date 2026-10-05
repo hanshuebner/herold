@@ -4,7 +4,9 @@ import com.netzhansa.herold.shared.domain.Email
 import com.netzhansa.herold.shared.domain.Keywords
 import com.netzhansa.herold.shared.domain.Mailbox
 import com.netzhansa.herold.shared.domain.MailboxRoles
+import com.netzhansa.herold.shared.jmap.SpamFeedbackKind
 import com.netzhansa.herold.shared.outbox.Outbox
+import com.netzhansa.herold.shared.outbox.SpamFeedbackPayload
 import com.netzhansa.herold.shared.store.LocalStore
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -162,6 +164,100 @@ class MailActions(
         }
         optimistic.forEach { write(it) }
         return PendingAction(snapshot, Labels.DELETE, optimistic, patches)
+    }
+
+    /**
+     * "Not spam" (issue #506, suite REQ-FILT-02a): the message leaves
+     * Junk for the account's inbox and drops the `$junk` / `$phishing`
+     * keywords the filing put on it. The pairing with [commit] is
+     * [archiveLocally]'s, so the undo appears with the change and the
+     * move holds with no connection.
+     */
+    suspend fun notSpamLocally(emails: List<Email>, mailboxes: List<Mailbox>): PendingAction =
+        junkMove(emails, mailboxes, intoJunk = false, phishing = false, label = Labels.NOT_SPAM)
+
+    /**
+     * "Report spam" / "Report phishing" (suite REQ-MAIL-135): the
+     * message goes into the account's Junk mailbox and out of every
+     * other one, carrying `$junk` and, for a phishing report,
+     * `$phishing`.
+     */
+    suspend fun reportSpamLocally(
+        emails: List<Email>,
+        mailboxes: List<Mailbox>,
+        phishing: Boolean = false,
+    ): PendingAction = junkMove(
+        emails = emails,
+        mailboxes = mailboxes,
+        intoJunk = true,
+        phishing = phishing,
+        label = if (phishing) Labels.REPORT_PHISHING else Labels.REPORT_SPAM,
+    )
+
+    /**
+     * Queues the REQ-FILT-70 feedback record for each message
+     * (issue #506). It goes out behind the move, on its own entry, so a
+     * correction made offline reaches the server with the move rather
+     * than being lost; the server joins it to the classifier's recorded
+     * verdict and writes the `mail.spam.feedback` audit record.
+     */
+    suspend fun reportSpamFeedback(emails: List<Email>, kind: SpamFeedbackKind): List<Long> {
+        if (emails.isEmpty()) return emptyList()
+        val ids = emails.map { email ->
+            outbox.enqueueSpamFeedback(
+                label = Labels.SPAM_FEEDBACK,
+                payload = SpamFeedbackPayload(
+                    accountId = email.accountId,
+                    emailId = email.id,
+                    kind = kind.wire,
+                ),
+            )
+        }
+        requestDrain()
+        return ids
+    }
+
+    /**
+     * The membership half of both spam corrections: into the Junk
+     * mailbox alone, or out of it into the inbox. An account with no
+     * Junk mailbox has no correction to make, so its messages are left
+     * alone.
+     */
+    private suspend fun junkMove(
+        emails: List<Email>,
+        mailboxes: List<Mailbox>,
+        intoJunk: Boolean,
+        phishing: Boolean,
+        label: String,
+    ): PendingAction {
+        val snapshot = ActionSnapshot(emails)
+        val optimistic = mutableListOf<Email>()
+        val patches = mutableMapOf<String, JsonObject>()
+        emails.forEach { email ->
+            val junk = mailboxes.firstOrNull { it.accountId == email.accountId && it.role == MailboxRoles.JUNK }
+                ?: return@forEach
+            val inbox = mailboxes.firstOrNull { it.accountId == email.accountId && it.role == MailboxRoles.INBOX }
+            val destination = if (intoJunk) junk.id else inbox?.id ?: return@forEach
+            if (!intoJunk && !email.mailboxIds.contains(junk.id)) return@forEach
+            val keywords = if (intoJunk) {
+                email.keywords + Keywords.JUNK + if (phishing) setOf(Keywords.PHISHING) else emptySet()
+            } else {
+                email.keywords.filterNot {
+                    it.equals(Keywords.JUNK, ignoreCase = true) || it.equals(Keywords.PHISHING, ignoreCase = true)
+                }.toSet()
+            }
+            val patch = buildJsonObject {
+                (email.mailboxIds - destination).forEach { put("mailboxIds/$it", JsonPrimitive(null as String?)) }
+                if (!email.mailboxIds.contains(destination)) put("mailboxIds/$destination", true)
+                (keywords - email.keywords).forEach { put("keywords/$it", true) }
+                (email.keywords - keywords).forEach { put("keywords/$it", JsonPrimitive(null as String?)) }
+            }
+            if (patch.isEmpty()) return@forEach
+            optimistic.add(email.copy(mailboxIds = setOf(destination), keywords = keywords))
+            patches[email.id] = patch
+        }
+        optimistic.forEach { write(it) }
+        return PendingAction(snapshot, label, optimistic, patches)
     }
 
     /** Queues what [archiveLocally], [deleteLocally] or [snoozeLocally] wrote. */
@@ -358,5 +454,10 @@ class MailActions(
         const val MUTE = "Mute conversation"
         const val UNMUTE = "Unmute conversation"
         const val BLOCK = "Block sender"
+        const val NOT_SPAM = "Not spam"
+        const val REPORT_SPAM = "Report spam"
+        const val REPORT_PHISHING = "Report phishing"
+        const val SPAM_FEEDBACK = "Spam feedback"
+        const val NEVER_SPAM = "Never spam rule"
     }
 }

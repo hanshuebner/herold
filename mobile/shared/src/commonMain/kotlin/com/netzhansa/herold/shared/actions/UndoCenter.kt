@@ -61,6 +61,11 @@ object UndoMessages {
     const val SENDING = "Sending"
     const val DRAFT_SAVED = "Draft saved"
 
+    /** What a corrected spam verdict says (issue #506). */
+    const val NOT_SPAM = "Moved to Inbox"
+    const val REPORTED_SPAM = "Reported as spam"
+    const val REPORTED_PHISHING = "Reported as phishing"
+
     /** A discard the server refused; the draft is back where it was. */
     const val DISCARD_FAILED = "The draft was not discarded"
 }

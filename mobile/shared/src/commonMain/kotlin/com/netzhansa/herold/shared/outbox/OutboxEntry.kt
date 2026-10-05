@@ -26,6 +26,13 @@ enum class OutboxKind {
 
     /** A bug report bundle to post to `/api/v1/bug-reports` (issue #417). */
     BUG_REPORT,
+
+    /**
+     * A spam-feedback record to post to `/api/v1/spam-feedback`: the
+     * correction a reader made to the classifier's verdict (REQ-FILT-70,
+     * issue #506).
+     */
+    SPAM_FEEDBACK,
     ;
 
     companion object {
@@ -187,6 +194,21 @@ data class BugReportSpooledPart(
     val type: String,
     val size: Long,
     val spool: String,
+)
+
+/**
+ * The correction a [OutboxKind.SPAM_FEEDBACK] entry records (REQ-FILT-70,
+ * issue #506). It travels on its own entry behind the `Email/set` that
+ * moves the message, so the record states a correction the server has
+ * already been told about, and a correction made offline is posted when
+ * the connection is back rather than dropped.
+ */
+@Serializable
+data class SpamFeedbackPayload(
+    val accountId: String,
+    val emailId: String,
+    /** One of [com.netzhansa.herold.shared.jmap.SpamFeedbackKind]'s wire values. */
+    val kind: String,
 )
 
 /**
