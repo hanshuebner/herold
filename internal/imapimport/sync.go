@@ -1654,43 +1654,74 @@ func (w *accountWorker) excludeFolderCleanup(ctx context.Context, upstreamFolder
 	}
 }
 
+// specialUseAttrForName maps an upstream folder name to the SPECIAL-USE
+// attribute bit herold provisions for it, or 0 when the name carries no
+// special-use meaning (a plain folder). Shared by ensureMailbox's
+// role-first resolution and its fresh-create fallback below.
+func specialUseAttrForName(mbName string) store.MailboxAttributes {
+	switch strings.ToUpper(mbName) {
+	case "INBOX":
+		return store.MailboxAttrInbox
+	case "SENT", "SENT MAIL":
+		return store.MailboxAttrSent
+	case "DRAFTS":
+		return store.MailboxAttrDrafts
+	case "TRASH":
+		return store.MailboxAttrTrash
+	case "JUNK", "SPAM":
+		return store.MailboxAttrJunk
+	case "ARCHIVE":
+		return store.MailboxAttrArchive
+	}
+	return 0
+}
+
 // ensureMailbox returns the herold mailbox named mbName owned by pid,
 // creating it if absent. Mirrors protosmtp.session.ensureMailbox.
+//
+// When mbName maps to a special-use role (specialUseAttrForName), this
+// first resolves to the account's EXISTING mailbox already carrying that
+// role, whatever its name, before falling back to a name match (re #509):
+// an upstream folder is commonly named differently from herold's
+// provisioned mailbox for the same role (e.g. an upstream "Spam" folder
+// where herold already provisioned "Junk"), and matching by name alone
+// would create a second mailbox carrying the same \Junk attribute,
+// violating RFC 8621 §2's one-mailbox-per-role rule and splitting the
+// account's junk mail across two mailboxes the Suite and JMAP clients
+// cannot both see through the single-role lookup.
 func (w *accountWorker) ensureMailbox(ctx context.Context, pid store.PrincipalID, mbName string) (store.Mailbox, error) {
 	mbs, err := w.opts.store.Meta().ListMailboxes(ctx, pid)
 	if err != nil {
 		return store.Mailbox{}, err
 	}
+
+	roleAttr := specialUseAttrForName(mbName)
+	if roleAttr != 0 {
+		if mb, ok := store.FindMailboxByRoleAttr(mbs, roleAttr, 0); ok {
+			return mb, nil
+		}
+	}
+
 	for _, mb := range mbs {
 		if strings.EqualFold(mb.Name, mbName) {
 			return mb, nil
 		}
 	}
 	// Create the mailbox with appropriate SPECIAL-USE attributes.
-	attr := store.MailboxAttributes(0)
-	switch strings.ToUpper(mbName) {
-	case "INBOX":
-		attr |= store.MailboxAttrInbox
-	case "SENT", "SENT MAIL":
-		attr |= store.MailboxAttrSent
-	case "DRAFTS":
-		attr |= store.MailboxAttrDrafts
-	case "TRASH":
-		attr |= store.MailboxAttrTrash
-	case "JUNK", "SPAM":
-		attr |= store.MailboxAttrJunk
-	case "ARCHIVE":
-		attr |= store.MailboxAttrArchive
-	}
 	mb, err := w.opts.store.Meta().InsertMailbox(ctx, store.Mailbox{
 		PrincipalID: pid,
 		Name:        mbName,
-		Attributes:  attr,
+		Attributes:  roleAttr,
 	})
 	if err != nil {
 		// Race: another goroutine may have inserted the same mailbox.
 		if errors.Is(err, store.ErrConflict) {
 			mbs2, _ := w.opts.store.Meta().ListMailboxes(ctx, pid)
+			if roleAttr != 0 {
+				if mb2, ok := store.FindMailboxByRoleAttr(mbs2, roleAttr, 0); ok {
+					return mb2, nil
+				}
+			}
 			for _, mb2 := range mbs2 {
 				if strings.EqualFold(mb2.Name, mbName) {
 					return mb2, nil

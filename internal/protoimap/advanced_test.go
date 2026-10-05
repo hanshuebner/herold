@@ -364,6 +364,27 @@ func TestSPECIAL_USE_PerCreate(t *testing.T) {
 	}
 }
 
+// TestSPECIAL_USE_RoleConflict verifies RFC 8621 S2's one-mailbox-per-role
+// rule on the IMAP CREATE-SPECIAL-USE path (re #509): \Junk is already
+// auto-provisioned under "Junk" by directory.CreatePrincipal, so a CREATE
+// naming a second mailbox with the \Junk attribute under a different name
+// must be refused (NO) rather than silently producing two \Junk-attributed
+// mailboxes.
+func TestSPECIAL_USE_RoleConflict(t *testing.T) {
+	f := newFixture(t, fxOpts{implicitTLS: true})
+	c := loggedInClient(t, f)
+	defer c.close()
+	resp := c.send("c1", `CREATE Spam (USE (\Junk))`)
+	last := resp[len(resp)-1]
+	if !strings.Contains(last, "NO") {
+		t.Fatalf("expected CREATE-SPECIAL-USE to be refused for a duplicate \\Junk role, got: %v", resp)
+	}
+	ctx := context.Background()
+	if _, err := f.ha.Store.Meta().GetMailboxByName(ctx, f.pid, "Spam"); err == nil {
+		t.Fatalf("Spam mailbox was created despite the role conflict")
+	}
+}
+
 // -----------------------------------------------------------------------------
 // helpers
 // -----------------------------------------------------------------------------

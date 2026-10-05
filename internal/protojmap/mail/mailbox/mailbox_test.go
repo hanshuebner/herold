@@ -327,6 +327,80 @@ func TestMailbox_Set_Create_NewMailbox(t *testing.T) {
 	}
 }
 
+// TestMailbox_Set_Create_RoleConflict verifies RFC 8621 S2's one-mailbox-
+// per-role rule on the JMAP create path (re #509): creating a second
+// mailbox with role "junk" while one already carries the \Junk attribute
+// (under any name) is refused with invalidProperties naming the existing
+// mailbox, and no second mailbox is inserted.
+func TestMailbox_Set_Create_RoleConflict(t *testing.T) {
+	runMailboxSetCreateRoleConflict(t, setupFixture(t))
+}
+
+// TestMailbox_Set_Create_RoleConflict_Postgres is the same scenario against
+// a Postgres-backed store, matching the rest of the suite's Postgres-leg
+// pattern (STANDARDS.md S8).
+func TestMailbox_Set_Create_RoleConflict_Postgres(t *testing.T) {
+	dsn := os.Getenv("HEROLD_PG_DSN")
+	if dsn == "" {
+		t.Skip("HEROLD_PG_DSN not set; skipping Postgres leg")
+	}
+	st, err := storepg.Open(context.Background(), dsn, t.TempDir(), nil, nil)
+	if err != nil {
+		t.Skipf("storepg.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	runMailboxSetCreateRoleConflict(t, setupFixtureWithStore(t, st))
+}
+
+func runMailboxSetCreateRoleConflict(t *testing.T, f *fixture) {
+	existing := mustInsertMailbox(t, f, "Spam", store.MailboxAttrJunk)
+
+	_, raw := f.invoke(t, "Mailbox/set", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"create": map[string]any{
+			"new1": map[string]any{
+				"name": "Junk",
+				"role": "junk",
+			},
+		},
+	})
+	var resp struct {
+		Created    map[string]any `json:"created"`
+		NotCreated map[string]struct {
+			Type        string   `json:"type"`
+			Properties  []string `json:"properties"`
+			Description string   `json:"description"`
+		} `json:"notCreated"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	if len(resp.Created) != 0 {
+		t.Fatalf("created = %+v; want none (role conflict)", resp.Created)
+	}
+	nc, ok := resp.NotCreated["new1"]
+	if !ok {
+		t.Fatalf("notCreated missing new1: %+v", resp.NotCreated)
+	}
+	if nc.Type != "invalidProperties" || len(nc.Properties) != 1 || nc.Properties[0] != "role" {
+		t.Errorf("notCreated = %+v; want invalidProperties on role", nc)
+	}
+	if !strings.Contains(nc.Description, existing.Name) {
+		t.Errorf("description %q does not name the conflicting mailbox %q", nc.Description, existing.Name)
+	}
+
+	mailboxes, _ := f.srv.Store.Meta().ListMailboxes(context.Background(), f.pid)
+	junkCount := 0
+	for _, mb := range mailboxes {
+		if mb.Attributes&store.MailboxAttrJunk != 0 {
+			junkCount++
+		}
+	}
+	if junkCount != 1 {
+		t.Errorf("account has %d junk-role mailboxes after the refused create; want 1", junkCount)
+	}
+}
+
 func TestMailbox_Set_Update_Rename(t *testing.T) {
 	f := setupFixture(t)
 	mb := mustInsertMailbox(t, f, "OldName", 0)

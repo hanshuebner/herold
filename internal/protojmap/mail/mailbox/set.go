@@ -402,13 +402,11 @@ func (h *handlerSet) createMailbox(
 		if err != nil {
 			return store.Mailbox{}, nil, err
 		}
-		for _, mb := range owned {
-			if got != 0 && mb.Attributes&got != 0 {
-				return store.Mailbox{}, &setError{
-					Type: "invalidProperties", Properties: []string{"role"},
-					Description: "another mailbox already holds this role",
-				}, nil
-			}
+		if conflict, ok := store.FindMailboxByRoleAttr(owned, got, 0); ok {
+			return store.Mailbox{}, &setError{
+				Type: "invalidProperties", Properties: []string{"role"},
+				Description: fmt.Sprintf("mailbox %q already holds this role", conflict.Name),
+			}, nil
 		}
 		attrs |= got
 	}

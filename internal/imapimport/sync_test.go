@@ -936,6 +936,82 @@ func TestUnmappedFolderCreated(t *testing.T) {
 	}
 }
 
+// TestImportResolvesMailboxByRoleNotName reproduces the production defect
+// behind #509: a herold account already has a "Junk" mailbox carrying the
+// \Junk attribute (the normal provisioning for every principal) when an
+// upstream account's "Spam" folder is first synced. Before the fix,
+// ensureMailbox matched by name only, so "Spam" != "Junk" created a SECOND
+// \Junk-attributed mailbox -- splitting the account's junk mail across two
+// mailboxes the Suite and JMAP clients cannot both see through the single-
+// role lookup (mailbox 9 vs 5 on production, issue #509). The fix resolves
+// an upstream folder whose name carries a special-use role to the account's
+// EXISTING mailbox already holding that role before ever matching by name.
+func TestImportResolvesMailboxByRoleNotName(t *testing.T) {
+	for _, be := range ownSentDedupBackends(t) {
+		t.Run(be.name, func(t *testing.T) {
+			ts := startTestIMAPServer(t)
+			u := ts.addUser("rolematch", "pw")
+			if err := u.Create("Spam", nil); err != nil {
+				t.Fatalf("Create Spam: %v", err)
+			}
+
+			opts := testharness.Options{}
+			if be.st != nil {
+				opts.Store = be.st
+				opts.Clock = be.clk
+			}
+			ha, _ := testharness.Start(t, opts)
+
+			acc := makeAccountWithFloor(t, ha.Store, ts, accountCfg{
+				email:               "rolematch@example.test",
+				username:            "rolematch",
+				credentialPlaintext: "pw",
+			}, nil)
+
+			// Pre-provision the account's "Junk" mailbox the way herold's own
+			// mailbox provisioning does for every new principal, BEFORE the
+			// upstream "Spam" folder is ever synced.
+			junkMB, err := ha.Store.Meta().InsertMailbox(context.Background(), store.Mailbox{
+				PrincipalID: acc.PrincipalID,
+				Name:        "Junk",
+				Attributes:  store.MailboxAttrJunk,
+			})
+			if err != nil {
+				t.Fatalf("InsertMailbox Junk: %v", err)
+			}
+
+			d := time.Date(2025, 4, 1, 0, 0, 0, 0, time.UTC)
+			appendToServer(t, ts, "rolematch", "pw", "Spam",
+				buildRFC822("role-match@test", "Spam Test", d), nil, d)
+
+			if err := runSyncOnce(t, ha, ts, acc, nil); err != nil {
+				t.Fatalf("sync: %v", err)
+			}
+
+			if got := countMailboxMessages(t, ha.Store, acc.PrincipalID, "Junk"); got != 1 {
+				t.Errorf("herold Junk has %d messages; want 1", got)
+			}
+
+			mbs, err := ha.Store.Meta().ListMailboxes(context.Background(), acc.PrincipalID)
+			if err != nil {
+				t.Fatalf("ListMailboxes: %v", err)
+			}
+			junkCount := 0
+			for _, mb := range mbs {
+				if mb.Attributes&store.MailboxAttrJunk != 0 {
+					junkCount++
+				}
+				if strings.EqualFold(mb.Name, "Spam") {
+					t.Errorf("unexpected mailbox named %q (id %d): the upstream Spam folder should resolve to the existing Junk mailbox (id %d), not create a second one", mb.Name, mb.ID, junkMB.ID)
+				}
+			}
+			if junkCount != 1 {
+				t.Errorf("account has %d junk-role mailboxes; want exactly 1", junkCount)
+			}
+		})
+	}
+}
+
 // TestUIDValidityRollover simulates a UIDVALIDITY change between two
 // sync passes and verifies no duplicate messages are created.
 // REQ-IMAP-IMP-35.

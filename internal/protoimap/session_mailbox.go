@@ -375,6 +375,19 @@ func (ses *session) handleCREATE(ctx context.Context, c *Command) error {
 	// MailboxAttributes bitfield so subsequent LIST responses can echo
 	// the special-use attributes back.
 	attrs := specialUseAttrs(c.CreateSpecialUse)
+	if attrs != 0 {
+		// RFC 8621 S2 / re #509: refuse a second mailbox carrying a role
+		// this account already has, so CREATE-SPECIAL-USE cannot produce
+		// the same duplicate-role state the IMAP-import folder mapping
+		// used to (ensureMailbox, internal/imapimport/sync.go).
+		existing, err := ses.s.store.Meta().ListMailboxes(ctx, ses.pid)
+		if err != nil {
+			return ses.resp.taggedNO(c.Tag, "", "create failed")
+		}
+		if conflict, ok := store.FindMailboxByRoleAttr(existing, attrs, 0); ok {
+			return ses.resp.taggedNO(c.Tag, "", fmt.Sprintf("mailbox %q already has this special-use attribute", conflict.Name))
+		}
+	}
 	_, err := ses.s.store.Meta().InsertMailbox(ctx, store.Mailbox{
 		PrincipalID: ses.pid,
 		Name:        name,

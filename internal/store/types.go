@@ -307,6 +307,37 @@ const (
 	MailboxAttrSubscribed
 )
 
+// RoleAttributes is the mask of SPECIAL-USE attribute bits that each mark an
+// account-unique role: RFC 8621 §2 requires that no two Mailboxes in the
+// same Account share a Role, and this is exactly the set of bits
+// roleFromAttributes (internal/protojmap/mail/mailbox) maps to a JMAP role
+// string.
+const RoleAttributes = MailboxAttrInbox | MailboxAttrSent | MailboxAttrDrafts |
+	MailboxAttrTrash | MailboxAttrJunk | MailboxAttrArchive | MailboxAttrFlagged
+
+// FindMailboxByRoleAttr returns the first mailbox in mailboxes whose
+// attributes share a role bit with attrs (restricted to RoleAttributes),
+// skipping excludeID. Used by every mailbox-create/role-assignment path
+// (JMAP Mailbox/set, IMAP CREATE-SPECIAL-USE, the IMAP-import folder
+// mapping) to resolve or refuse a duplicate role so the uniqueness check
+// cannot drift between callers (re #509). Returns ok=false when attrs
+// carries no role bit or no existing mailbox shares one.
+func FindMailboxByRoleAttr(mailboxes []Mailbox, attrs MailboxAttributes, excludeID MailboxID) (Mailbox, bool) {
+	want := attrs & RoleAttributes
+	if want == 0 {
+		return Mailbox{}, false
+	}
+	for _, mb := range mailboxes {
+		if mb.ID == excludeID {
+			continue
+		}
+		if mb.Attributes&want != 0 {
+			return mb, true
+		}
+	}
+	return Mailbox{}, false
+}
+
 // MailboxDisposition classifies how a category (a label, modelled as a
 // Mailbox) renders in a client's inbox lanes (ADR-0004,
 // docs/design/web/requirements/05-categorisation.md REQ-CAT-01/04/05/10/11).
