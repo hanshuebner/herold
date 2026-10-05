@@ -998,6 +998,34 @@ type MailboxACL struct {
 	CreatedAt time.Time
 }
 
+// MailboxRefCounts reports how many rows outside message_mailboxes.mailbox_id
+// and mailboxes itself still reference a mailbox id, the diag mailbox-merge
+// dry-run count (re #509, CountMailboxRefs / RepointMailboxRefs).
+type MailboxRefCounts struct {
+	// WakeDestinations is the number of message_mailboxes rows (in ANY
+	// mailbox) whose wake_mailbox_id names this mailbox as a snooze's
+	// chosen wake destination.
+	WakeDestinations int
+	// PretrashSnapshots is the number of email_pretrash_mailboxes rows
+	// recording this mailbox as a pre-trash membership to restore.
+	PretrashSnapshots int
+	// ImportMessageState is the number of imapimport_message_state rows
+	// whose herold_mailbox_id or mapped_mailbox_id names this mailbox.
+	ImportMessageState int
+	// ImportProvenance is the number of imapimport_account rows whose
+	// provenance_mailbox_id names this mailbox.
+	ImportProvenance int
+	// MailingListArchives is the number of mailing_list rows whose
+	// archive_mailbox_id names this mailbox.
+	MailingListArchives int
+}
+
+// Total returns the sum of every counted reference.
+func (c MailboxRefCounts) Total() int {
+	return c.WakeDestinations + c.PretrashSnapshots + c.ImportMessageState +
+		c.ImportProvenance + c.MailingListArchives
+}
+
 // -- JMAP states ------------------------------------------------------
 
 // JMAPStateKind enumerates the JMAP object types whose state strings

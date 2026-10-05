@@ -1706,6 +1706,30 @@ type Metadata interface {
 	// idp:<provider> row is present -- there was nothing manual to remove.
 	RemoveMailboxACL(ctx context.Context, mailboxID MailboxID, principalID *PrincipalID) error
 
+	// CountMailboxRefs reports, for id, the row counts RepointMailboxRefs
+	// would rewrite if called with fromID=id: every reference to a
+	// mailbox id outside message_mailboxes.mailbox_id and mailboxes
+	// itself (both of which the caller handles separately -- moving or
+	// dropping message_mailboxes memberships, and checking for child
+	// mailboxes before any deletion). Read-only; used by `herold diag
+	// merge-mailbox`'s dry-run reporting (re #509).
+	CountMailboxRefs(ctx context.Context, id MailboxID) (MailboxRefCounts, error)
+
+	// RepointMailboxRefs rewrites every row counted by CountMailboxRefs so
+	// it references toID instead of fromID: a message_mailboxes row's
+	// wake_mailbox_id snooze destination (a DIFFERENT mailbox's membership
+	// row recording fromID as where the message should wake to -- not
+	// fromID's own memberships), an email_pretrash_mailboxes restore
+	// snapshot entry, an imapimport_message_state herold_mailbox_id or
+	// mapped_mailbox_id, an imapimport_account provenance_mailbox_id, and
+	// a mailing_list archive_mailbox_id. Does not touch
+	// message_mailboxes.mailbox_id, mailboxes.parent_id, or mailbox ACL
+	// grants -- the caller is responsible for fromID's own memberships,
+	// and for refusing the merge when fromID has child mailboxes or ACL
+	// grants, before calling this. Used by `herold diag merge-mailbox`
+	// (re #509).
+	RepointMailboxRefs(ctx context.Context, fromID, toID MailboxID) error
+
 	// -- Phase 2 JMAP states ------------------------------------------
 
 	// GetJMAPStates returns the per-principal counter row, creating a

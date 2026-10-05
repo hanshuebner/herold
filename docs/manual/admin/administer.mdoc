@@ -424,6 +424,43 @@ Shared mailboxes plus IMAP ACL land in Phase 2 (per `docs/design/00-scope.md`
 "Defaults in force"). The operator surface is planned but not yet
 exposed.
 
+### Merge a duplicate special-use mailbox (re #509)
+
+RFC 8621 S2 allows at most one mailbox per account to carry a given
+SPECIAL-USE role (inbox/sent/drafts/trash/junk/archive). A pre-#509
+defect in the IMAP-import folder mapping could create a second
+mailbox with the same role under a different name -- for example an
+upstream "Spam" folder alongside herold's own provisioned "Junk" --
+leaving the duplicate's contents unreachable through the account's
+single-role lookup (the Suite's Spam view, JMAP's role filter).
+
+`herold diag merge-mailbox` folds one such duplicate into the
+account's surviving mailbox for that role: every message membership
+the source holds moves into the target through the store's normal
+move path (a fresh UID, a ModSeq bump, a change-feed row, keywords/
+flags/received_to preserved), or is dropped when the message already
+lives in the target too; every other table referencing the source's
+mailbox id (a snooze wake destination, a pre-trash restore snapshot,
+IMAP-import bookkeeping, a mailing list's archive mailbox) is
+rewritten to the target; the now-empty source mailbox is then
+deleted.
+
+```bash
+# Inspect first -- always.
+herold diag merge-mailbox --principal 1 --from 9 --into 5 --dry-run
+
+# Perform the merge once the dry-run output looks right.
+herold diag merge-mailbox --principal 1 --from 9 --into 5
+```
+
+`--principal` takes a canonical email or numeric ID; `--from` and
+`--into` are mailbox IDs (`herold mailbox` has no listing CLI yet --
+read them from a JMAP `Mailbox/get` call or directly from the store).
+The command refuses, writing nothing, when the source mailbox has
+child mailboxes or carries ACL grants: rewriting either silently
+risks orphaning a child mailbox or widening/narrowing another
+principal's access.
+
 ## Aliases
 
 An alias rewrites the recipient address before delivery

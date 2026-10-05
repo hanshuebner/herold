@@ -1584,6 +1584,81 @@ func (m *metadata) RemoveMailboxACL(ctx context.Context, mailboxID store.Mailbox
 	})
 }
 
+// CountMailboxRefs reports the row counts RepointMailboxRefs would rewrite
+// for id (re #509, `herold diag merge-mailbox --dry-run`).
+func (m *metadata) CountMailboxRefs(ctx context.Context, id store.MailboxID) (store.MailboxRefCounts, error) {
+	var out store.MailboxRefCounts
+	mbID := int64(id)
+	queries := []struct {
+		dst  *int
+		sql  string
+		args []any
+	}{
+		{&out.WakeDestinations, `SELECT COUNT(*) FROM message_mailboxes WHERE wake_mailbox_id = ?`, []any{mbID}},
+		{&out.PretrashSnapshots, `SELECT COUNT(*) FROM email_pretrash_mailboxes WHERE mailbox_id = ?`, []any{mbID}},
+		{&out.ImportMessageState, `SELECT COUNT(*) FROM imapimport_message_state WHERE herold_mailbox_id = ? OR mapped_mailbox_id = ?`, []any{mbID, mbID}},
+		{&out.ImportProvenance, `SELECT COUNT(*) FROM imapimport_account WHERE provenance_mailbox_id = ?`, []any{mbID}},
+		{&out.MailingListArchives, `SELECT COUNT(*) FROM mailing_list WHERE archive_mailbox_id = ?`, []any{mbID}},
+	}
+	for _, q := range queries {
+		if err := m.s.db.QueryRowContext(ctx, q.sql, q.args...).Scan(q.dst); err != nil {
+			return store.MailboxRefCounts{}, mapErr(err)
+		}
+	}
+	return out, nil
+}
+
+// RepointMailboxRefs rewrites every row CountMailboxRefs counts for fromID
+// so it references toID instead (re #509, `herold diag merge-mailbox`).
+// email_pretrash_mailboxes has a (email_id, mailbox_id) primary key, so a
+// row already present for (email_id, toID) would conflict with a rewritten
+// (email_id, fromID) row; such a fromID row is dropped instead of rewritten
+// since the restore snapshot it would have replayed is already covered by
+// the toID row.
+func (m *metadata) RepointMailboxRefs(ctx context.Context, fromID, toID store.MailboxID) error {
+	from, to := int64(fromID), int64(toID)
+	return m.runTx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE message_mailboxes SET wake_mailbox_id = ? WHERE wake_mailbox_id = ?`,
+			to, from); err != nil {
+			return mapErr(err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			DELETE FROM email_pretrash_mailboxes
+			 WHERE mailbox_id = ? AND email_id IN (
+			   SELECT email_id FROM email_pretrash_mailboxes WHERE mailbox_id = ?
+			 )`, from, to); err != nil {
+			return mapErr(err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE email_pretrash_mailboxes SET mailbox_id = ? WHERE mailbox_id = ?`,
+			to, from); err != nil {
+			return mapErr(err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE imapimport_message_state SET herold_mailbox_id = ? WHERE herold_mailbox_id = ?`,
+			to, from); err != nil {
+			return mapErr(err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE imapimport_message_state SET mapped_mailbox_id = ? WHERE mapped_mailbox_id = ?`,
+			to, from); err != nil {
+			return mapErr(err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE imapimport_account SET provenance_mailbox_id = ? WHERE provenance_mailbox_id = ?`,
+			to, from); err != nil {
+			return mapErr(err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE mailing_list SET archive_mailbox_id = ? WHERE archive_mailbox_id = ?`,
+			to, from); err != nil {
+			return mapErr(err)
+		}
+		return nil
+	})
+}
+
 // -- JMAP states ------------------------------------------------------
 
 func (m *metadata) GetJMAPStates(ctx context.Context, pid store.PrincipalID) (store.JMAPStates, error) {
