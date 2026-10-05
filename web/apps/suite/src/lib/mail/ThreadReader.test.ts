@@ -110,7 +110,22 @@ const { mailMock, WORK_MBX, PERSONAL_MBX } = vi.hoisted(() => {
 
 // ── module mocks ───────────────────────────────────────────────────────────────
 
-vi.mock('./store.svelte', () => ({ mail: mailMock }));
+vi.mock('./store.svelte', () => ({
+  mail: mailMock,
+  // Minimal re-implementation of the real isInAnyJunkMailbox (re #509):
+  // true when mailboxIds names a mailbox in mail.mailboxes whose role is
+  // 'junk'. No fixture here carries that role, so this always returns
+  // false for these tests, matching the pre-#509 absence of a Junk chip.
+  isInAnyJunkMailbox: (
+    mailboxIds: Record<string, boolean>,
+    mailboxes: Map<string, import('./types').Mailbox>,
+  ) => {
+    for (const m of mailboxes.values()) {
+      if (m.role === 'junk' && mailboxIds[m.id]) return true;
+    }
+    return false;
+  },
+}));
 vi.mock('../i18n/i18n.svelte', () => ({
   t: (key: string) => key,
   localeTag: () => 'en',

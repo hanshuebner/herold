@@ -68,6 +68,17 @@ describe('applyTrashJunkExclusion (issue #467)', () => {
     });
   });
 
+  it('excludes every junk-role mailbox via notInMailbox when more than one exists (re #509)', () => {
+    vi.mocked(jmap.hasCapability).mockReturnValue(true);
+    const m = new Map<string, Mailbox>();
+    m.set('mb-inbox', mb('mb-inbox', 'Inbox', 'inbox'));
+    m.set('mb-junk', mb('mb-junk', 'Junk', 'junk'));
+    m.set('mb-spam', mb('mb-spam', 'Spam', 'junk'));
+
+    const out = applyTrashJunkExclusion({ inMailbox: 'mb-inbox' }, m);
+    expect(out).toEqual({ inMailbox: 'mb-inbox', notInMailbox: ['mb-junk', 'mb-spam'] });
+  });
+
   it('returns the filter unchanged when no Junk mailbox exists, capability advertised', () => {
     vi.mocked(jmap.hasCapability).mockReturnValue(true);
     const m = new Map<string, Mailbox>();

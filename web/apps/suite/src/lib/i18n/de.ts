@@ -75,6 +75,11 @@ export const de = {
   'mail.threadReader.internalizePending.body':
     'Externe Bilder in dieser Nachricht werden noch im Hintergrund internalisiert. Sie erscheinen vorerst als Platzhalter; aktualisieren Sie kurz, um sie zu sehen.',
 
+  // Junk-Hinweis im Konversationslesefenster (re #509): erscheint neben
+  // dem Betreff, wenn die geöffnete Nachricht in einem Spam-Postfach
+  // liegt, unabhängig davon, von wo aus sie geöffnet wurde.
+  'mail.threadReader.junkIndicator': 'In Spam',
+
   // Banner für neu eingetroffene Antwort (issue #118): inline angezeigt,
   // damit der Leser nicht beim Verfassen einer eigenen Antwort von einer
   // neu eingetroffenen Nachricht überrascht wird. Bleibt sichtbar bis

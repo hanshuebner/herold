@@ -2146,7 +2146,14 @@ class MailStore {
           throw new Error(`Unknown mailbox: ${folder}`);
         }
         if (unfiltered) {
-          filter = { inMailbox: mailboxId };
+          // re #509: the Junk folder's unfiltered view (re #384's "show
+          // hidden members" link has no meaning for Junk itself, but
+          // reaching here with folder === 'junk' is still possible via
+          // listUnfiltered) must widen to every junk-role mailbox too.
+          filter =
+            folder === 'junk'
+              ? buildRoleMailboxesFilter(junkMailboxIds(this.mailboxes))
+              : { inMailbox: mailboxId };
         } else {
           filter = buildFolderViewFilter(mailboxId, this.mailboxes);
           if (hasHiddenJunkTrashExclusion(mailboxId, this.mailboxes)) {
@@ -2519,7 +2526,14 @@ class MailStore {
           throw new Error(`Unknown mailbox: ${folder}`);
         }
         if (unfiltered) {
-          filter = { inMailbox: mailboxId };
+          // re #509: the Junk folder's unfiltered view (re #384's "show
+          // hidden members" link has no meaning for Junk itself, but
+          // reaching here with folder === 'junk' is still possible via
+          // listUnfiltered) must widen to every junk-role mailbox too.
+          filter =
+            folder === 'junk'
+              ? buildRoleMailboxesFilter(junkMailboxIds(this.mailboxes))
+              : { inMailbox: mailboxId };
         } else {
           filter = buildFolderViewFilter(mailboxId, this.mailboxes);
           if (hasHiddenJunkTrashExclusion(mailboxId, this.mailboxes)) {
@@ -3876,8 +3890,14 @@ class MailStore {
     // The unfiltered linked view (re #384) keeps pagination and
     // whole-mailbox bulk actions scoped to the plain `inMailbox` query it
     // was loaded with -- reapplying the Junk/Trash exclusion here would
-    // silently drop the very members that view exists to show.
-    if (this.listUnfiltered) return { inMailbox: mailboxId };
+    // silently drop the very members that view exists to show. Widen to
+    // every junk-role mailbox when the current folder is Junk (re #509),
+    // matching loadFolder's unfiltered branch.
+    if (this.listUnfiltered) {
+      return folder === 'junk'
+        ? buildRoleMailboxesFilter(junkMailboxIds(this.mailboxes))
+        : { inMailbox: mailboxId };
+    }
     return buildFolderViewFilter(mailboxId, this.mailboxes);
   }
 
@@ -5590,7 +5610,56 @@ function spliceMailboxExclusion(
 }
 
 /**
- * Splice `inMailboxOtherThan: [<trash>, <junk>]` into `parsed` so the
+ * The ids of every mailbox carrying the `junk` role (re #509). RFC 8621
+ * §2 allows at most one, but a pre-repair duplicate (the IMAP-import
+ * folder-mapping defect that created a second \Junk-attributed mailbox
+ * under a different name) can leave an account with more than one until
+ * an operator runs `herold diag merge-mailbox`. Every consumer that
+ * decides "is this message Junk" -- the folder view, search scoping, the
+ * thread toolbar's Not spam / Report spam visibility, the thread-view
+ * indicator -- must check membership against all of them, not just
+ * whichever one `Map` iteration or `#mailboxByRole` happens to return
+ * first.
+ */
+export function junkMailboxIds(mailboxes: Map<string, Mailbox>): string[] {
+  const ids: string[] = [];
+  for (const m of mailboxes.values()) {
+    if (m.role === 'junk') ids.push(m.id);
+  }
+  return ids;
+}
+
+/**
+ * True when `mailboxIds` (an Email's own `mailboxIds` membership map)
+ * names at least one junk-role mailbox (re #509). See `junkMailboxIds`.
+ */
+export function isInAnyJunkMailbox(
+  mailboxIds: Record<string, boolean>,
+  mailboxes: Map<string, Mailbox>,
+): boolean {
+  for (const id of junkMailboxIds(mailboxes)) {
+    if (mailboxIds[id]) return true;
+  }
+  return false;
+}
+
+/**
+ * Build an `Email/query` filter matching membership in any of `ids`: a
+ * single `{ inMailbox }` condition for one id, an `operator: 'OR'` of one
+ * such condition per id otherwise (re #509, multiple junk-role
+ * mailboxes). `messageInMailbox` (`internal/protojmap/mail/email/query.go`)
+ * evaluates each condition against the message's complete mailbox-
+ * membership set per RFC 8621 §4.4.1, not just one candidate row's own
+ * mailbox (re #402), so the OR form matches correctly regardless of
+ * which mailbox a candidate row was listed from.
+ */
+function buildRoleMailboxesFilter(ids: string[]): FilterCondition | FilterOperator {
+  if (ids.length <= 1) return { inMailbox: ids[0] };
+  return { operator: 'OR', conditions: ids.map((id) => ({ inMailbox: id })) };
+}
+
+/**
+ * Splice `inMailboxOtherThan: [<trash>, <junk...>]` into `parsed` so the
  * default search scope excludes those mailboxes (REQ-SRC-06). This is
  * the RFC 8621 §4.4.1 predicate — the message must sit in at least one
  * mailbox outside the listed set — unconditionally, regardless of
@@ -5604,8 +5673,9 @@ export function applySearchTrashJunkExclusion(
 ): FilterCondition | FilterOperator {
   const exclude: string[] = [];
   for (const m of mailboxes.values()) {
-    if (m.role === 'trash' || m.role === 'junk') exclude.push(m.id);
+    if (m.role === 'trash') exclude.push(m.id);
   }
+  exclude.push(...junkMailboxIds(mailboxes));
   return spliceMailboxExclusion(parsed, exclude, 'inMailboxOtherThan');
 }
 
@@ -5635,11 +5705,7 @@ export function applyTrashJunkExclusion(
   if (!jmap.hasCapability(Capability.HeroldEmailQueryExtensions)) {
     return applySearchTrashJunkExclusion(parsed, mailboxes);
   }
-  const junk: string[] = [];
-  for (const m of mailboxes.values()) {
-    if (m.role === 'junk') junk.push(m.id);
-  }
-  return spliceMailboxExclusion(parsed, junk, 'notInMailbox');
+  return spliceMailboxExclusion(parsed, junkMailboxIds(mailboxes), 'notInMailbox');
 }
 
 /**
@@ -5664,9 +5730,13 @@ export function buildAllMailFilter(
 /**
  * Build the `Email/query` filter for a folder view scoped to `mailboxId`
  * (issue #310). The Junk and Trash mailboxes are returned unfiltered --
- * viewing Junk or Trash must still show everything filed there. Every
- * other mailbox, including a user label such as the IMAP import's
- * provenance label, excludes messages that also sit in Junk via
+ * viewing Junk or Trash must still show everything filed there. When
+ * `mailboxId` names a junk-role mailbox, the filter widens to every
+ * junk-role mailbox (re #509, `buildRoleMailboxesFilter`), so the Spam
+ * folder view shows every junked message even while a pre-repair
+ * duplicate junk mailbox exists. Every other mailbox, including a user
+ * label such as the IMAP import's provenance label, excludes messages
+ * that also sit in Junk via
  * `applyTrashJunkExclusion` (re #467) -- a message that also sits in
  * Trash is listed normally, per the store's Trash-never-coexists
  * invariant (#460). `loadFolder`, `#refreshFolderInPlace`, and
@@ -5697,7 +5767,10 @@ export function buildFolderViewFilter(
   mailboxes: Map<string, Mailbox>,
 ): FilterCondition | FilterOperator {
   const mailbox = mailboxes.get(mailboxId);
-  if (mailbox?.role === 'junk' || mailbox?.role === 'trash') {
+  if (mailbox?.role === 'junk') {
+    return buildRoleMailboxesFilter(junkMailboxIds(mailboxes));
+  }
+  if (mailbox?.role === 'trash') {
     return { inMailbox: mailboxId };
   }
   return applyTrashJunkExclusion({ inMailbox: mailboxId, notKeyword: '$snoozed' }, mailboxes);

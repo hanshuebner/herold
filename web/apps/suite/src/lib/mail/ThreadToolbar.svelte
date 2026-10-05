@@ -11,7 +11,7 @@
    * reply / forward live in the fixed reply bar at the bottom. The toolbar
    * uses the THREAD_ACTIONS registry directly with a fixed visible count.
    */
-  import { mail } from './store.svelte';
+  import { mail, isInAnyJunkMailbox } from './store.svelte';
   import { navigateBackFromThread } from './navigate-back';
   import { movePicker } from './move-picker.svelte';
   import { labelPicker } from './label-picker.svelte';
@@ -60,7 +60,6 @@
 
   let inboxId = $derived(mail.inbox?.id);
   let trashId = $derived(mail.trash?.id);
-  let junkId = $derived(mail.junk?.id);
   // Derive all emails in the thread so isInInbox reflects the full
   // conversation. A thread where the latest message is the user's own reply
   // (in Sent) should still show Archive when earlier messages are in the
@@ -76,7 +75,11 @@
   // "Not spam" (issue #382) is only offered on a message actually filed
   // to Junk -- mirrors isInTrash's latest-only check rather than
   // isInInbox's whole-thread check, since Not spam operates on `latest`.
-  let isInJunk = $derived(Boolean(junkId && latest.mailboxIds[junkId]));
+  // Checked against every junk-role mailbox (re #509): an account can
+  // transiently hold more than one (a pre-repair duplicate), and a
+  // message filed to the one a single-mailbox lookup does not pick up
+  // must still be treated as Junk here.
+  let isInJunk = $derived(isInAnyJunkMailbox(latest.mailboxIds, mail.mailboxes));
 
   // "Why was this classified?" (issue #390) opens LLMInspectModal for the
   // thread's latest message, fed by Email/llmInspect. Fetch the record
@@ -327,12 +330,15 @@
       onclick: openNotSpamDialog,
     },
     reportSpam: {
-      visible: true,
+      // Hidden once the message is already in Junk (re #509): offering
+      // "report as spam" on a message already filed to Junk makes no
+      // sense -- Not spam is the only action that applies there.
+      visible: !isInJunk,
       label: t('msg.reportSpam'),
       onclick: () => void handleReportSpam(),
     },
     reportPhishing: {
-      visible: true,
+      visible: !isInJunk,
       label: t('msg.reportPhishing'),
       onclick: () => void handleReportPhishing(),
     },

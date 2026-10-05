@@ -24,7 +24,7 @@ import type { Email, Mailbox } from './types';
 
 // ── hoisted fixtures ───────────────────────────────────────────────────────────
 
-const { mailMock, routerMock, INBOX_MBX, SENT_MBX, ARCHIVE_MBX, TRASH_MBX, JUNK_MBX } = vi.hoisted(
+const { mailMock, routerMock, INBOX_MBX, SENT_MBX, ARCHIVE_MBX, TRASH_MBX, JUNK_MBX, JUNK2_MBX } = vi.hoisted(
   () => {
     const INBOX_MBX: Mailbox = {
       id: 'mbx-inbox',
@@ -86,13 +86,32 @@ const { mailMock, routerMock, INBOX_MBX, SENT_MBX, ARCHIVE_MBX, TRASH_MBX, JUNK_
       unreadThreads: 0,
     };
 
+    // A second junk-role mailbox under a different id/name (re #509): the
+    // pre-repair duplicate the IMAP-import folder-mapping defect could
+    // produce (an upstream "Spam" folder next to the provisioned "Junk").
+    const JUNK2_MBX: Mailbox = {
+      id: 'mbx-spam',
+      name: 'Spam',
+      role: 'junk',
+      parentId: null,
+      sortOrder: 5,
+      totalEmails: 0,
+      unreadEmails: 0,
+      totalThreads: 0,
+      unreadThreads: 0,
+    };
+
     // mailMock is mutated per-test via mailMock.threadEmails and
     // mailMock.trash; the bulkArchive spy is shared across tests.
+    // mailboxes backs isInAnyJunkMailbox (re #509): tests set it to a Map
+    // containing JUNK_MBX (or, for the two-junk-mailboxes case, a second
+    // junk-role mailbox under a different id) rather than pointing a
+    // single `junk` field at one mailbox.
     const mailMock = {
       inbox: INBOX_MBX as Mailbox | null,
       trash: null as Mailbox | null,
       archive: ARCHIVE_MBX as Mailbox | null,
-      junk: null as Mailbox | null,
+      mailboxes: new Map<string, Mailbox>(),
       listFolder: 'inbox' as string,
       threadEmails: (_tid: string): Email[] => [],
       bulkArchive: vi.fn().mockResolvedValue(undefined),
@@ -105,13 +124,24 @@ const { mailMock, routerMock, INBOX_MBX, SENT_MBX, ARCHIVE_MBX, TRASH_MBX, JUNK_
 
     const routerMock = { parts: ['mail'] as readonly string[], navigate: vi.fn() };
 
-    return { mailMock, routerMock, INBOX_MBX, SENT_MBX, ARCHIVE_MBX, TRASH_MBX, JUNK_MBX };
+    return { mailMock, routerMock, INBOX_MBX, SENT_MBX, ARCHIVE_MBX, TRASH_MBX, JUNK_MBX, JUNK2_MBX };
   },
 );
 
 // ── module mocks ───────────────────────────────────────────────────────────────
 
-vi.mock('./store.svelte', () => ({ mail: mailMock }));
+vi.mock('./store.svelte', () => ({
+  mail: mailMock,
+  // Minimal re-implementation of the real isInAnyJunkMailbox (re #509):
+  // true when mailboxIds names any mailbox in mailMock.mailboxes whose
+  // role is 'junk'.
+  isInAnyJunkMailbox: (mailboxIds: Record<string, boolean>, mailboxes: Map<string, Mailbox>) => {
+    for (const m of mailboxes.values()) {
+      if (m.role === 'junk' && mailboxIds[m.id]) return true;
+    }
+    return false;
+  },
+}));
 vi.mock('../router/router.svelte', () => ({ router: routerMock }));
 vi.mock('../i18n/i18n.svelte', () => ({
   t: (key: string) => key,
@@ -368,7 +398,7 @@ describe('ThreadToolbar formerly-overflow actions (re #117)', () => {
 describe('ThreadToolbar "Not spam" action (issue #382)', () => {
   beforeEach(() => {
     mailMock.inbox = INBOX_MBX;
-    mailMock.junk = null;
+    mailMock.mailboxes = new Map();
     mailMock.notSpam.mockClear();
     vi.mocked(managedRules.create).mockClear();
     routerMock.navigate.mockClear();
@@ -376,7 +406,7 @@ describe('ThreadToolbar "Not spam" action (issue #382)', () => {
 
   it('hides Not spam when the thread is not in Junk', () => {
     const email = makeEmail('e-ns0', 'tid-ns0', { 'mbx-inbox': true });
-    mailMock.junk = JUNK_MBX;
+    mailMock.mailboxes = new Map([[JUNK_MBX.id, JUNK_MBX]]);
     mailMock.threadEmails = (tid: string) => (tid === 'tid-ns0' ? [email] : []);
 
     renderToolbar(email);
@@ -386,7 +416,7 @@ describe('ThreadToolbar "Not spam" action (issue #382)', () => {
 
   it('shows Not spam for a Junk thread and moves it to Inbox on confirm', async () => {
     const email = makeEmail('e-ns1', 'tid-ns1', { 'mbx-junk': true });
-    mailMock.junk = JUNK_MBX;
+    mailMock.mailboxes = new Map([[JUNK_MBX.id, JUNK_MBX]]);
     mailMock.threadEmails = (tid: string) => (tid === 'tid-ns1' ? [email] : []);
 
     renderToolbar(email);
@@ -409,10 +439,40 @@ describe('ThreadToolbar "Not spam" action (issue #382)', () => {
     });
   });
 
+  it('hides Report spam and Report phishing for a Junk thread (re #509)', () => {
+    const email = makeEmail('e-ns1b', 'tid-ns1b', { 'mbx-junk': true });
+    mailMock.mailboxes = new Map([[JUNK_MBX.id, JUNK_MBX]]);
+    mailMock.threadEmails = (tid: string) => (tid === 'tid-ns1b' ? [email] : []);
+
+    renderToolbar(email);
+
+    expect(screen.queryByRole('button', { name: 'msg.reportSpam' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'msg.reportPhishing' })).not.toBeInTheDocument();
+  });
+
+  it('with two junk-role mailboxes, a message in the second shows Not spam and hides Report spam/phishing (re #509)', () => {
+    // Both JUNK_MBX ("Junk") and JUNK2_MBX ("Spam") carry role 'junk'; the
+    // message sits only in the second one -- the exact production shape
+    // (mailbox 9 "Spam" next to mailbox 5 "Junk") a single-mailbox lookup
+    // would miss entirely.
+    const email = makeEmail('e-ns3', 'tid-ns3', { [JUNK2_MBX.id]: true });
+    mailMock.mailboxes = new Map([
+      [JUNK_MBX.id, JUNK_MBX],
+      [JUNK2_MBX.id, JUNK2_MBX],
+    ]);
+    mailMock.threadEmails = (tid: string) => (tid === 'tid-ns3' ? [email] : []);
+
+    renderToolbar(email);
+
+    expect(screen.getByRole('button', { name: 'msg.notSpam' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'msg.reportSpam' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'msg.reportPhishing' })).not.toBeInTheDocument();
+  });
+
   it('creates a never-spam rule scoped to the domain when that option is chosen', async () => {
     const email = makeEmail('e-ns2', 'tid-ns2', { 'mbx-junk': true });
     email.from = [{ name: 'Notify', email: 'notify@accountprotection.microsoft.com' }];
-    mailMock.junk = JUNK_MBX;
+    mailMock.mailboxes = new Map([[JUNK_MBX.id, JUNK_MBX]]);
     mailMock.threadEmails = (tid: string) => (tid === 'tid-ns2' ? [email] : []);
 
     renderToolbar(email);
@@ -439,7 +499,7 @@ describe('ThreadToolbar "Not spam" action (issue #382)', () => {
 describe('ThreadToolbar "Why was this classified?" action (issue #390)', () => {
   beforeEach(() => {
     mailMock.inbox = INBOX_MBX;
-    mailMock.junk = null;
+    mailMock.mailboxes = new Map();
     llmTransparencyMock.available = true;
     llmTransparencyMock.inspectResultFor = null;
     llmTransparencyMock.fetchInspect.mockClear();

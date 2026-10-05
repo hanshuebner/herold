@@ -74,6 +74,11 @@ export const en = {
   'mail.threadReader.internalizePending.body':
     'External images in this message are still being internalized in the background. They appear as placeholders for now; refresh in a moment to see them.',
 
+  // Thread-reader Junk indicator (re #509): shown next to the subject
+  // whenever the opened message is filed to a junk-role mailbox,
+  // regardless of which folder/search/notification it was opened from.
+  'mail.threadReader.junkIndicator': 'In Spam',
+
   // Thread-reader new-reply banner (issue #118): inline non-modal banner
   // shown above a freshly-arrived reply so the user is not blindsided by
   // a new message while composing a reply themselves. Persists until

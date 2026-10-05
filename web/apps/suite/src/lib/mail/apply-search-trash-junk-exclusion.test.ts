@@ -60,6 +60,19 @@ describe('applySearchTrashJunkExclusion (REQ-SRC-06)', () => {
     });
   });
 
+  it('excludes every junk-role mailbox alongside Trash when more than one exists (re #509)', () => {
+    const m = new Map<string, Mailbox>();
+    m.set('mb-trash', mb('mb-trash', 'Trash', 'trash'));
+    m.set('mb-junk', mb('mb-junk', 'Junk', 'junk'));
+    m.set('mb-spam', mb('mb-spam', 'Spam', 'junk'));
+
+    const out = applySearchTrashJunkExclusion({ text: 'foo' }, m);
+    expect(out).toEqual({
+      text: 'foo',
+      inMailboxOtherThan: ['mb-trash', 'mb-junk', 'mb-spam'],
+    });
+  });
+
   it('returns the filter unchanged when neither role exists', () => {
     const m = new Map<string, Mailbox>();
     m.set('mb-inbox', mb('mb-inbox', 'Inbox', 'inbox'));

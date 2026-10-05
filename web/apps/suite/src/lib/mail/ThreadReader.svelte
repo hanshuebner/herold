@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { mail } from './store.svelte';
+  import { mail, isInAnyJunkMailbox } from './store.svelte';
   import MessageAccordion from './MessageAccordion.svelte';
   import ThreadToolbar from './ThreadToolbar.svelte';
   import ThreadReplyBar from './ThreadReplyBar.svelte';
@@ -179,6 +179,19 @@
     emails.some((e) => e.internalizePending === true),
   );
 
+  /**
+   * True when `latest` is filed to a junk-role mailbox (re #509). Shown as
+   * a chip next to the subject regardless of which folder, search result,
+   * or notification the thread was opened from -- the only other place
+   * Junk membership was surfaced (ThreadToolbar's Not spam / Report spam
+   * visibility) gives no indication when the thread view itself was
+   * reached some other way. Mirrors ThreadToolbar's isInJunk: checked
+   * against every junk-role mailbox, not just whichever one a single-
+   * mailbox lookup would return, so a message filed to a pre-repair
+   * duplicate junk mailbox is still flagged.
+   */
+  let isInJunk = $derived(latest ? isInAnyJunkMailbox(latest.mailboxIds, mail.mailboxes) : false);
+
   // Track expanded state by email id. Initial set computed once when
   // emails first arrive; subsequent toggles are user-driven.
   let expanded = $state(new Set<string>());
@@ -276,6 +289,15 @@
       <header>
         <div class="subject-row">
           <h1>{subject}</h1>
+          {#if isInJunk}
+            <!-- Junk indicator (re #509): shown wherever this thread was
+                 opened from, since a message filed to Junk otherwise gives
+                 no sign of it outside the folder/search view it happened
+                 to be reached through. -->
+            <span class="junk-chip" data-testid="thread-junk-indicator">
+              {t('mail.threadReader.junkIndicator')}
+            </span>
+          {/if}
           <!-- REQ-UNS-10..12: thread-scoped, in the reading pane only. -->
           <UnsubscribeButton {emails} />
         </div>
@@ -365,6 +387,20 @@
     flex-wrap: wrap;
     gap: var(--spacing-02);
     margin-top: var(--spacing-03);
+  }
+  /* Junk indicator chip (re #509): shown next to the subject whenever
+     the opened message is filed to Junk, regardless of which folder it
+     was reached through. */
+  .junk-chip {
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+    padding: 1px var(--spacing-03);
+    background: color-mix(in srgb, var(--support-error) 15%, var(--layer-01));
+    color: var(--support-error);
+    border-radius: var(--radius-pill);
+    font-size: var(--type-body-compact-01-size);
+    font-weight: 600;
   }
   .label-badge {
     display: inline-flex;

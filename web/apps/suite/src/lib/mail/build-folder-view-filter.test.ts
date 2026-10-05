@@ -97,4 +97,19 @@ describe('buildFolderViewFilter (issue #310)', () => {
 
     expect(filter).toEqual({ inMailbox: 'mb-trash' });
   });
+
+  it('widens the Junk view to every junk-role mailbox when more than one exists (re #509)', () => {
+    // The pre-repair duplicate shape: an upstream "Spam" folder next to
+    // the provisioned "Junk" mailbox, both carrying role 'junk'.
+    const mailboxes = new Map<string, Mailbox>();
+    mailboxes.set('mb-junk', mb('mb-junk', 'Junk', 'junk'));
+    mailboxes.set('mb-spam', mb('mb-spam', 'Spam', 'junk'));
+
+    const filter = buildFolderViewFilter('mb-junk', mailboxes);
+
+    expect(filter).toEqual({
+      operator: 'OR',
+      conditions: [{ inMailbox: 'mb-junk' }, { inMailbox: 'mb-spam' }],
+    });
+  });
 });

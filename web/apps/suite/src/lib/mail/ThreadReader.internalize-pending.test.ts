@@ -84,7 +84,21 @@ const { mailMock } = vi.hoisted(() => {
   return { mailMock };
 });
 
-vi.mock('./store.svelte', () => ({ mail: mailMock }));
+vi.mock('./store.svelte', () => ({
+  mail: mailMock,
+  // Minimal re-implementation of the real isInAnyJunkMailbox (re #509);
+  // no fixture here carries a junk-role mailbox, so this always returns
+  // false.
+  isInAnyJunkMailbox: (
+    mailboxIds: Record<string, boolean>,
+    mailboxes: Map<string, import('./types').Mailbox>,
+  ) => {
+    for (const m of mailboxes.values()) {
+      if (m.role === 'junk' && mailboxIds[m.id]) return true;
+    }
+    return false;
+  },
+}));
 vi.mock('../i18n/i18n.svelte', () => ({
   t: (key: string): string => {
     const map: Record<string, string> = {
