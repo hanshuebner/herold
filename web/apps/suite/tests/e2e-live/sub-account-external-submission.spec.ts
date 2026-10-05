@@ -234,4 +234,27 @@ test('undo send inside the window cancels the external relay and restores the dr
     (await (await request.get(`http://${FAKESMTP_HTTP_ADDR}/count`)).json()) as { count: number }
   ).count;
   expect(countAfter, 'the sink must not have received any new message').toBe(countBefore);
+
+  // The reopened composer must still be scoped to the sub-account (re #508):
+  // a resend's Email/set must be able to see the restored draft row, which
+  // lives only in the sub-account's Drafts mailbox. Pre-fix this failed
+  // outright with "email is not visible to the caller" because Undo's
+  // openWith dropped scopeAccountId, running the resend against the
+  // primary account instead.
+  await page.getByTestId('compose-send').click();
+  await expect(composeDialog).toHaveCount(0, { timeout: 10_000 });
+  await expect(composeDialog.locator('p.error[role="alert"]')).toHaveCount(0);
+
+  await expect
+    .poll(
+      async () => {
+        const resp = await request.get(`http://${FAKESMTP_HTTP_ADDR}/messages`);
+        const messages = (await resp.json()) as Array<{ mail_from: string; rcpt_to: string[] }>;
+        return messages.some(
+          (m) => m.mail_from === SEPARABLE_IDENTITY_EMAIL && m.rcpt_to.includes(recipient),
+        );
+      },
+      { timeout: 15_000, message: 'the re-send never arrived at the fake SMTP sink under the restored identity' },
+    )
+    .toBe(true);
 });

@@ -1464,13 +1464,21 @@ class ComposeStore {
     const bodyText = htmlToPlainText(bodyHtml);
     const replyContext = this.replyContext;
 
-    // Snapshot for Undo (full state, including reply context).
+    // Snapshot for Undo (full state, including reply context). Carries
+    // `identity` and `scopeAccountId` too (re #508) -- close() resets both
+    // to null below, and without this snapshot the undo callback's
+    // openWith(...) silently fell back to the primary identity / primary
+    // account, so a resend after Undo went out under the wrong From and,
+    // for a sub-account-scoped compose, against an Email/set accountId
+    // that could not even see the restored draft row.
     const savedTo = this.to;
     const savedCc = this.cc;
     const savedBcc = this.bcc;
     const savedSubject = subject;
     const savedBody = bodyHtml;
     const savedReplyContext: ReplyContext = { ...replyContext };
+    const savedIdentity = identity;
+    const savedScopeAccountId = this.scopeAccountId;
 
     this.errorMessage = null;
     this.status = 'sending';
@@ -1766,7 +1774,8 @@ class ComposeStore {
                 }
               }
 
-              // Re-open compose with the full saved state (including reply context).
+              // Re-open compose with the full saved state (including reply
+              // context, From identity, and sub-account scope -- re #508).
               // savedBody already carries the signature the user had on send;
               // appending again would duplicate it.
               this.openWith({
@@ -1778,6 +1787,8 @@ class ComposeStore {
                 replyContext: savedReplyContext,
                 draftId: restoredDraftId,
                 skipSignature: true,
+                identity: savedIdentity,
+                scopeAccountId: savedScopeAccountId,
               });
             } catch (err) {
               toast.show({

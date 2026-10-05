@@ -192,6 +192,12 @@ test.describe('undo-cancelled send leaves no copy in Sent (re #507)', () => {
     await clickUndo(page);
     await expect(composeDialog).toBeVisible({ timeout: 5_000 });
 
+    // The From picker must show the identity the message was actually
+    // composed/sent under, not revert to the default (re #508).
+    await expect(composeDialog.getByTestId('from-picker-trigger')).toContainText(
+      EXTERNAL_IDENTITY_EMAIL,
+    );
+
     // No leak to the external relay.
     await page.waitForTimeout(2_000);
     const countAfterUndo = (
@@ -220,10 +226,10 @@ test.describe('undo-cancelled send leaves no copy in Sent (re #507)', () => {
       )
       .toBe(1);
 
-    // Re-send; regardless of which identity the re-opened composer ends up
-    // using (re #508 -- a separate, already-filed gap: Undo does not
-    // restore the selected From identity), the acceptance this issue owns
-    // is that Sent ends up with exactly one copy, never two.
+    // Re-send: Sent ends up with exactly one copy (this issue's own
+    // acceptance), and -- since the From identity was restored above (re
+    // #508) -- the resend goes out through the external relay again, so the
+    // sink's count grows by exactly one.
     await page.getByTestId('compose-send').click();
     await expect(composeDialog).toHaveCount(0, { timeout: 10_000 });
 
@@ -235,5 +241,16 @@ test.describe('undo-cancelled send leaves no copy in Sent (re #507)', () => {
         { timeout: 10_000, message: 'the re-send must produce exactly one Sent copy' },
       )
       .toBe(1);
+    await expect
+      .poll(
+        async () =>
+          ((await (await request.get(`http://${FAKESMTP_HTTP_ADDR}/count`)).json()) as { count: number })
+            .count,
+        {
+          timeout: 10_000,
+          message: 'the re-send must reach the external relay sink exactly once, under the restored identity',
+        },
+      )
+      .toBe(countBefore + 1);
   });
 });
