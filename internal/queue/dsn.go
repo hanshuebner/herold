@@ -83,6 +83,15 @@ type dsnInput struct {
 	Subject         string // optional override
 }
 
+// DSNInput is the exported form of dsnInput for callers outside the queue
+// package that need to render the same RFC 3464 DSN shape the local queue
+// produces on a permanent failure (re #511: the external-submission relay
+// injects a DSN directly into the Inbox rather than through a queue row).
+type DSNInput = dsnInput
+
+// BuildDSN is the exported form of buildDSN.
+func BuildDSN(in DSNInput) ([]byte, error) { return buildDSN(in) }
+
 // buildDSN renders a complete RFC 3464 multipart/report message.
 // Output is CRLF-terminated and ready to enqueue. The boundary string
 // is derived from a 16-byte crypto/rand draw so each invocation

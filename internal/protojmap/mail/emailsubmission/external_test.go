@@ -332,6 +332,138 @@ func TestEmailSubmission_External_PermanentOutcome(t *testing.T) {
 	}
 }
 
+// TestEmailSubmission_External_OneRecipientRejected_DSNAndAuditAndStatus
+// reproduces #511's acceptance scenario end to end: a two-recipient external
+// submission where the relay rejects one recipient and accepts the other
+// must still deliver to the valid recipient (OutcomeOK overall), render
+// deliveryStatus "no" for the rejected recipient and "yes" for the accepted
+// one, inject a DSN into the principal's Inbox, and append a
+// submission.external.failure audit-log entry for the rejected recipient.
+func TestEmailSubmission_External_OneRecipientRejected_DSNAndAuditAndStatus(t *testing.T) {
+	h, st, p, mid, _, _ := newExternalSetup(t, extsubmit.Outcome{
+		State:      extsubmit.OutcomeOK,
+		Diagnostic: "accepted by smtp.example.test: <id@example.test>",
+		Recipients: []extsubmit.RecipientOutcome{
+			{Rcpt: "bob@remote.test", Accepted: false, Category: extsubmit.OutcomePermanent,
+				Reply: "550 5.1.1 mailbox unavailable"},
+			{Rcpt: "carol@remote.test", Accepted: true, Reply: "250 ok"},
+		},
+	})
+	ctx := context.Background()
+
+	// newExternalSetup only creates a Drafts mailbox; the DSN needs an
+	// Inbox to land in.
+	inbox, err := st.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: p.ID, Name: "INBOX", Attributes: store.MailboxAttrInbox,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox INBOX: %v", err)
+	}
+
+	args, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
+		"create": map[string]any{
+			"k1": map[string]any{
+				"identityId": "default",
+				"emailId":    renderEmailID(mid),
+				"envelope": map[string]any{
+					"mailFrom": map[string]any{"email": "alice@example.test"},
+					"rcptTo": []map[string]any{
+						{"email": "bob@remote.test"},
+						{"email": "carol@remote.test"},
+					},
+				},
+			},
+		},
+	})
+	resp, mErr := setHandler{h: h}.executeAs(p, args)
+	if mErr != nil {
+		t.Fatalf("EmailSubmission/set: %v", mErr)
+	}
+	sresp := resp.(setResponse)
+	var createdID string
+	for _, v := range sresp.Created {
+		createdID = v.ID
+	}
+	if createdID == "" {
+		t.Fatalf("expected a created submission: %v", sresp.NotCreated)
+	}
+
+	h.Wait()
+
+	// deliveryStatus: "no" for the rejected recipient, "yes" for the
+	// accepted one.
+	getArgs, _ := json.Marshal(map[string]any{"accountId": protojmap.AccountIDForPrincipal(p.ID)})
+	getResp, _ := getHandler{h: h}.executeAs(p, getArgs)
+	gjs, _ := json.Marshal(getResp)
+	var getParsed struct {
+		List []struct {
+			ID             string                        `json:"id"`
+			DeliveryStatus map[string]jmapDeliveryStatus `json:"deliveryStatus"`
+			DSNBlobIDs     []string                      `json:"dsnBlobIds"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(gjs, &getParsed); err != nil {
+		t.Fatalf("unmarshal /get response: %v (raw: %s)", err, gjs)
+	}
+	var found *struct {
+		ID             string                        `json:"id"`
+		DeliveryStatus map[string]jmapDeliveryStatus `json:"deliveryStatus"`
+		DSNBlobIDs     []string                      `json:"dsnBlobIds"`
+	}
+	for i := range getParsed.List {
+		if getParsed.List[i].ID == createdID {
+			found = &getParsed.List[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("created submission %q not found in /get response: %s", createdID, gjs)
+	}
+	bobStatus, ok := found.DeliveryStatus["bob@remote.test"]
+	if !ok || bobStatus.Delivered != "no" {
+		t.Fatalf("bob@remote.test deliveryStatus = %+v, want delivered=no", bobStatus)
+	}
+	if !strings.Contains(bobStatus.SMTPReply, "550") {
+		t.Fatalf("bob@remote.test smtpReply = %q, want it to carry the 550 reply", bobStatus.SMTPReply)
+	}
+	carolStatus, ok := found.DeliveryStatus["carol@remote.test"]
+	if !ok || carolStatus.Delivered != "yes" {
+		t.Fatalf("carol@remote.test deliveryStatus = %+v, want delivered=yes", carolStatus)
+	}
+	if len(found.DSNBlobIDs) == 0 {
+		t.Fatalf("expected at least one dsnBlobId, got none")
+	}
+
+	// A DSN message landed in the Inbox.
+	msgs, err := st.Meta().ListMessages(ctx, inbox.ID, store.MessageFilter{Limit: 100, WithEnvelope: true})
+	if err != nil {
+		t.Fatalf("ListMessages(Inbox): %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message in Inbox (the DSN), got %d", len(msgs))
+	}
+	if !strings.Contains(msgs[0].Envelope.Subject, "Delivery Status Notification") {
+		t.Fatalf("Inbox message subject = %q, want a DSN subject", msgs[0].Envelope.Subject)
+	}
+
+	// An audit-log entry was appended for the rejected recipient.
+	entries, err := st.Meta().ListAuditLog(ctx, store.AuditLogFilter{
+		PrincipalID: p.ID, Action: "submission.external.failure",
+	})
+	if err != nil {
+		t.Fatalf("ListAuditLog: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 submission.external.failure audit entry, got %d", len(entries))
+	}
+	if entries[0].Metadata["recipient"] != "bob@remote.test" {
+		t.Fatalf("audit entry recipient = %q, want bob@remote.test", entries[0].Metadata["recipient"])
+	}
+	if entries[0].Metadata["correlation_id"] != createdID {
+		t.Fatalf("audit entry correlation_id = %q, want %q", entries[0].Metadata["correlation_id"], createdID)
+	}
+}
+
 // TestEmailSubmission_External_DestroyCannotUnsend verifies that destroy on
 // an External=true submission row returns cannotUnsend.
 func TestEmailSubmission_External_DestroyCannotUnsend(t *testing.T) {

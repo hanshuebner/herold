@@ -130,6 +130,13 @@ func rowToJMAP(rows []store.QueueItem, identityID jmapID, emailID jmapID, thread
 	return sub
 }
 
+// externalRecipientOutcome is the JSON shape of one entry in
+// externalSubmissionProperties.RecipientOutcomes (re #511).
+type externalRecipientOutcome struct {
+	Accepted bool   `json:"accepted"`
+	Reply    string `json:"reply,omitempty"`
+}
+
 // externalSubmissionProperties is the JSON shape stored in
 // EmailSubmissionRow.Properties for external-submission rows. It carries the
 // per-recipient list and the diagnostic returned by extsubmit.Submitter so the
@@ -139,6 +146,18 @@ type externalSubmissionProperties struct {
 	ExtState string   `json:"extState,omitempty"`
 	ExtDiag  string   `json:"extDiag,omitempty"`
 	MailFrom string   `json:"mailFrom,omitempty"`
+	// RecipientOutcomes carries the per-recipient Accepted/Reply result
+	// (re #511), keyed by the RCPT TO address exactly as sent. Populated
+	// once the relay goroutine completes with per-recipient detail
+	// (extsubmit.Outcome.Recipients, or a uniform synthesis of a
+	// pre-RCPT failure across every recipient). Nil for rows written
+	// before this fix or while the relay is still in flight; /get falls
+	// back to the uniform ExtState-based rendering in that case.
+	RecipientOutcomes map[string]externalRecipientOutcome `json:"recipientOutcomes,omitempty"`
+	// DSNBlobIDs holds the blob hash of every delivery-status
+	// notification message injected into the Inbox for a rejected
+	// recipient (re #511, RFC 8621 7.1 dsnBlobIds).
+	DSNBlobIDs []string `json:"dsnBlobIds,omitempty"`
 }
 
 // externalRowToJMAP converts an External=true EmailSubmissionRow into the
@@ -194,6 +213,29 @@ func externalRowToJMAP(r store.EmailSubmissionRow) jmapEmailSubmission {
 				// submission as failed.
 				ds.Delivered = "queued"
 				ds.SMTPReply = "queued"
+			case props.RecipientOutcomes != nil:
+				// Per-recipient detail is available (re #511): a mixed
+				// outcome (one recipient delivered, another rejected)
+				// renders each recipient's own result rather than the
+				// whole-submission ExtState.
+				if ro, ok := props.RecipientOutcomes[rcpt]; ok {
+					if ro.Accepted {
+						ds.Delivered = "yes"
+						ds.SMTPReply = ro.Reply
+						if ds.SMTPReply == "" {
+							ds.SMTPReply = "250 ok"
+						}
+					} else {
+						ds.Delivered = "no"
+						ds.SMTPReply = ro.Reply
+						if ds.SMTPReply == "" {
+							ds.SMTPReply = props.ExtState
+						}
+					}
+				} else {
+					ds.Delivered = "unknown"
+					ds.SMTPReply = "unknown"
+				}
 			case props.ExtState == "ok":
 				ds.Delivered = "yes"
 				ds.SMTPReply = "250 ok"
@@ -207,6 +249,7 @@ func externalRowToJMAP(r store.EmailSubmissionRow) jmapEmailSubmission {
 			sub.DeliveryStatus[rcpt] = ds
 		}
 	}
+	sub.DSNBlobIDs = append(sub.DSNBlobIDs, props.DSNBlobIDs...)
 	return sub
 }
 

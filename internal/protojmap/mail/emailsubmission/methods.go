@@ -1,6 +1,7 @@
 package emailsubmission
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -1283,6 +1284,36 @@ func (h *handlerSet) execExternalRelay(
 		ExtState: string(outcome.State),
 		ExtDiag:  outcome.Diagnostic,
 	}
+
+	// Per-recipient reporting, DSN, and audit (re #511). Skipped for the
+	// held-for-reauth case: the submission may still succeed once the
+	// identity recovers, so no recipient has finally failed yet.
+	if !heldForReauth {
+		recipientOutcomes := outcome.Recipients
+		if len(recipientOutcomes) == 0 && outcome.State != extsubmit.OutcomeOK {
+			// The Submitter failed before reaching RCPT TO (AUTH, MAIL
+			// FROM, or a transport error): that failure applies
+			// uniformly to every recipient in the envelope.
+			for _, rcpt := range recipients {
+				recipientOutcomes = append(recipientOutcomes, extsubmit.RecipientOutcome{
+					Rcpt: rcpt, Category: outcome.State, Reply: outcome.Diagnostic,
+				})
+			}
+		}
+		if len(recipientOutcomes) > 0 {
+			props.RecipientOutcomes = make(map[string]externalRecipientOutcome, len(recipientOutcomes))
+			var failed []extsubmit.RecipientOutcome
+			for _, ro := range recipientOutcomes {
+				props.RecipientOutcomes[ro.Rcpt] = externalRecipientOutcome{Accepted: ro.Accepted, Reply: ro.Reply}
+				if !ro.Accepted {
+					failed = append(failed, ro)
+				}
+			}
+			if len(failed) > 0 {
+				props.DSNBlobIDs = h.injectExternalRelayDSNs(ctx, p, mailFrom, submissionID, failed)
+			}
+		}
+	}
 	propsJSON, _ := json.Marshal(props)
 
 	if err := h.store.Meta().UpdateEmailSubmissionHeld(ctx, submissionID, heldForReauth, udoSt, propsJSON); err != nil {
@@ -1294,6 +1325,107 @@ func (h *handlerSet) execExternalRelay(
 	if _, err := h.store.Meta().IncrementJMAPState(ctx, p.ID, store.JMAPStateKindEmailSubmission); err != nil {
 		slog.WarnContext(ctx, "emailsubmission: ext relay: bump jmap state",
 			"submission_id", submissionID, "err", err)
+	}
+}
+
+// injectExternalRelayDSNs builds and inserts one RFC 3464 delivery-status
+// notification (the same shape queue.BuildDSN produces for a permanent
+// local-queue failure) into p's Inbox for every entry in failed, and
+// appends one submission.external.failure audit-log entry per recipient
+// (REQ-AUTH-EXT-SUBMIT-09). It returns the blob hash of every DSN
+// successfully inserted, for EmailSubmission.dsnBlobIds (RFC 8621 7.1).
+//
+// Best-effort: a missing Inbox or a store error is logged and does not
+// fail the relay — the submission's deliveryStatus, not the DSN, is the
+// authoritative record of what happened to each recipient (re #511).
+func (h *handlerSet) injectExternalRelayDSNs(
+	ctx context.Context,
+	p store.Principal,
+	mailFrom string,
+	submissionID string,
+	failed []extsubmit.RecipientOutcome,
+) []string {
+	mailboxes, err := h.store.Meta().ListMailboxes(ctx, p.ID)
+	if err != nil {
+		slog.ErrorContext(ctx, "emailsubmission: ext relay: list mailboxes for dsn",
+			"submission_id", submissionID, "err", err)
+		return nil
+	}
+	inbox := store.ResolveInboxMailbox(mailboxes)
+	if inbox == nil {
+		slog.WarnContext(ctx, "emailsubmission: ext relay: no inbox for dsn",
+			"submission_id", submissionID, "principal_id", p.ID)
+		return nil
+	}
+	dsnFrom := "postmaster@" + domainOf(mailFrom)
+	now := h.clk.Now()
+	var blobIDs []string
+	for _, ro := range failed {
+		dsnBytes, err := queue.BuildDSN(queue.DSNInput{
+			Kind:           queue.DSNKindFailure,
+			From:           dsnFrom,
+			To:             mailFrom,
+			FinalRcpt:      ro.Rcpt,
+			DiagnosticCode: "smtp; " + ro.Reply,
+			StatusCode:     dsnStatusCodeFor(ro.Category),
+			Now:            now,
+		})
+		if err != nil {
+			slog.ErrorContext(ctx, "emailsubmission: ext relay: build dsn",
+				"submission_id", submissionID, "rcpt", ro.Rcpt, "err", err)
+			continue
+		}
+		ref, err := h.store.Blobs().Put(ctx, bytes.NewReader(dsnBytes))
+		if err != nil {
+			slog.ErrorContext(ctx, "emailsubmission: ext relay: persist dsn blob",
+				"submission_id", submissionID, "rcpt", ro.Rcpt, "err", err)
+			continue
+		}
+		dsnMsg := store.Message{
+			PrincipalID:  p.ID,
+			Blob:         ref,
+			Size:         ref.Size,
+			ReceivedAt:   now,
+			InternalDate: now,
+			Envelope: store.Envelope{
+				Subject: "Delivery Status Notification (Failure)",
+				From:    dsnFrom,
+				To:      mailFrom,
+			},
+		}
+		if _, _, err := h.store.Meta().InsertMessage(ctx, dsnMsg, []store.MessageMailbox{{MailboxID: inbox.ID}}); err != nil {
+			slog.ErrorContext(ctx, "emailsubmission: ext relay: insert dsn message",
+				"submission_id", submissionID, "rcpt", ro.Rcpt, "err", err)
+			continue
+		}
+		blobIDs = append(blobIDs, ref.Hash)
+
+		_ = h.store.Meta().AppendAuditLog(ctx, store.AuditLogEntry{
+			At:        now,
+			ActorKind: store.ActorPrincipal,
+			ActorID:   strconv.FormatUint(uint64(p.ID), 10),
+			Action:    "submission.external.failure",
+			Subject:   "envelope:" + submissionID,
+			Outcome:   store.OutcomeFailure,
+			Message:   fmt.Sprintf("recipient rejected: %s", ro.Reply),
+			Metadata: map[string]string{
+				"category":       string(ro.Category),
+				"correlation_id": submissionID,
+				"recipient":      ro.Rcpt,
+			},
+		})
+	}
+	return blobIDs
+}
+
+// dsnStatusCodeFor maps an extsubmit.OutcomeState to the RFC 3463
+// enhanced-status bucket used as the DSN's Status field.
+func dsnStatusCodeFor(cat extsubmit.OutcomeState) string {
+	switch cat {
+	case extsubmit.OutcomeTransient, extsubmit.OutcomeUnreachable:
+		return "4.0.0"
+	default:
+		return "5.0.0"
 	}
 }
 
