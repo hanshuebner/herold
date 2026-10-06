@@ -646,6 +646,57 @@ func TestEmailSubmission_Set_DedupsEnvelopeRcptTo_WithWhitespace(t *testing.T) {
 	}
 }
 
+// TestEmailSubmission_Set_InvalidRcptTo_RejectsCreate verifies that a
+// create whose envelope.rcptTo names an entry that is not a valid
+// addr-spec (e.g. a bare display name with no "@", re #511) is rejected
+// with invalidRecipients before anything is persisted or submitted to
+// the queue (RFC 8621 7.5).
+func TestEmailSubmission_Set_InvalidRcptTo_RejectsCreate(t *testing.T) {
+	h, _, p, _, mid, sub := newSetup(t)
+	args, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
+		"create": map[string]any{
+			"k1": map[string]any{
+				"identityId": "default",
+				"emailId":    renderEmailID(mid),
+				"envelope": map[string]any{
+					"mailFrom": map[string]any{"email": "alice@example.test"},
+					"rcptTo": []map[string]any{
+						{"email": "Surname"},
+						{"email": "user@example.test"},
+					},
+				},
+			},
+		},
+	})
+	resp, mErr := setHandler{h: h}.executeAs(p, args)
+	if mErr != nil {
+		t.Fatalf("EmailSubmission/set: %v", mErr)
+	}
+	sresp, ok := resp.(setResponse)
+	if !ok {
+		t.Fatalf("expected setResponse, got %T", resp)
+	}
+	if len(sresp.Created) != 0 {
+		t.Fatalf("expected no created entries, got %v", sresp.Created)
+	}
+	notCreated, ok := sresp.NotCreated["k1"]
+	if !ok {
+		t.Fatalf("expected notCreated[k1], got %v", sresp.NotCreated)
+	}
+	if notCreated.Type != "invalidRecipients" {
+		t.Fatalf("notCreated[k1].Type = %q, want invalidRecipients", notCreated.Type)
+	}
+	if !strings.Contains(notCreated.Description, "Surname") {
+		t.Fatalf("notCreated[k1].Description = %q, want it to name the bad entry", notCreated.Description)
+	}
+	// Nothing was submitted to the queue — the bad entry is rejected
+	// before the valid co-recipient is ever attempted.
+	if len(sub.calls) != 0 {
+		t.Fatalf("expected 0 Submit calls, got %d", len(sub.calls))
+	}
+}
+
 // TestEmailSubmission_Set_StreamsBodyToQueue verifies REQ-STORE-17/18
 // (Phase 1): EmailSubmission/set must hand the queue a streaming
 // io.Reader backed by the blob store rather than a *bytes.Reader wrapping

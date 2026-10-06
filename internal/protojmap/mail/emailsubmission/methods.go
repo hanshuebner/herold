@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/mail"
 	"sort"
 	"strconv"
 	"strings"
@@ -1573,9 +1574,22 @@ func buildEnvelope(env *jmapEnvelope, identityEmail string, msg store.Message) (
 		}
 		recipients := make([]string, 0, len(env.RcptTo))
 		for _, r := range env.RcptTo {
-			if r.Email != "" {
-				recipients = append(recipients, r.Email)
+			if r.Email == "" {
+				continue
 			}
+			// RFC 8621 7.5: rcptTo.email is a bare addr-spec, not a full
+			// RFC 5322 mailbox. An entry that is not a valid addr-spec
+			// (re #511: a display name with no "@", e.g. "Surname")
+			// would otherwise reach RCPT TO verbatim and be rejected by
+			// the relay with no indication to the user. Reject the whole
+			// create up front, before anything is persisted or relayed,
+			// naming the offending entry.
+			if !isValidRcptAddr(r.Email) {
+				return "", nil, &setError{Type: "invalidRecipients",
+					Properties:  []string{"envelope.rcptTo"},
+					Description: fmt.Sprintf("rcptTo entry %q is not a valid email address", r.Email)}
+			}
+			recipients = append(recipients, r.Email)
 		}
 		if len(recipients) == 0 {
 			return "", nil, &setError{Type: "invalidProperties",
@@ -1592,6 +1606,24 @@ func buildEnvelope(env *jmapEnvelope, identityEmail string, msg store.Message) (
 			Properties: []string{"envelope"}, Description: "no recipients in headers"}
 	}
 	return identityEmail, dedupRecipients(recipients), nil
+}
+
+// isValidRcptAddr reports whether s is a bare RFC 5321 addr-spec: no
+// display name, no comment, no angle brackets. net/mail.ParseAddress
+// accepts the full RFC 5322 mailbox grammar (it would happily parse
+// "Name <foo@bar.com>"), so a round-trip check against the parsed
+// Address field is required to reject anything that is not already a
+// bare address (re #511).
+func isValidRcptAddr(s string) bool {
+	trimmed := strings.TrimSpace(s)
+	if trimmed == "" {
+		return false
+	}
+	addr, err := mail.ParseAddress(trimmed)
+	if err != nil {
+		return false
+	}
+	return addr.Address == trimmed
 }
 
 // dedupRecipients removes duplicate entries from a recipient list,
