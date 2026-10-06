@@ -11,6 +11,7 @@ import {
   parsePaste,
   isStructurallyComplete,
   recipientToString,
+  quoteDisplayName,
   type Recipient,
 } from './recipient-parse';
 
@@ -244,5 +245,81 @@ describe('recipientToString', () => {
     // but guard against accidental empty-string names too)
     const r = { name: '', email: 'alice@x.test' } as Recipient;
     expect(recipientToString(r)).toBe('alice@x.test');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// quoteDisplayName
+// ---------------------------------------------------------------------------
+
+describe('quoteDisplayName', () => {
+  it('leaves an ordinary name unquoted', () => {
+    expect(quoteDisplayName('Alice Smith')).toBe('Alice Smith');
+  });
+
+  it('leaves a non-ASCII name unquoted (no RFC 5322 special present)', () => {
+    expect(quoteDisplayName('Müller Jörg')).toBe('Müller Jörg');
+  });
+
+  it('quotes a name containing a comma', () => {
+    expect(quoteDisplayName('Surname, Firstname')).toBe('"Surname, Firstname"');
+  });
+
+  it('quotes a name containing a semicolon', () => {
+    expect(quoteDisplayName('Smith; Jones')).toBe('"Smith; Jones"');
+  });
+
+  it('quotes and escapes a name containing a literal quote', () => {
+    expect(quoteDisplayName('The "Boss"')).toBe('"The \\"Boss\\""');
+  });
+
+  it('quotes a name containing angle brackets', () => {
+    expect(quoteDisplayName('<Admin>')).toBe('"<Admin>"');
+  });
+
+  it('escapes an embedded backslash', () => {
+    expect(quoteDisplayName('a\\b, c')).toBe('"a\\\\b, c"');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// recipientToString / tryCommit round trip (re #510)
+//
+// A recipient serialized by recipientToString and fed back through
+// tryCommit (the same pipeline openWith / Undo-restore / reply-prefill
+// use) must come back as exactly the one recipient that went in --
+// never split into stray tokens, never dropped.
+// ---------------------------------------------------------------------------
+
+describe('recipientToString -> tryCommit round trip (re #510)', () => {
+  const cases: Recipient[] = [
+    { name: 'Surname, Firstname', email: 'user@example.org' },
+    { name: 'Smith; Jones', email: 'smith@example.org' },
+    { name: 'The "Boss"', email: 'boss@example.org' },
+    { name: '<Admin>', email: 'admin@example.org' },
+    { name: 'Müller, Jörg', email: 'muller@example.org' },
+    { email: 'bare@example.org' },
+  ];
+
+  for (const r of cases) {
+    it(`round-trips ${JSON.stringify(r)}`, () => {
+      const str = recipientToString(r);
+      const { chips, rest } = tryCommit(str);
+      expect(rest).toBe('');
+      expect(chips).toHaveLength(1);
+      expect(chips[0]!.email).toBe(r.email);
+      expect(chips[0]!.name).toBe(r.name);
+    });
+  }
+
+  it('round-trips two comma-display-name recipients joined for a field string', () => {
+    const r1: Recipient = { name: 'Surname, Firstname', email: 'a@example.org' };
+    const r2: Recipient = { name: 'Doe, Jane', email: 'b@example.org' };
+    const joined = [r1, r2].map(recipientToString).join(', ');
+    const { chips, rest } = tryCommit(joined);
+    expect(rest).toBe('');
+    expect(chips).toHaveLength(2);
+    expect(chips[0]).toEqual(r1);
+    expect(chips[1]).toEqual(r2);
   });
 });

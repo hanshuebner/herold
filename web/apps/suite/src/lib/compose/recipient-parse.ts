@@ -29,6 +29,25 @@ function isEmail(email: string): boolean {
   return EMAIL_RE.test(email);
 }
 
+// Characters that break the unquoted-name forms `tryParseOne` recognizes:
+// comma/semicolon are token separators, `"` opens a quoted-string, and
+// `<`/`>` delimit the angle-address group. A display name containing any
+// of these must be rendered as an RFC 5322 quoted-string so it survives
+// the string round trip through `tryCommit` unchanged.
+const NEEDS_QUOTING_RE = /[,;"<>\\]/;
+
+/**
+ * Render a display name as an RFC 5322 quoted-string when it contains a
+ * character the recipient tokenizer treats as a separator or structural
+ * delimiter; returns the name unchanged otherwise. Escapes embedded `"`
+ * and `\` per the quoted-string grammar.
+ */
+export function quoteDisplayName(name: string): string {
+  if (!NEEDS_QUOTING_RE.test(name)) return name;
+  const escaped = name.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  return `"${escaped}"`;
+}
+
 /**
  * True when the buffer has no unmatched open `<` or open `"` — i.e.
  * the user is not mid-way through a structured address form. Used to
@@ -169,7 +188,7 @@ export function parsePaste(text: string): { chips: Recipient[]; rest: string } {
  */
 export function recipientToString(r: Recipient): string {
   if (r.name) {
-    return `${r.name} <${r.email}>`;
+    return `${quoteDisplayName(r.name)} <${r.email}>`;
   }
   return r.email;
 }

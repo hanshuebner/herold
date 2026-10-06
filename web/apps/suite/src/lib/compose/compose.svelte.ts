@@ -47,6 +47,7 @@ import {
 import {
   tryCommit,
   recipientToString,
+  quoteDisplayName,
   type Recipient,
   type RecipientFieldName,
 } from './recipient-parse';
@@ -1435,19 +1436,23 @@ class ComposeStore {
     // Use structured recipient arrays (preserves display names). Fall back to
     // parsing the string form for any field whose array is empty but the
     // string is non-empty — this covers snapshot-restore paths that only
-    // carry the string representation.
-    const toRecipients: Recipient[] =
-      this.toRecipients.length > 0
-        ? this.toRecipients
-        : parseAddressList(this.to).map((email) => ({ email }));
-    const ccRecipients: Recipient[] =
-      this.ccRecipients.length > 0
-        ? this.ccRecipients
-        : parseAddressList(this.cc).map((email) => ({ email }));
-    const bccRecipients: Recipient[] =
-      this.bccRecipients.length > 0
-        ? this.bccRecipients
-        : parseAddressList(this.bcc).map((email) => ({ email }));
+    // carry the string representation. The fallback uses `tryCommit` (the
+    // same validating tokenizer the chip fields use), not a naive
+    // comma-split, so a leftover that doesn't parse to a real `local@domain`
+    // address is reported rather than sent as a malformed RCPT TO (re #510).
+    const toResolved = resolveFallbackRecipients(this.to, this.toRecipients);
+    const ccResolved = resolveFallbackRecipients(this.cc, this.ccRecipients);
+    const bccResolved = resolveFallbackRecipients(this.bcc, this.bccRecipients);
+    const invalidRecipientText = [toResolved.invalid, ccResolved.invalid, bccResolved.invalid]
+      .filter((s) => s.length > 0)
+      .join(', ');
+    if (invalidRecipientText) {
+      this.errorMessage = `"${invalidRecipientText}" is not a valid recipient — correct or remove it before sending`;
+      return;
+    }
+    const toRecipients = toResolved.recipients;
+    const ccRecipients = ccResolved.recipients;
+    const bccRecipients = bccResolved.recipients;
     const allRecipients = [...toRecipients, ...ccRecipients, ...bccRecipients];
     if (allRecipients.length === 0) {
       this.errorMessage = 'At least one recipient is required';
@@ -1886,6 +1891,25 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
+/**
+ * Resolve a recipient field for the send path: prefer the already-
+ * validated structured chip array, and only fall back to parsing the
+ * string form when the array is empty but the string is non-empty
+ * (snapshot-restore paths that only carried the string). The fallback
+ * uses `tryCommit` so a token that doesn't parse to a real address
+ * (e.g. a bare name with no `@domain`) is never silently turned into a
+ * sendable recipient -- it comes back in `invalid` instead (re #510).
+ */
+function resolveFallbackRecipients(
+  raw: string,
+  structured: Recipient[],
+): { recipients: Recipient[]; invalid: string } {
+  if (structured.length > 0) return { recipients: structured, invalid: '' };
+  if (!raw.trim()) return { recipients: [], invalid: '' };
+  const { chips, rest } = tryCommit(raw);
+  return { recipients: chips, invalid: rest.trim() };
+}
+
 function parseAddressList(raw: string): string[] {
   return raw
     .split(/[,;\n]/)
@@ -1905,7 +1929,28 @@ function invocationArgs<T>(inv: Invocation | undefined): T {
 
 // ── Reply / forward formatters ────────────────────────────────────────
 
+/**
+ * Render an Address into the compose to/cc/bcc string form. A display
+ * name containing a character the recipient tokenizer treats as a
+ * separator or delimiter is rendered as an RFC 5322 quoted-string
+ * (`quoteDisplayName`) so `tryCommit` recovers it as a single recipient
+ * on the next round trip (openWith / Undo-restore / reply-prefill all
+ * feed this string back through `tryCommit`).
+ */
 function addressToString(a: Address | undefined): string {
+  if (!a) return '';
+  return a.name?.trim() ? `${quoteDisplayName(a.name)} <${a.email}>` : a.email;
+}
+
+/**
+ * Human-readable sender/recipient label for quoted-reply attribution
+ * lines and forwarded-message header blocks. This text is never fed
+ * back through `tryCommit` -- it is display prose -- so the display
+ * name is rendered plainly; RFC 5322 quoting here would show up as
+ * literal quote marks in running text ("On ..., "Surname, Firstname"
+ * wrote:").
+ */
+function addressDisplayLabel(a: Address | undefined): string {
   if (!a) return '';
   return a.name?.trim() ? `${a.name} <${a.email}>` : a.email;
 }
@@ -1934,7 +1979,7 @@ function computeReplyTo(
 
 function addressListToString(list: Address[] | null | undefined): string {
   if (!list || list.length === 0) return '';
-  return list.map(addressToString).join(', ');
+  return list.map(addressDisplayLabel).join(', ');
 }
 
 /**
@@ -2574,7 +2619,7 @@ function plainTextToHtml(text: string): string {
  * projection regardless of fold state.
  */
 function formatReplyQuote(parent: Email): string {
-  const senderLabel = addressToString(parent.from?.[0]) || '(unknown sender)';
+  const senderLabel = addressDisplayLabel(parent.from?.[0]) || '(unknown sender)';
   const dateStr = formatDateForQuote(parent.sentAt ?? parent.receivedAt);
   const body = parentBodyText(parent);
   const header = dateStr
