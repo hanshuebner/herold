@@ -748,6 +748,95 @@ func TestSubmit_MultipleRcpt(t *testing.T) {
 	}
 }
 
+// TestSubmit_OneRecipientRejected_ContinuesAndDelivers reproduces #511: a
+// two-recipient submission where the sink permanently rejects the first
+// RCPT TO must still issue RCPT TO for the second recipient and proceed to
+// DATA, so the valid recipient is not silently dropped alongside the
+// malformed one.
+func TestSubmit_OneRecipientRejected_ContinuesAndDelivers(t *testing.T) {
+	var rcpts []string
+	srv := newSMTPServer(t, func(conn net.Conn) {
+		defer conn.Close()
+		r := bufio.NewReader(conn)
+		w := bufio.NewWriter(conn)
+		srvWrite(w, "220 smtp.test ESMTP")
+		srvRead(r) // EHLO
+		srvWrite(w, "250-smtp.test")
+		srvWrite(w, "250 AUTH PLAIN")
+		srvRead(r) // AUTH
+		srvWrite(w, "235 2.7.0 ok")
+		srvRead(r) // MAIL FROM
+		srvWrite(w, "250 ok")
+		for {
+			line := srvRead(r)
+			if strings.HasPrefix(line, "RCPT") {
+				rcpts = append(rcpts, line)
+				if strings.Contains(line, "Surname") {
+					srvWrite(w, "501 5.1.3 <Surname>: recipient address must contain a domain")
+				} else {
+					srvWrite(w, "250 ok")
+				}
+			} else if strings.HasPrefix(line, "DATA") {
+				srvWrite(w, "354 send")
+				break
+			}
+		}
+		for {
+			l := srvRead(r)
+			if l == "." {
+				break
+			}
+		}
+		srvWrite(w, "250 2.0.0 queued as TEST-ID-511")
+		srvRead(r) // QUIT
+	})
+
+	s := &extsubmit.Submitter{DataKey: testDataKey, HostName: "client.test"}
+	s.SetDialFn(func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return net.Dial("tcp", srv.addr())
+	})
+
+	sub := store.IdentitySubmission{
+		IdentityID:       "identity-511",
+		SubmitHost:       "smtp.test",
+		SubmitPort:       587,
+		SubmitSecurity:   "none",
+		SubmitAuthMethod: "password",
+		PasswordCT:       sealSecret(t, "pw"),
+	}
+	env := extsubmit.Envelope{
+		MailFrom: "alice@example.com",
+		RcptTo:   []string{"Surname", "user@example.org"},
+		Body:     strings.NewReader("Subject: two rcpt\r\n\r\nBody\r\n"),
+	}
+
+	out := s.Submit(context.Background(), sub, env)
+	if out.State != extsubmit.OutcomeOK {
+		t.Fatalf("state = %q; want ok (at least one recipient accepted); diagnostic: %s", out.State, out.Diagnostic)
+	}
+	if len(rcpts) != 2 {
+		t.Fatalf("got %d RCPT TO commands; want 2 (loop must continue past the reject): %v", len(rcpts), rcpts)
+	}
+	if len(out.Recipients) != 2 {
+		t.Fatalf("got %d per-recipient outcomes; want 2", len(out.Recipients))
+	}
+	byRcpt := map[string]extsubmit.RecipientOutcome{}
+	for _, ro := range out.Recipients {
+		byRcpt[ro.Rcpt] = ro
+	}
+	bad, ok := byRcpt["Surname"]
+	if !ok || bad.Accepted {
+		t.Errorf("Surname outcome = %+v; want Accepted=false", bad)
+	}
+	if bad.Category != extsubmit.OutcomePermanent {
+		t.Errorf("Surname category = %q; want permanent", bad.Category)
+	}
+	good, ok := byRcpt["user@example.org"]
+	if !ok || !good.Accepted {
+		t.Errorf("user@example.org outcome = %+v; want Accepted=true", good)
+	}
+}
+
 // TestSubmit_SubmitUsername_UsedForAuth verifies that Submit sends SubmitUsername
 // as the SMTP AUTH username (not the MailFrom / identity email) when SubmitUsername
 // is set on the IdentitySubmission (re #126).

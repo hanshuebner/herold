@@ -342,7 +342,14 @@ func (s *Submitter) Submit(ctx context.Context, sub store.IdentitySubmission, en
 		return out
 	}
 
-	// RCPT TO (all recipients).
+	// RCPT TO (all recipients). A rejected recipient does not abort the
+	// transaction (re #511): the loop continues so a malformed or
+	// permanently-rejected co-recipient never blocks delivery to the
+	// others. A transport error (not an SMTP reply) still aborts
+	// immediately since the connection itself is no longer usable.
+	recipients := make([]RecipientOutcome, 0, len(env.RcptTo))
+	anyAccepted := false
+	anyPermanent := false
 	for _, rcpt := range env.RcptTo {
 		r, err := sess.RcptTo(rcpt)
 		if err != nil {
@@ -350,11 +357,35 @@ func (s *Submitter) Submit(ctx context.Context, sub store.IdentitySubmission, en
 			out.Diagnostic = fmt.Sprintf("RCPT TO <%s>: %s", rcpt, err.Error())
 			return out
 		}
-		if !r.IsSuccess() {
-			out.State = mapSMTPCode(r.Code)
-			out.Diagnostic = fmt.Sprintf("RCPT TO <%s>: %d %s", rcpt, r.Code, r.Text)
-			return out
+		if r.IsSuccess() {
+			anyAccepted = true
+			recipients = append(recipients, RecipientOutcome{
+				Rcpt: rcpt, Accepted: true,
+				Reply: fmt.Sprintf("%d %s", r.Code, r.Text),
+			})
+			continue
 		}
+		cat := mapSMTPCode(r.Code)
+		if cat == OutcomePermanent {
+			anyPermanent = true
+		}
+		recipients = append(recipients, RecipientOutcome{
+			Rcpt: rcpt, Accepted: false, Category: cat,
+			Reply: fmt.Sprintf("%d %s", r.Code, r.Text),
+		})
+	}
+	out.Recipients = recipients
+	if !anyAccepted {
+		// Every recipient was rejected; nothing to send. Classify the
+		// whole attempt by the rejections: any 5xx makes it permanent,
+		// otherwise transient.
+		if anyPermanent {
+			out.State = OutcomePermanent
+		} else {
+			out.State = OutcomeTransient
+		}
+		out.Diagnostic = fmt.Sprintf("all %d recipient(s) rejected: %s", len(recipients), recipients[0].Reply)
+		return out
 	}
 
 	// DATA. REQ-FLOW-35: strip the herold-internal X-Herold-Recipient
@@ -377,6 +408,17 @@ func (s *Submitter) Submit(ctx context.Context, sub store.IdentitySubmission, en
 			out.State = OutcomeUnreachable
 		}
 		out.Diagnostic = fmt.Sprintf("DATA: %s", err.Error())
+		// DATA covers the whole transaction: a rejection here means no
+		// recipient actually received the message, including those
+		// accepted at RCPT TO. Downgrade them so per-recipient reporting
+		// reflects reality.
+		for i := range out.Recipients {
+			if out.Recipients[i].Accepted {
+				out.Recipients[i].Accepted = false
+				out.Recipients[i].Category = out.State
+				out.Recipients[i].Reply = out.Diagnostic
+			}
+		}
 		return out
 	}
 

@@ -51,6 +51,34 @@ type Outcome struct {
 	// MTAID is the MTA-supplied queue-id from the server's 2xx DATA reply,
 	// or empty on failure.
 	MTAID string
+	// Recipients carries the per-recipient RCPT TO result for this
+	// attempt (re #511): the RCPT loop continues past a rejected
+	// recipient rather than aborting the whole transaction, so one bad
+	// address never blocks delivery to a co-recipient. Populated once the
+	// RCPT TO phase is reached; nil when the session failed earlier (an
+	// AUTH or MAIL FROM rejection applies uniformly to every recipient
+	// and is carried in State/Diagnostic alone).
+	Recipients []RecipientOutcome
+}
+
+// RecipientOutcome records the SMTP result for one RCPT TO address within
+// a single Submit call (re #511).
+type RecipientOutcome struct {
+	// Rcpt is the RCPT TO address exactly as sent.
+	Rcpt string
+	// Accepted is true when this recipient's RCPT TO succeeded and, when
+	// DATA was reached, the subsequent DATA phase also succeeded. A
+	// whole-transaction DATA failure downgrades every recipient that had
+	// been accepted at RCPT TO back to Accepted: false, since the remote
+	// never received the message for any of them.
+	Accepted bool
+	// Category classifies a rejected recipient the same way Outcome.State
+	// classifies a whole-submission failure (permanent / transient /
+	// unreachable). Zero value when Accepted is true.
+	Category OutcomeState
+	// Reply is the SMTP reply text explaining the outcome, e.g.
+	// "501 <Surname>: recipient address must contain a domain".
+	Reply string
 }
 
 // Envelope carries the message content for one external submission attempt.
