@@ -72,32 +72,39 @@ func (r *fakeExternalRouter) BumpIdentityPushState(_ context.Context, pid store.
 	return nil
 }
 
-// newExternalSetup builds a handlerSet wired with fakeExternalSubmitter and
-// fakeExternalRouter. It returns the handler, store, principal, mailbox,
-// message id, the external submitter, and the external router for assertions.
-func newExternalSetup(t *testing.T, outcome extsubmit.Outcome) (
-	*handlerSet, store.Store, store.Principal, store.MessageID,
+// newExternalSetupFromStore is the backend-agnostic body of newExternalSetup:
+// it builds a handlerSet wired with fakeExternalSubmitter and
+// fakeExternalRouter against a pre-opened store, following the
+// newSetupFromStore convention in emailsubmission_test.go. It returns the
+// handler, principal, message id, the external submitter, and the external
+// router for assertions.
+func newExternalSetupFromStore(t *testing.T, st store.Store, outcome extsubmit.Outcome) (
+	*handlerSet, store.Principal, store.MessageID,
 	*fakeExternalSubmitter, *fakeExternalRouter,
 ) {
 	t.Helper()
-	st, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil,
-		clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)))
-	if err != nil {
-		t.Fatalf("storesqlite.Open: %v", err)
-	}
 	ctx := context.Background()
 	if err := st.Meta().InsertDomain(ctx, store.Domain{Name: "example.test", IsLocal: true}); err != nil {
 		t.Fatalf("InsertDomain example.test: %v", err)
 	}
-	p, _ := st.Meta().InsertPrincipal(ctx, store.Principal{
+	p, err := st.Meta().InsertPrincipal(ctx, store.Principal{
 		Kind: store.PrincipalKindUser, CanonicalEmail: "alice@example.test",
 	})
-	mb, _ := st.Meta().InsertMailbox(ctx, store.Mailbox{
+	if err != nil {
+		t.Fatalf("InsertPrincipal: %v", err)
+	}
+	mb, err := st.Meta().InsertMailbox(ctx, store.Mailbox{
 		PrincipalID: p.ID, Name: "Drafts", Attributes: store.MailboxAttrDrafts,
 	})
+	if err != nil {
+		t.Fatalf("InsertMailbox Drafts: %v", err)
+	}
 	body := "From: alice@example.test\r\nTo: bob@remote.test\r\nSubject: hi\r\n\r\nbody.\r\n"
-	ref, _ := st.Blobs().Put(ctx, bytes.NewReader([]byte(body)))
-	uid, _, _ := st.Meta().InsertMessage(ctx, store.Message{
+	ref, err := st.Blobs().Put(ctx, bytes.NewReader([]byte(body)))
+	if err != nil {
+		t.Fatalf("Blobs.Put: %v", err)
+	}
+	uid, _, err := st.Meta().InsertMessage(ctx, store.Message{
 		Blob: ref,
 		Size: int64(len(body)),
 		Envelope: store.Envelope{
@@ -106,12 +113,21 @@ func newExternalSetup(t *testing.T, outcome extsubmit.Outcome) (
 			To:      "bob@remote.test",
 		},
 	}, []store.MessageMailbox{{MailboxID: mb.ID}})
-	msgs, _ := st.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 100, WithEnvelope: true})
+	if err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+	msgs, err := st.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 100, WithEnvelope: true})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
 	var mid store.MessageID
 	for _, m := range msgs {
 		if m.UID == uid {
 			mid = m.ID
 		}
+	}
+	if mid == 0 {
+		t.Fatal("message ID not found")
 	}
 
 	extSub := &fakeExternalSubmitter{outcome: outcome}
@@ -125,12 +141,44 @@ func newExternalSetup(t *testing.T, outcome extsubmit.Outcome) (
 		externalSubmit: extSub,
 		externalRouter: extRouter,
 	}
-	// Drain background goroutines before closing the store; see
-	// newSetup in emailsubmission_test.go for rationale.
-	t.Cleanup(func() {
-		h.Wait()
-		_ = st.Close()
-	})
+	// Drain background goroutines before the store closes; the caller
+	// (newExternalSetup / newExternalSetupPostgres) registers the store
+	// close cleanup before this one runs, so t.Cleanup's LIFO order runs
+	// h.Wait() here first and the store close second.
+	t.Cleanup(func() { h.Wait() })
+	return h, p, mid, extSub, extRouter
+}
+
+// newExternalSetup builds a handlerSet wired with fakeExternalSubmitter and
+// fakeExternalRouter against a fresh SQLite store. It returns the handler,
+// store, principal, message id, the external submitter, and the external
+// router for assertions.
+func newExternalSetup(t *testing.T, outcome extsubmit.Outcome) (
+	*handlerSet, store.Store, store.Principal, store.MessageID,
+	*fakeExternalSubmitter, *fakeExternalRouter,
+) {
+	t.Helper()
+	st, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil,
+		clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)))
+	if err != nil {
+		t.Fatalf("storesqlite.Open: %v", err)
+	}
+	// Registered before newExternalSetupFromStore's h.Wait() cleanup, so
+	// it runs after it (t.Cleanup is LIFO).
+	t.Cleanup(func() { _ = st.Close() })
+	h, p, mid, extSub, extRouter := newExternalSetupFromStore(t, st, outcome)
+	return h, st, p, mid, extSub, extRouter
+}
+
+// newExternalSetupPostgres is like newExternalSetup but against the
+// Postgres backend. Skips when HEROLD_PG_DSN is not set.
+func newExternalSetupPostgres(t *testing.T, outcome extsubmit.Outcome) (
+	*handlerSet, store.Store, store.Principal, store.MessageID,
+	*fakeExternalSubmitter, *fakeExternalRouter,
+) {
+	t.Helper()
+	st := openPostgresStore(t)
+	h, p, mid, extSub, extRouter := newExternalSetupFromStore(t, st, outcome)
 	return h, st, p, mid, extSub, extRouter
 }
 
@@ -332,26 +380,22 @@ func TestEmailSubmission_External_PermanentOutcome(t *testing.T) {
 	}
 }
 
-// TestEmailSubmission_External_OneRecipientRejected_DSNAndAuditAndStatus
-// reproduces #511's acceptance scenario end to end: a two-recipient external
-// submission where the relay rejects one recipient and accepts the other
-// must still deliver to the valid recipient (OutcomeOK overall), render
-// deliveryStatus "no" for the rejected recipient and "yes" for the accepted
-// one, inject a DSN into the principal's Inbox, and append a
+// testEmailSubmissionOneRecipientRejected is the backend-agnostic body of
+// TestEmailSubmission_External_OneRecipientRejected_DSNAndAuditAndStatus_*.
+// It reproduces #511's acceptance scenario end to end: a two-recipient
+// external submission where the relay rejects one recipient and accepts
+// the other must still deliver to the valid recipient (OutcomeOK overall),
+// render deliveryStatus "no" for the rejected recipient and "yes" for the
+// accepted one, inject a DSN into the principal's Inbox, and append a
 // submission.external.failure audit-log entry for the rejected recipient.
-func TestEmailSubmission_External_OneRecipientRejected_DSNAndAuditAndStatus(t *testing.T) {
-	h, st, p, mid, _, _ := newExternalSetup(t, extsubmit.Outcome{
-		State:      extsubmit.OutcomeOK,
-		Diagnostic: "accepted by smtp.example.test: <id@example.test>",
-		Recipients: []extsubmit.RecipientOutcome{
-			{Rcpt: "bob@remote.test", Accepted: false, Category: extsubmit.OutcomePermanent,
-				Reply: "550 5.1.1 mailbox unavailable"},
-			{Rcpt: "carol@remote.test", Accepted: true, Reply: "250 ok"},
-		},
-	})
+func testEmailSubmissionOneRecipientRejected(
+	t *testing.T,
+	h *handlerSet, st store.Store, p store.Principal, mid store.MessageID,
+) {
+	t.Helper()
 	ctx := context.Background()
 
-	// newExternalSetup only creates a Drafts mailbox; the DSN needs an
+	// The setup only creates a Drafts mailbox; the DSN needs an
 	// Inbox to land in.
 	inbox, err := st.Meta().InsertMailbox(ctx, store.Mailbox{
 		PrincipalID: p.ID, Name: "INBOX", Attributes: store.MailboxAttrInbox,
@@ -462,6 +506,36 @@ func TestEmailSubmission_External_OneRecipientRejected_DSNAndAuditAndStatus(t *t
 	if entries[0].Metadata["correlation_id"] != createdID {
 		t.Fatalf("audit entry correlation_id = %q, want %q", entries[0].Metadata["correlation_id"], createdID)
 	}
+}
+
+// oneRecipientRejectedOutcome is the extsubmit.Outcome fixture shared by the
+// SQLite and Postgres variants of
+// TestEmailSubmission_External_OneRecipientRejected_DSNAndAuditAndStatus.
+func oneRecipientRejectedOutcome() extsubmit.Outcome {
+	return extsubmit.Outcome{
+		State:      extsubmit.OutcomeOK,
+		Diagnostic: "accepted by smtp.example.test: <id@example.test>",
+		Recipients: []extsubmit.RecipientOutcome{
+			{Rcpt: "bob@remote.test", Accepted: false, Category: extsubmit.OutcomePermanent,
+				Reply: "550 5.1.1 mailbox unavailable"},
+			{Rcpt: "carol@remote.test", Accepted: true, Reply: "250 ok"},
+		},
+	}
+}
+
+// TestEmailSubmission_External_OneRecipientRejected_DSNAndAuditAndStatus_SQLite
+// runs the acceptance test against the SQLite backend.
+func TestEmailSubmission_External_OneRecipientRejected_DSNAndAuditAndStatus_SQLite(t *testing.T) {
+	h, st, p, mid, _, _ := newExternalSetup(t, oneRecipientRejectedOutcome())
+	testEmailSubmissionOneRecipientRejected(t, h, st, p, mid)
+}
+
+// TestEmailSubmission_External_OneRecipientRejected_DSNAndAuditAndStatus_Postgres
+// runs the same test against the Postgres backend. Skips when HEROLD_PG_DSN
+// is not set.
+func TestEmailSubmission_External_OneRecipientRejected_DSNAndAuditAndStatus_Postgres(t *testing.T) {
+	h, st, p, mid, _, _ := newExternalSetupPostgres(t, oneRecipientRejectedOutcome())
+	testEmailSubmissionOneRecipientRejected(t, h, st, p, mid)
 }
 
 // TestEmailSubmission_External_DestroyCannotUnsend verifies that destroy on

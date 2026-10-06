@@ -646,13 +646,47 @@ func TestEmailSubmission_Set_DedupsEnvelopeRcptTo_WithWhitespace(t *testing.T) {
 	}
 }
 
-// TestEmailSubmission_Set_InvalidRcptTo_RejectsCreate verifies that a
+// testEmailSubmissionInvalidRcptTo is the backend-agnostic body of
+// TestEmailSubmission_Set_InvalidRcptTo_RejectsCreate_*. It verifies that a
 // create whose envelope.rcptTo names an entry that is not a valid
 // addr-spec (e.g. a bare display name with no "@", re #511) is rejected
 // with invalidRecipients before anything is persisted or submitted to
 // the queue (RFC 8621 7.5).
-func TestEmailSubmission_Set_InvalidRcptTo_RejectsCreate(t *testing.T) {
-	h, _, p, _, mid, sub := newSetup(t)
+func testEmailSubmissionInvalidRcptTo(t *testing.T, st store.Store) {
+	t.Helper()
+	h, p, mb, sub := newSetupFromStore(t, st)
+	ctx := context.Background()
+	body := "From: alice@example.test\r\nTo: bob@example.test\r\nSubject: hi\r\n\r\nbody.\r\n"
+	ref, err := st.Blobs().Put(ctx, bytes.NewReader([]byte(body)))
+	if err != nil {
+		t.Fatalf("Blobs.Put: %v", err)
+	}
+	uid, _, err := st.Meta().InsertMessage(ctx, store.Message{
+		Blob: ref,
+		Size: int64(len(body)),
+		Envelope: store.Envelope{
+			Subject: "hi",
+			From:    "alice@example.test",
+			To:      "bob@example.test",
+		},
+	}, []store.MessageMailbox{{MailboxID: mb.ID}})
+	if err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+	msgs, err := st.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 100, WithEnvelope: true})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	var mid store.MessageID
+	for _, m := range msgs {
+		if m.UID == uid {
+			mid = m.ID
+		}
+	}
+	if mid == 0 {
+		t.Fatal("message ID not found")
+	}
+
 	args, _ := json.Marshal(map[string]any{
 		"accountId": protojmap.AccountIDForPrincipal(p.ID),
 		"create": map[string]any{
@@ -695,6 +729,25 @@ func TestEmailSubmission_Set_InvalidRcptTo_RejectsCreate(t *testing.T) {
 	if len(sub.calls) != 0 {
 		t.Fatalf("expected 0 Submit calls, got %d", len(sub.calls))
 	}
+}
+
+// TestEmailSubmission_Set_InvalidRcptTo_RejectsCreate_SQLite runs the
+// acceptance test against the SQLite backend.
+func TestEmailSubmission_Set_InvalidRcptTo_RejectsCreate_SQLite(t *testing.T) {
+	st, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil,
+		clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)))
+	if err != nil {
+		t.Fatalf("storesqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	testEmailSubmissionInvalidRcptTo(t, st)
+}
+
+// TestEmailSubmission_Set_InvalidRcptTo_RejectsCreate_Postgres runs the
+// same test against the Postgres backend. Skips when HEROLD_PG_DSN is not
+// set.
+func TestEmailSubmission_Set_InvalidRcptTo_RejectsCreate_Postgres(t *testing.T) {
+	testEmailSubmissionInvalidRcptTo(t, openPostgresStore(t))
 }
 
 // TestEmailSubmission_Set_StreamsBodyToQueue verifies REQ-STORE-17/18
