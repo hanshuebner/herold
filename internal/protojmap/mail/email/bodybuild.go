@@ -15,6 +15,7 @@ import (
 	"net/textproto"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
@@ -421,6 +422,81 @@ func writeMultipartMixed(ctx context.Context, meta store.Metadata, blobs store.B
 	return nil
 }
 
+// mediaParam formats a single Content-Type / Content-Disposition parameter
+// ("name" or "filename") as the "attribute=value" text to append after the
+// media type, per RFC 2045 section 5.1 (parameter value syntax) and RFC
+// 2231 (non-ASCII parameter values). attr is the bare parameter name;
+// value is the attachment's display name, untouched.
+//
+// A value that is plain ASCII and contains none of RFC 2045's tspecials or
+// whitespace is written unquoted (name=value); one that needs quoting
+// (spaces, tspecials, or an embedded quote) is written as a quoted-string
+// with internal backslashes and quotes escaped. A value with non-ASCII
+// characters is written twice: an ASCII-safe fallback under the plain
+// attribute (attr=value) for parsers that only understand RFC 2045, and
+// the RFC 2231 extended form (attr*=utf-8, a pair of apostrophes, then the
+// percent-encoded value) carrying the exact UTF-8 name for parsers that
+// understand it -- mirroring the convention used by
+// major mail clients and browsers (e.g. RFC 6266's filename/filename*
+// pairing) so both kinds of reader recover a usable name.
+//
+// mime.ParseMediaType (used by internal/mailparse's parseContentType)
+// reads all three forms back into the exact original value, including the
+// extended form's percent-decoding -- confirmed by
+// TestMediaParam_RoundTripsThroughMailparse.
+func mediaParam(attr, value string) string {
+	if isASCIIParamValue(value) {
+		return formatOneMediaParam(attr, value)
+	}
+	fallback := formatOneMediaParam(attr, asciiFallbackName(value))
+	// mime.FormatMediaType has no public hook for just the RFC 2231
+	// encoded value, so format a throwaway header with Go's own encoder
+	// (which emits only the attr*= extended form for a non-ASCII value)
+	// and lift that text -- guaranteeing our extended form matches
+	// exactly what mime.ParseMediaType expects.
+	full := mime.FormatMediaType("x", map[string]string{attr: value})
+	extended := strings.TrimPrefix(full, "x; ")
+	return fallback + "; " + extended
+}
+
+// formatOneMediaParam formats a single ASCII-safe "attr=value" parameter,
+// quoting it as a quoted-string when value is not a bare RFC 2045 token.
+func formatOneMediaParam(attr, value string) string {
+	full := mime.FormatMediaType("x", map[string]string{attr: value})
+	return strings.TrimPrefix(full, "x; ")
+}
+
+// isASCIIParamValue reports whether value contains only ASCII bytes
+// (0x00-0x7F), i.e. needs no RFC 2231 extended encoding.
+func isASCIIParamValue(value string) bool {
+	for i := 0; i < len(value); i++ {
+		if value[i] > unicode.MaxASCII {
+			return false
+		}
+	}
+	return true
+}
+
+// asciiFallbackName replaces every non-ASCII or control character in name
+// with "_", producing a safe plain-attribute fallback value to accompany
+// an RFC 2231 extended parameter. The exact UTF-8 name is never lost: it
+// travels in the accompanying attr*= parameter this function's caller
+// writes alongside the fallback.
+func asciiFallbackName(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		if r > unicode.MaxASCII || r < 0x20 || r == 0x7F {
+			b.WriteByte('_')
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	if b.Len() == 0 {
+		return "_"
+	}
+	return b.String()
+}
+
 // writeBlobPartInto writes one blob-referenced MIME part (attachment or
 // inline) into the given multipart.Writer. Content-Type, Content-Transfer-
 // Encoding, Content-Disposition, and (for inline parts with a cid)
@@ -440,7 +516,7 @@ func writeBlobPartInto(ctx context.Context, meta store.Metadata, blobs store.Blo
 	}
 	ph := textproto.MIMEHeader{}
 	if att.Name != "" {
-		ph.Set("Content-Type", ct+"; name="+mime.QEncoding.Encode("utf-8", att.Name))
+		ph.Set("Content-Type", ct+"; "+mediaParam("name", att.Name))
 	} else {
 		ph.Set("Content-Type", ct)
 	}
@@ -450,7 +526,7 @@ func writeBlobPartInto(ctx context.Context, meta store.Metadata, blobs store.Blo
 		disp = "attachment"
 	}
 	if att.Name != "" {
-		ph.Set("Content-Disposition", disp+"; filename="+mime.QEncoding.Encode("utf-8", att.Name))
+		ph.Set("Content-Disposition", disp+"; "+mediaParam("filename", att.Name))
 	} else {
 		ph.Set("Content-Disposition", disp)
 	}

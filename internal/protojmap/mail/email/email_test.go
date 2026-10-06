@@ -4252,6 +4252,222 @@ func TestEmailSet_Create_ForwardAttachment_SyntheticBlobID_RoundTrip(t *testing.
 	}
 }
 
+// TestEmailSet_Create_AttachmentNameWithSpaces_RawHeaderBytesAndForward is
+// the regression test for issue #512: an outgoing attachment named with
+// spaces must be written with a properly quoted Content-Type "name" /
+// Content-Disposition "filename" parameter, must round-trip through
+// Email/get with the real name and type (not "(unnamed)" /
+// application/octet-stream), and must carry that real name through a
+// subsequent forward instead of the "attachment" default.
+func TestEmailSet_Create_AttachmentNameWithSpaces_RawHeaderBytesAndForward(t *testing.T) {
+	testEmailSet_Create_AttachmentNameWithSpaces_RawHeaderBytesAndForward(t, setupFixture(t))
+}
+
+// TestEmailSet_Create_AttachmentNameWithSpaces_RawHeaderBytesAndForward_Postgres
+// is the Postgres leg: bodybuild.go's mediaParam runs the same
+// backend-agnostic Go code layered over store.Blobs/store.Metadata on
+// both backends, but the regression was only ever observed through a
+// full Email/set -> stored-blob -> Email/get round trip, so both
+// backends get direct coverage. Skips when HEROLD_PG_DSN is not set.
+func TestEmailSet_Create_AttachmentNameWithSpaces_RawHeaderBytesAndForward_Postgres(t *testing.T) {
+	testEmailSet_Create_AttachmentNameWithSpaces_RawHeaderBytesAndForward(t, setupFixturePostgres(t))
+}
+
+func testEmailSet_Create_AttachmentNameWithSpaces_RawHeaderBytesAndForward(t *testing.T, f *fixture) {
+	const attName = "Offer_ Draft with spaces.pdf"
+	pdfData := []byte("%PDF-1.4 fake pdf body for issue #512\n")
+	blobID := f.uploadBlob(t, pdfData, "application/pdf")
+
+	created, notCreated := setCreateFromBodyValues(t, f, map[string]any{
+		"mailboxIds": map[string]bool{fmt.Sprintf("%d", f.inbox.ID): true},
+		"keywords":   map[string]bool{"$draft": true, "$seen": true},
+		"from":       []map[string]any{{"name": "Alice", "email": "alice@example.test"}},
+		"to":         []map[string]any{{"name": "Bob", "email": "bob@example.test"}},
+		"subject":    "attachment name with spaces",
+		"bodyValues": map[string]any{
+			"1": map[string]any{"value": "see attached", "isTruncated": false, "isEncodingProblem": false},
+		},
+		"textBody": []map[string]any{
+			{"partId": "1", "type": "text/plain", "charset": "utf-8"},
+		},
+		"bodyStructure": map[string]any{
+			"type": "multipart/mixed",
+			"subParts": []map[string]any{
+				{"partId": "1", "type": "text/plain", "charset": "utf-8"},
+				{
+					"blobId":      blobID,
+					"type":        "application/pdf",
+					"disposition": "attachment",
+					"name":        attName,
+				},
+			},
+		},
+		"attachments": []map[string]any{
+			{
+				"blobId":      blobID,
+				"type":        "application/pdf",
+				"disposition": "attachment",
+				"name":        attName,
+			},
+		},
+		"hasAttachment": true,
+	})
+	if len(notCreated) != 0 {
+		t.Fatalf("notCreated = %v", notCreated)
+	}
+	if len(created) != 1 {
+		t.Fatalf("created = %v", created)
+	}
+	emailID, _ := created["draft"]["id"].(string)
+	if emailID == "" {
+		t.Fatalf("no id in created: %v", created)
+	}
+
+	// Step 1: the raw stored message bytes must carry a quoted parameter,
+	// never the pre-fix unquoted "filename=Offer_ Draft with spaces.pdf"
+	// that RFC 2045 section 5.1 forbids and that a compliant parser (and
+	// Herold's own mailparse) truncates at the first space.
+	midU, err := strconv.ParseUint(emailID, 10, 64)
+	if err != nil {
+		t.Fatalf("parse email id %q: %v", emailID, err)
+	}
+	stored, err := f.srv.Store.Meta().GetMessage(context.Background(), store.MessageID(midU))
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	rc, err := f.srv.Store.Blobs().Get(context.Background(), stored.Blob.Hash)
+	if err != nil {
+		t.Fatalf("Blobs().Get: %v", err)
+	}
+	rawBytes, err := io.ReadAll(rc)
+	_ = rc.Close()
+	if err != nil {
+		t.Fatalf("read raw message blob: %v", err)
+	}
+	raw := string(rawBytes)
+	wantFilenameParam := `filename="Offer_ Draft with spaces.pdf"`
+	if !strings.Contains(raw, wantFilenameParam) {
+		t.Errorf("raw message does not contain quoted filename param %q (raw=\n%s)", wantFilenameParam, raw)
+	}
+	wantNameParam := `name="Offer_ Draft with spaces.pdf"`
+	if !strings.Contains(raw, wantNameParam) {
+		t.Errorf("raw message does not contain quoted name param %q (raw=\n%s)", wantNameParam, raw)
+	}
+	unquoted := "filename=Offer_ Draft with spaces.pdf"
+	if strings.Contains(raw, unquoted) {
+		t.Errorf("raw message still contains the unquoted pre-fix header %q (raw=\n%s)", unquoted, raw)
+	}
+
+	// Step 2: Email/get must recover the real name and type -- the Suite's
+	// thread view binds exactly these two properties for the attachment
+	// card (re #512's "(unnamed)" / application/octet-stream symptom).
+	_, rawGet := f.invoke(t, "Email/get", map[string]any{
+		"accountId":  protojmap.AccountIDForPrincipal(f.pid),
+		"ids":        []string{emailID},
+		"properties": []string{"attachments", "hasAttachment"},
+	})
+	var getResp struct {
+		List []struct {
+			HasAttachment bool `json:"hasAttachment"`
+			Attachments   []struct {
+				BlobID string `json:"blobId"`
+				Type   string `json:"type"`
+				Name   string `json:"name"`
+			} `json:"attachments"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(rawGet, &getResp); err != nil {
+		t.Fatalf("unmarshal Email/get: %v: %s", err, rawGet)
+	}
+	if len(getResp.List) != 1 || len(getResp.List[0].Attachments) != 1 {
+		t.Fatalf("expected 1 message with 1 attachment: %s", rawGet)
+	}
+	got := getResp.List[0].Attachments[0]
+	if got.Name != attName {
+		t.Errorf("Email/get attachment name = %q, want %q", got.Name, attName)
+	}
+	if got.Type != "application/pdf" {
+		t.Errorf("Email/get attachment type = %q, want application/pdf", got.Type)
+	}
+
+	// Step 3: forward -- mirrors compose.svelte.ts's forwardAttachmentsFromParent,
+	// which maps the parent's attachments straight through (p.name ?? 'attachment').
+	// With the real name now recovered in step 2, the forward must carry it,
+	// not fall back to the literal "attachment" the ticket reported.
+	fwdCreated, fwdNotCreated := setCreateFromBodyValues(t, f, map[string]any{
+		"mailboxIds": map[string]bool{fmt.Sprintf("%d", f.inbox.ID): true},
+		"keywords":   map[string]bool{"$draft": true, "$seen": true},
+		"from":       []map[string]any{{"name": "Bob", "email": "bob@example.test"}},
+		"to":         []map[string]any{{"name": "Carol", "email": "carol@example.test"}},
+		"subject":    "Fwd: attachment name with spaces",
+		"bodyValues": map[string]any{
+			"1": map[string]any{"value": "fwd", "isTruncated": false, "isEncodingProblem": false},
+		},
+		"textBody": []map[string]any{
+			{"partId": "1", "type": "text/plain", "charset": "utf-8"},
+		},
+		"bodyStructure": map[string]any{
+			"type": "multipart/mixed",
+			"subParts": []map[string]any{
+				{"partId": "1", "type": "text/plain", "charset": "utf-8"},
+				{
+					"blobId":      got.BlobID,
+					"type":        got.Type,
+					"disposition": "attachment",
+					"name":        got.Name,
+				},
+			},
+		},
+		"attachments": []map[string]any{
+			{
+				"blobId":      got.BlobID,
+				"type":        got.Type,
+				"disposition": "attachment",
+				"name":        got.Name,
+			},
+		},
+		"hasAttachment": true,
+	})
+	if len(fwdNotCreated) != 0 {
+		t.Fatalf("forward notCreated = %v", fwdNotCreated)
+	}
+	if len(fwdCreated) != 1 {
+		t.Fatalf("forward created = %v", fwdCreated)
+	}
+	fwdID, _ := fwdCreated["draft"]["id"].(string)
+	if fwdID == "" {
+		t.Fatalf("no id in forward created: %v", fwdCreated)
+	}
+
+	_, rawFwdGet := f.invoke(t, "Email/get", map[string]any{
+		"accountId":  protojmap.AccountIDForPrincipal(f.pid),
+		"ids":        []string{fwdID},
+		"properties": []string{"attachments", "hasAttachment"},
+	})
+	var fwdGetResp struct {
+		List []struct {
+			HasAttachment bool `json:"hasAttachment"`
+			Attachments   []struct {
+				Type string `json:"type"`
+				Name string `json:"name"`
+			} `json:"attachments"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(rawFwdGet, &fwdGetResp); err != nil {
+		t.Fatalf("unmarshal forward Email/get: %v: %s", err, rawFwdGet)
+	}
+	if len(fwdGetResp.List) != 1 || len(fwdGetResp.List[0].Attachments) != 1 {
+		t.Fatalf("expected 1 forwarded message with 1 attachment: %s", rawFwdGet)
+	}
+	fwdAtt := fwdGetResp.List[0].Attachments[0]
+	if fwdAtt.Name != attName {
+		t.Errorf("forward attachment name = %q, want %q (not the \"attachment\" default)", fwdAtt.Name, attName)
+	}
+	if fwdAtt.Type != "application/pdf" {
+		t.Errorf("forward attachment type = %q, want application/pdf", fwdAtt.Type)
+	}
+}
+
 // uploadBlob uploads raw bytes to the JMAP upload endpoint and returns the
 // server-assigned blobId.
 func (f *fixture) uploadBlob(t *testing.T, data []byte, contentType string) string {
