@@ -145,10 +145,11 @@ const builtinSystemPrompt = `You are a spam classifier. Return ONLY a single JSO
 Do not include any other text.
 Score is your confidence that the message is spam.
 Consider: authentication results (DKIM/SPF/DMARC), subject, from, body text.
-spam_signals lists every trait you relied on that argues the message is spam; ham_signals lists every trait arguing it is not. Use the exact name "unsolicited_bulk_marketing" for an unsolicited commercial pitch -- never a different phrase for the same trait (e.g. not "unsolicited_marketing_pitch" or "cold_marketing_pitch"). Other spam_signals names: "unauthenticated_sender", "dmarc_fail", "phishing", "recipient_not_own", "bulk_list_relay", "urgency_pressure", "commercial_promotion". Other ham_signals names: "known_correspondent", "passing_authentication", "list_id_present", "list_unsubscribe_header", "educational_content", "legitimate_business_training". For a trait outside these fixed names, report "other:<short description>" rather than inventing a new bare name. Your verdict and score MUST follow from the balance of these signals: a message whose spam_signals include unsolicited bulk marketing is spam even when authentication passes and a List-Unsubscribe header is present -- passing authentication and an unsubscribe link are not, by themselves, ham signals that outweigh unsolicited commercial content.
+spam_signals lists every trait you relied on that argues the message is spam; ham_signals lists every trait arguing it is not. Use the exact name "unsolicited_bulk_marketing" for an unsolicited commercial pitch -- never a different phrase for the same trait (e.g. not "unsolicited_marketing_pitch" or "cold_marketing_pitch"). Other spam_signals names: "unauthenticated_sender", "dmarc_fail", "phishing", "recipient_not_own", "bulk_list_relay", "backscatter", "urgency_pressure", "commercial_promotion". Other ham_signals names: "known_correspondent", "passing_authentication", "list_id_present", "list_unsubscribe_header", "educational_content", "legitimate_business_training". For a trait outside these fixed names, report "other:<short description>" rather than inventing a new bare name. Your verdict and score MUST follow from the balance of these signals: a message whose spam_signals include unsolicited bulk marketing is spam even when authentication passes and a List-Unsubscribe header is present -- passing authentication and an unsubscribe link are not, by themselves, ham signals that outweigh unsolicited commercial content.
 When the request carries "auth_summary", treat it as an authoritative, already-verified statement about the sender's identity: do not contradict it, and never describe a sender it says is verified as spoofed, forged, or impersonating. Judge such a message on its content, not on its identity.
 When the request carries "own_addresses", every "to"/"cc" address listed there belongs to the mailbox owner. Never cite such an address as "scraped", "not one the owner uses", or any variant of that signal -- the owner receives mail there.
-When the request carries "recipient_not_own": true, no "to"/"cc" address belongs to the mailbox owner; herold has already determined this and will record "recipient_not_own" in spam_signals regardless of your answer, so weigh it as a real fact about the message, not merely a possibility to consider.`
+When the request carries "recipient_not_own": true, no "to"/"cc" address belongs to the mailbox owner; herold has already determined this and will record "recipient_not_own" in spam_signals regardless of your answer, so weigh it as a real fact about the message, not merely a possibility to consider.
+When the request carries "delivery_status", the message is a delivery-status (bounce) report; its "enclosed_from"/"enclosed_return_path" name the sender of the message that bounced. When neither is one of "own_addresses", herold has already determined this report describes mail the owner never sent and will record "backscatter" in spam_signals regardless of your answer -- weigh it as a real fact, not merely a possibility to consider. When "enclosed_from" or "enclosed_return_path" IS one of "own_addresses", this is a legitimate bounce of the owner's own mail.`
 
 // builtinClassifySystemPrompt is the mail.classify instruction (Wave
 // 4.3, issue #304): one model call answers both the spam verdict and
@@ -161,12 +162,13 @@ const builtinClassifySystemPrompt = `You are a spam classifier and mail categori
 Do not include any other text.
 Score is your confidence that the message is spam.
 Consider: authentication results (DKIM/SPF/DMARC), subject, from, body text.
-spam_signals lists every trait you relied on that argues the message is spam; ham_signals lists every trait arguing it is not. Use the exact name "unsolicited_bulk_marketing" for an unsolicited commercial pitch -- never a different phrase for the same trait (e.g. not "unsolicited_marketing_pitch" or "cold_marketing_pitch"). Other spam_signals names: "unauthenticated_sender", "dmarc_fail", "phishing", "recipient_not_own", "bulk_list_relay", "urgency_pressure", "commercial_promotion". Other ham_signals names: "known_correspondent", "passing_authentication", "list_id_present", "list_unsubscribe_header", "educational_content", "legitimate_business_training". For a trait outside these fixed names, report "other:<short description>" rather than inventing a new bare name. Your verdict and score MUST follow from the balance of these signals: a message whose spam_signals include unsolicited bulk marketing is spam even when authentication passes and a List-Unsubscribe header is present -- passing authentication and an unsubscribe link are not, by themselves, ham signals that outweigh unsolicited commercial content.
+spam_signals lists every trait you relied on that argues the message is spam; ham_signals lists every trait arguing it is not. Use the exact name "unsolicited_bulk_marketing" for an unsolicited commercial pitch -- never a different phrase for the same trait (e.g. not "unsolicited_marketing_pitch" or "cold_marketing_pitch"). Other spam_signals names: "unauthenticated_sender", "dmarc_fail", "phishing", "recipient_not_own", "bulk_list_relay", "backscatter", "urgency_pressure", "commercial_promotion". Other ham_signals names: "known_correspondent", "passing_authentication", "list_id_present", "list_unsubscribe_header", "educational_content", "legitimate_business_training". For a trait outside these fixed names, report "other:<short description>" rather than inventing a new bare name. Your verdict and score MUST follow from the balance of these signals: a message whose spam_signals include unsolicited bulk marketing is spam even when authentication passes and a List-Unsubscribe header is present -- passing authentication and an unsubscribe link are not, by themselves, ham signals that outweigh unsolicited commercial content.
 When the request carries "auth_summary", treat it as an authoritative, already-verified statement about the sender's identity: do not contradict it, and never describe a sender it says is verified as spoofed, forged, or impersonating. Judge such a message on its content, not on its identity.
 When the request carries a "categories" array, choose "category" from exactly one of those names, or return "" if none fit -- never invent a name outside the supplied set. When "categories" is absent or empty, always return "category": "".
 When the request carries a "policy" string, it is the principal's own instructions for what belongs in each category; follow it.
 When the request carries "own_addresses", every "to"/"cc" address listed there belongs to the mailbox owner. Never cite such an address as "scraped", "not one the owner uses", or any variant of that signal -- the owner receives mail there.
-When the request carries "recipient_not_own": true, no "to"/"cc" address belongs to the mailbox owner; herold has already determined this and will record "recipient_not_own" in spam_signals regardless of your answer, so weigh it as a real fact about the message, not merely a possibility to consider.`
+When the request carries "recipient_not_own": true, no "to"/"cc" address belongs to the mailbox owner; herold has already determined this and will record "recipient_not_own" in spam_signals regardless of your answer, so weigh it as a real fact about the message, not merely a possibility to consider.
+When the request carries "delivery_status", the message is a delivery-status (bounce) report; its "enclosed_from"/"enclosed_return_path" name the sender of the message that bounced. When neither is one of "own_addresses", herold has already determined this report describes mail the owner never sent and will record "backscatter" in spam_signals regardless of your answer -- weigh it as a real fact, not merely a possibility to consider. When "enclosed_from" or "enclosed_return_path" IS one of "own_addresses", this is a legitimate bounce of the owner's own mail.`
 
 // knownOptions enumerates every option key the plugin accepts. Any other
 // key in the configure map is rejected so typos surface immediately
@@ -718,6 +720,46 @@ func trimPayload(in sdk.SpamClassifyParams, maxBody int) map[string]any {
 	}
 	if in.RecipientNotOwn {
 		out["recipient_not_own"] = true
+	}
+	if ds := in.DeliveryStatus; ds != nil {
+		// re #513: lets the model judge a delivery-status report (RFC
+		// 3464) by what bounced, rather than by the notice text alone.
+		// The server's own backscatter resolution does not depend on
+		// this reaching the model -- it is forwarded so the model's own
+		// reasoning benefits on a report the server's decisive rule does
+		// not cover (an incomplete own-address set, or an ambiguous
+		// enclosed sender).
+		dsOut := map[string]any{}
+		if ds.EnclosedFrom != "" {
+			dsOut["enclosed_from"] = ds.EnclosedFrom
+		}
+		if ds.EnclosedReturnPath != "" {
+			dsOut["enclosed_return_path"] = ds.EnclosedReturnPath
+		}
+		if ds.EnclosedTo != "" {
+			dsOut["enclosed_to"] = ds.EnclosedTo
+		}
+		if ds.EnclosedSubject != "" {
+			dsOut["enclosed_subject"] = ds.EnclosedSubject
+		}
+		if ds.EnclosedDate != "" {
+			dsOut["enclosed_date"] = ds.EnclosedDate
+		}
+		if ds.EnclosedExcerpt != "" {
+			dsOut["enclosed_excerpt"] = ds.EnclosedExcerpt
+		}
+		if ds.Action != "" {
+			dsOut["action"] = ds.Action
+		}
+		if ds.Status != "" {
+			dsOut["status"] = ds.Status
+		}
+		if ds.Diagnostic != "" {
+			dsOut["diagnostic"] = ds.Diagnostic
+		}
+		if len(dsOut) > 0 {
+			out["delivery_status"] = dsOut
+		}
 	}
 	body := in.BodyExcerpt
 	if maxBody > 0 && len(body) > maxBody {

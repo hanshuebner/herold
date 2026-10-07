@@ -221,6 +221,16 @@ type Part struct {
 	// DecodeErrors is a list of non-fatal decode warnings (e.g. lenient
 	// base64 recovery). Populated even when Parse does not return an error.
 	DecodeErrors []string
+	// Enclosed is the parsed nested message for a message/rfc822 (or
+	// message/global) leaf -- the original message a multipart/report;
+	// report-type=delivery-status bounce (RFC 3464) encloses is the
+	// motivating case (re #513). walkPart recurses into the leaf's own
+	// body as a standalone RFC 5322 message so callers can read its
+	// From/To/Subject/Date and body without a second top-level Parse
+	// call. Nil for every other part, and nil when the enclosed bytes
+	// fail to parse -- that failure lands in DecodeErrors instead and
+	// never fails the OUTER message's parse.
+	Enclosed *Message
 
 	// rawOffset is the byte offset of this part's raw (CTE-encoded) body
 	// within the bytes passed to Parse. Zero for containers.

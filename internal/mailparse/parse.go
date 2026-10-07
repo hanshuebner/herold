@@ -244,6 +244,83 @@ func (w *mimeWalker) parseMessage() (Message, error) {
 	return msg, nil
 }
 
+// parseEnclosedMessage parses the body of a message/rfc822 (or
+// message/global) leaf -- located at the absolute byte range
+// [rawOff, rawOff+rawLen) within w.raw -- as a standalone RFC 5322
+// message. It mirrors parseMessage, but the part offsets it produces
+// stay absolute into w.raw (rather than relative to a copied sub-slice)
+// so Part.OpenBody/RawBody on the enclosed message's own parts resolve
+// against the same io.ReaderAt the outer message's parts use.
+//
+// depth is the recursion-depth budget already spent reaching this leaf
+// (ordinary multipart nesting plus any message/rfc822 levels already
+// unwrapped): walkPart passes its own depth+1, so repeated enclosure
+// shares DefaultMaxDepth with ordinary multipart nesting instead of
+// resetting to zero at every message/rfc822 boundary, which would
+// otherwise let a crafted chain of nested bounces escape the cap
+// entirely. Exceeding the cap is not fatal to the OUTER parse: the
+// caller (walkPart) records the returned error in the leaf's
+// DecodeErrors and leaves Part.Enclosed nil, matching every other
+// best-effort leaf-decode failure in this package.
+func (w *mimeWalker) parseEnclosedMessage(rawOff, rawLen int64, depth int) (Message, error) {
+	if depth > w.opts.MaxDepth {
+		return Message{}, &ParseError{
+			Reason:    ReasonDepthExceeded,
+			Message:   fmt.Sprintf("enclosed message nesting exceeded MaxDepth=%d", w.opts.MaxDepth),
+			PartIndex: w.partCount,
+		}
+	}
+	if rawOff < 0 || rawLen < 0 || rawOff+rawLen > int64(len(w.raw)) {
+		return Message{}, &ParseError{
+			Reason:    ReasonMalformed,
+			Message:   "enclosed message: body range out of bounds",
+			PartIndex: -1,
+		}
+	}
+	raw := w.raw[rawOff : rawOff+rawLen]
+	nmsg, err := mail.ReadMessage(bytes.NewReader(raw))
+	if err != nil {
+		return Message{}, &ParseError{
+			Reason:    ReasonMalformed,
+			Message:   "net/mail: " + err.Error(),
+			PartIndex: -1,
+		}
+	}
+	hdrs := mimeHeaderToHeaders(textproto.MIMEHeader(nmsg.Header))
+	bodyStartRel := findBodyStart(raw)
+	bodyStartAbs := rawOff + bodyStartRel
+
+	wd := newHeaderWordDecoder()
+	subject := decodeHeaderOrRaw(wd, hdrs.Get("Subject"))
+	arVals := hdrs.GetAll("Authentication-Results")
+	authResultsRaw := strings.Join(arVals, ", ")
+
+	msg := Message{
+		Headers:        hdrs,
+		Size:           rawLen,
+		AuthResultsRaw: authResultsRaw,
+	}
+
+	ct, ctParams, ctErr := parseContentType(hdrs.Get("Content-Type"))
+	if ctErr != nil || ct == "" {
+		ct, ctParams = fallbackContentType(hdrs.Get("Content-Transfer-Encoding"))
+	}
+
+	bodyLen := rawLen - bodyStartRel
+	if bodyLen < 0 {
+		bodyLen = 0
+	}
+
+	body, perr := w.walkPart(hdrs, ct, ctParams, bodyStartAbs, bodyLen, depth, rawOff, bodyStartAbs)
+	if perr != nil {
+		return Message{}, perr
+	}
+	msg.Body = body
+	msg.Envelope = buildEnvelopeFromHeaders(hdrs, subject, wd)
+
+	return msg, nil
+}
+
 // walkPart processes a single MIME part (either the message root or a part
 // within a multipart container). rawBodyOff and rawBodyLen describe the raw
 // (CTE-encoded) body bytes within w.raw. rawHdrOff and rawHdrEnd describe the
@@ -353,7 +430,15 @@ func (w *mimeWalker) walkPart(hdrs Headers, ct string, ctParams map[string]strin
 	}
 	rawBody := w.raw[rawBodyOff : rawBodyOff+rawBodyLen]
 
-	if strings.HasPrefix(ctLower, "text/") {
+	switch {
+	case strings.HasPrefix(ctLower, "text/") || ctLower == "message/delivery-status":
+		// message/delivery-status (RFC 3464) is a sequence of
+		// header-like field blocks, not a declared text/* media type,
+		// but it is textual content a caller needs to read (re #513:
+		// the classifier's Action/Status/Remote-MTA extraction) --
+		// decoded exactly like a text/plain leaf. decodeTextPart's
+		// text/html-specific charset reconciliation never triggers
+		// here since ctLower != "text/html".
 		text, size, truncated, decErrs, parseErr := w.decodeTextPart(rawBody, cteLower, charset, ctLower, idx)
 		if parseErr != nil {
 			return Part{}, parseErr
@@ -362,7 +447,27 @@ func (w *mimeWalker) walkPart(hdrs Headers, ct string, ctParams map[string]strin
 		p.TextTruncated = truncated
 		p.Size = size
 		p.DecodeErrors = decErrs
-	} else {
+	case ctLower == "message/rfc822" || ctLower == "message/global":
+		// The enclosed original inside a delivery-status report
+		// (RFC 3464) is the motivating case (re #513): recurse into
+		// the leaf's own body as a standalone message so its
+		// From/To/Subject/Date and text are available to callers.
+		// depth+1 shares the ordinary multipart-nesting depth budget
+		// so repeated message/rfc822 enclosure cannot escape
+		// DefaultMaxDepth by resetting the counter at each boundary.
+		if enclosed, encErr := w.parseEnclosedMessage(rawBodyOff, rawBodyLen, depth+1); encErr == nil {
+			encl := enclosed
+			p.Enclosed = &encl
+		} else {
+			p.DecodeErrors = append(p.DecodeErrors, "enclosed message: "+encErr.Error())
+		}
+		size, decErrs, parseErr := w.countDecodedSize(rawBody, cteLower, idx)
+		if parseErr != nil {
+			return Part{}, parseErr
+		}
+		p.Size = size
+		p.DecodeErrors = append(p.DecodeErrors, decErrs...)
+	default:
 		size, decErrs, parseErr := w.countDecodedSize(rawBody, cteLower, idx)
 		if parseErr != nil {
 			return Part{}, parseErr

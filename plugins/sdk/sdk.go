@@ -273,6 +273,18 @@ type SpamClassifyParams struct {
 	// -- the server's decisive-signal resolution then does not depend on
 	// the model noticing the fact itself.
 	RecipientNotOwn bool `json:"recipient_not_own,omitempty"`
+	// DeliveryStatus carries the facts the server extracted when the
+	// message is a multipart/report; report-type=delivery-status report
+	// (RFC 3464, re #513): the enclosed original's curated headers and
+	// a text excerpt of it, plus the report's own Action/Status/
+	// remote-MTA diagnostic fields -- mirrors
+	// internal/spam.DeliveryStatusInfo field-for-field. Nil when the
+	// message is not such a report. The server's own decisive-signal
+	// resolution for a backscatter report (an enclosed original not
+	// sent by the owner) does not depend on a plugin reading this field
+	// -- it is provided so a plugin's own reasoning can also judge a
+	// bounce by what bounced, rather than by the notice text alone.
+	DeliveryStatus *DeliveryStatusParams `json:"delivery_status,omitempty"`
 	// TimeoutMs is the caller's remaining time budget for this call, in
 	// milliseconds, as of when the server built the request (issue #331).
 	// Run's per-request context wiring (extractTimeout) already reads
@@ -283,6 +295,21 @@ type SpamClassifyParams struct {
 	// raw JSON. Zero (absent on the wire) when the caller had no
 	// deadline.
 	TimeoutMs int64 `json:"timeout_ms,omitempty"`
+}
+
+// DeliveryStatusParams mirrors internal/spam.DeliveryStatusInfo
+// field-for-field (re #513): the facts extracted from a
+// multipart/report; report-type=delivery-status message (RFC 3464).
+type DeliveryStatusParams struct {
+	EnclosedFrom       string `json:"enclosed_from,omitempty"`
+	EnclosedReturnPath string `json:"enclosed_return_path,omitempty"`
+	EnclosedTo         string `json:"enclosed_to,omitempty"`
+	EnclosedSubject    string `json:"enclosed_subject,omitempty"`
+	EnclosedDate       string `json:"enclosed_date,omitempty"`
+	EnclosedExcerpt    string `json:"enclosed_excerpt,omitempty"`
+	Action             string `json:"action,omitempty"`
+	Status             string `json:"status,omitempty"`
+	Diagnostic         string `json:"diagnostic,omitempty"`
 }
 
 // SpamClassifyResult is the verdict for one message.

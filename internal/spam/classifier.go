@@ -310,11 +310,21 @@ type ClassifyContext struct {
 // address they own. Classify also gates recipient_not_own's
 // contribution on the own-address set being known complete (see
 // OwnAddressInfo.Complete) regardless of which rule it is paired with.
+//
+// "backscatter" (re #513) IS a standalone entry, unlike recipient_not_own:
+// it names a delivery-status report (RFC 3464) whose enclosed original's
+// From and Return-Path are neither an own address nor an own identity,
+// a server-computed fact (isBackscatter) reliable on its own because it
+// is not merely "no recipient address matched" -- it is "the message
+// this report says bounced was not sent by the owner at all". Also
+// gated on the own-address set being known complete (OwnAddressInfo.Complete),
+// exactly like recipient_not_own.
 var DefaultDecisiveSpamSignals = []string{
 	"unsolicited_bulk_marketing",
 	"unauthenticated_sender+dmarc_fail",
 	"phishing",
 	"recipient_not_own+bulk_list_relay",
+	"backscatter",
 }
 
 // parseDecisiveSignals splits each raw entry on "+" into an AND-group of
@@ -728,6 +738,19 @@ func (c *Classifier) Classify(ctx context.Context, msg mailparse.Message, auth *
 			"category", cl.Category)
 		cl.Category = ""
 	}
+	// re #513: a delivery-status report (RFC 3464) whose enclosed
+	// original was not sent by the owner is backscatter -- a
+	// server-computed fact, independent of anything the model reported
+	// -- appended to SpamSignals so the Ham/decisive-signal resolution
+	// below sees it exactly like any other spam signal, including on a
+	// report the model scored low-confidence ham with no spam_signals
+	// of its own at all (message 4247: ham score=0.05, no spam_signals).
+	// Gated on own.Complete, exactly like recipient_not_own: an
+	// own-address set known incomplete makes "neither enclosed address
+	// is an own address" unreliable.
+	if own.Complete && isBackscatter(built.DeliveryStatus, own.Addresses) {
+		cl.SpamSignals = appendSignalIfMissing(cl.SpamSignals, "backscatter")
+	}
 	// re #396: the model's own stated reasoning must not contradict its
 	// verdict. A Ham verdict alongside at least one reported spam signal
 	// is exactly the reported bug shape (a cold marketing pitch scored
@@ -1026,6 +1049,17 @@ type Request struct {
 	// (REQ-FILT-66) states plainly whether the own-address set was
 	// complete when this message was classified.
 	OwnAddressesComplete bool `json:"own_addresses_complete"`
+	// DeliveryStatus carries the facts BuildRequest extracts when msg is
+	// a multipart/report; report-type=delivery-status message (RFC
+	// 3464, re #513): the enclosed original's curated headers and a
+	// text excerpt of it, plus the structured per-recipient
+	// Action/Status/Diagnostic fields off the message's own
+	// message/delivery-status part -- so a bounce is judged by what
+	// bounced, rather than leaving the enclosed original invisible to
+	// the classifier (mailparse previously exposed message/rfc822 and
+	// message/delivery-status as opaque leaves, and collectTextBody
+	// gathers text/* parts only). Nil when msg is not such a report.
+	DeliveryStatus *DeliveryStatusInfo `json:"delivery_status,omitempty"`
 	// TimeoutMs is the caller's remaining time budget for this RPC, in
 	// milliseconds, as of the moment the request was built (issue #331).
 	// The plugin SDK's per-request context wiring (plugins/sdk/sdk.go's
@@ -1095,6 +1129,7 @@ func BuildRequest(msg mailparse.Message, auth *mailauth.AuthResults) Request {
 		DKIM:            mailauth.AuthNone.String(),
 		DMARC:           mailauth.AuthNone.String(),
 		BodyExcerpt:     body,
+		DeliveryStatus:  buildDeliveryStatusInfo(msg),
 	}
 	if auth != nil {
 		req.SPF = authVerdictToken(auth.SPF.Status)
