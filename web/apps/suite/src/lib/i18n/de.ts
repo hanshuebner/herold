@@ -257,6 +257,16 @@ export const de = {
   'bulk.category': 'Kategorie...',
   'bulk.delete': 'Löschen',
 
+  // Archive / delete toast summaries (re #515): shared by the
+  // single-message and bulk-selection paths so both render through the
+  // i18n table instead of a hardcoded English sentence.
+  'mail.toast.archived': '{count} Nachricht archiviert',
+  'mail.toast.archived.other': '{count} Nachrichten archiviert',
+  'mail.toast.archivedPartial': '{ok} archiviert, {failed} fehlgeschlagen',
+  'mail.toast.deleted': '{count} Nachricht gelöscht',
+  'mail.toast.deleted.other': '{count} Nachrichten gelöscht',
+  'mail.toast.deletedPartial': '{ok} gelöscht, {failed} fehlgeschlagen',
+
   // ── Thread reader ───────────────────────────────────────────────────
   'thread.loading': 'Konversation wird geladen...',
   'thread.couldNotLoad': 'Konversation konnte nicht geladen werden.',

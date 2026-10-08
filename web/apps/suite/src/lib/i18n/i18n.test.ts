@@ -42,6 +42,21 @@ describe('i18n', () => {
   it('leaves unmatched placeholders untouched', () => {
     expect(t('list.couldNotLoad', {})).toBe("Couldn't load {name}.");
   });
+
+  it('renders the archive/delete toast summaries in both locales (re #515)', () => {
+    expect(t('mail.toast.archived', { count: 1 })).toBe('1 message archived');
+    expect(t('mail.toast.archived.other', { count: 3 })).toBe('3 messages archived');
+    expect(t('mail.toast.archivedPartial', { ok: 2, failed: 1 })).toBe('2 archived, 1 failed');
+    expect(t('mail.toast.deleted', { count: 1 })).toBe('1 message deleted');
+    expect(t('mail.toast.deletedPartial', { ok: 2, failed: 1 })).toBe('2 deleted, 1 failed');
+
+    i18n.locale = 'de';
+    expect(t('mail.toast.archived', { count: 1 })).toBe('1 Nachricht archiviert');
+    expect(t('mail.toast.archived.other', { count: 3 })).toBe('3 Nachrichten archiviert');
+    expect(t('mail.toast.archivedPartial', { ok: 2, failed: 1 })).toBe('2 archiviert, 1 fehlgeschlagen');
+    expect(t('mail.toast.deleted', { count: 1 })).toBe('1 Nachricht gelöscht');
+    expect(t('mail.toast.deletedPartial', { ok: 2, failed: 1 })).toBe('2 gelöscht, 1 fehlgeschlagen');
+  });
 });
 
 describe('detectLocale', () => {

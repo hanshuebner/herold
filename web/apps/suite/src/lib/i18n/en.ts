@@ -256,6 +256,16 @@ export const en = {
   'bulk.category': 'Category...',
   'bulk.delete': 'Delete',
 
+  // Archive / delete toast summaries (re #515): shared by the
+  // single-message and bulk-selection paths so both render through the
+  // i18n table instead of a hardcoded English sentence.
+  'mail.toast.archived': '{count} message archived',
+  'mail.toast.archived.other': '{count} messages archived',
+  'mail.toast.archivedPartial': '{ok} archived, {failed} failed',
+  'mail.toast.deleted': '{count} message deleted',
+  'mail.toast.deleted.other': '{count} messages deleted',
+  'mail.toast.deletedPartial': '{ok} deleted, {failed} failed',
+
   // ── Thread reader ───────────────────────────────────────────────────
   'thread.loading': 'Loading thread...',
   'thread.couldNotLoad': "Couldn't load thread.",

@@ -86,13 +86,13 @@ vi.mock('../compose/compose.svelte', () => ({
   },
 }));
 
-vi.mock('../i18n/i18n.svelte', () => ({
-  t: (key: string, args?: Record<string, unknown>) => {
+vi.mock('../i18n/i18n.svelte', () => {
+  const t = (key: string, args?: Record<string, unknown>) => {
     if (args?.count !== undefined) return `${args.count} ${key}`;
     return key;
-  },
-  localeTag: () => 'en-US',
-}));
+  };
+  return { i18n: { t }, t, localeTag: () => 'en-US' };
+});
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

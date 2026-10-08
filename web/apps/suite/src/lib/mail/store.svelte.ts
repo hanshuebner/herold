@@ -3307,7 +3307,7 @@ class MailStore {
     }
 
     toast.show({
-      message: 'Message archived',
+      message: i18n.t('mail.toast.archived', { count: 1 }),
       undo: async () => {
         // Replay the inverse — REQ-OPT-12.
         try {
@@ -3368,7 +3368,7 @@ class MailStore {
     }
 
     toast.show({
-      message: 'Message deleted',
+      message: i18n.t('mail.toast.deleted', { count: 1 }),
       undo: async () => {
         try {
           await this.#emailSetUpdate(emailId, { mailboxIds: prevMailboxIds });
@@ -4183,18 +4183,56 @@ class MailStore {
       };
     }
     if (Object.keys(updates).length === 0) return;
+    const prevListIds = [...this.listEmailIds];
+    const prevFocused = this.listFocusedIndex;
     if (this.listFolder === 'inbox') {
       for (const id of Object.keys(updates)) this.#removeFromList(id);
     }
     this.clearSelection();
     try {
       const { failed } = await this.#emailSetUpdateBulk(updates);
-      this.#summarizeBulk('archived', Object.keys(updates).length, failed);
+      const okIds = Object.keys(updates).filter((id) => !(id in failed));
+      this.#summarizeBulk(
+        'archived',
+        Object.keys(updates).length,
+        failed,
+        okIds.length > 0
+          ? async () => {
+              // Replay the inverse per id — REQ-OPT-12. Full mailboxIds
+              // replace (not a patch) restores exactly the membership set
+              // (including the originating category tab) each email had
+              // before this archive, same as the single-message undo.
+              const undoUpdates: Record<string, Record<string, unknown>> = {};
+              for (const id of okIds) {
+                const prev = prevById.get(id);
+                if (prev) undoUpdates[id] = { mailboxIds: prev };
+              }
+              try {
+                await this.#emailSetUpdateBulk(undoUpdates);
+                for (const id of okIds) {
+                  const prev = prevById.get(id);
+                  if (prev) this.#patchEmail(id, { mailboxIds: prev });
+                }
+                this.listEmailIds = prevListIds;
+                this.listFocusedIndex = prevFocused;
+              } catch (err) {
+                toast.show({
+                  message: errMessage(err, 'Undo failed'),
+                  kind: 'error',
+                  timeoutMs: 6000,
+                });
+              }
+            }
+          : undefined,
+        { ok: 'mail.toast.archived', partial: 'mail.toast.archivedPartial' },
+      );
       this.#refreshFolderIfEmptied();
     } catch (err) {
       for (const [id, prev] of prevById) {
         this.#patchEmail(id, { mailboxIds: prev });
       }
+      this.listEmailIds = prevListIds;
+      this.listFocusedIndex = prevFocused;
       toast.show({
         message: errMessage(err, 'Bulk archive failed'),
         kind: 'error',
@@ -4311,18 +4349,55 @@ class MailStore {
       updates[id] = { mailboxIds: { [trash.id]: true } };
     }
     if (Object.keys(updates).length === 0) return;
+    const prevListIds = [...this.listEmailIds];
+    const prevFocused = this.listFocusedIndex;
     if (this.listFolder !== 'trash') {
       for (const id of Object.keys(updates)) this.#removeFromList(id);
     }
     this.clearSelection();
     try {
       const { failed } = await this.#emailSetUpdateBulk(updates);
-      this.#summarizeBulk('deleted', Object.keys(updates).length, failed);
+      const okIds = Object.keys(updates).filter((id) => !(id in failed));
+      this.#summarizeBulk(
+        'deleted',
+        Object.keys(updates).length,
+        failed,
+        okIds.length > 0
+          ? async () => {
+              // Replay the inverse per id — REQ-OPT-12. Full mailboxIds
+              // replace restores exactly the membership set each email had
+              // before this delete, same as the single-message undo.
+              const undoUpdates: Record<string, Record<string, unknown>> = {};
+              for (const id of okIds) {
+                const prev = prevById.get(id);
+                if (prev) undoUpdates[id] = { mailboxIds: prev };
+              }
+              try {
+                await this.#emailSetUpdateBulk(undoUpdates);
+                for (const id of okIds) {
+                  const prev = prevById.get(id);
+                  if (prev) this.#patchEmail(id, { mailboxIds: prev });
+                }
+                this.listEmailIds = prevListIds;
+                this.listFocusedIndex = prevFocused;
+              } catch (err) {
+                toast.show({
+                  message: errMessage(err, 'Undo failed'),
+                  kind: 'error',
+                  timeoutMs: 6000,
+                });
+              }
+            }
+          : undefined,
+        { ok: 'mail.toast.deleted', partial: 'mail.toast.deletedPartial' },
+      );
       this.#refreshFolderIfEmptied();
     } catch (err) {
       for (const [id, prev] of prevById) {
         this.#patchEmail(id, { mailboxIds: prev });
       }
+      this.listEmailIds = prevListIds;
+      this.listFocusedIndex = prevFocused;
       toast.show({
         message: errMessage(err, 'Bulk delete failed'),
         kind: 'error',
@@ -4584,15 +4659,41 @@ class MailStore {
     }
   }
 
-  /** Render a "X messages <verb>" / partial-failure toast for bulk ops. */
+  /**
+   * Render a "X messages <verb>" / partial-failure toast for bulk ops.
+   *
+   * `i18nKeys`, when given, routes the summary through the i18n table
+   * instead of composing an English sentence from `verb` (re #515): `ok`
+   * resolves to `i18nKeys.ok` (count === 1) or `${i18nKeys.ok}.other`
+   * (count !== 1), each with a `{count}` placeholder; `partial` resolves
+   * to `i18nKeys.partial` with `{ok}` / `{failed}` placeholders.
+   */
   #summarizeBulk(
     verb: string,
     total: number,
     failed: Record<string, string>,
     undo?: () => void | Promise<void>,
+    i18nKeys?: { ok: string; partial: string },
   ): void {
     const failCount = Object.keys(failed).length;
     const ok = total - failCount;
+    if (i18nKeys) {
+      if (failCount > 0) {
+        toast.show({
+          message: i18n.t(i18nKeys.partial, { ok, failed: failCount }),
+          kind: 'error',
+          timeoutMs: 6000,
+          ...(undo ? { undo } : {}),
+        });
+      } else {
+        const key = ok === 1 ? i18nKeys.ok : `${i18nKeys.ok}.other`;
+        toast.show({
+          message: i18n.t(key, { count: ok }),
+          ...(undo ? { undo } : {}),
+        });
+      }
+      return;
+    }
     if (failCount > 0) {
       toast.show({
         message: `${ok} ${verb}, ${failCount} failed`,
