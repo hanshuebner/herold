@@ -22,6 +22,8 @@
   import MailingListDetailView from './views/MailingListDetailView.svelte';
   import OIDCProvidersView from './views/OIDCProvidersView.svelte';
   import OIDCProviderDetailView from './views/OIDCProviderDetailView.svelte';
+  import AppsView from './views/AppsView.svelte';
+  import AppDetailView from './views/AppDetailView.svelte';
   import QueueView from './views/QueueView.svelte';
   import QueueItemView from './views/QueueItemView.svelte';
   import AuditView from './views/AuditView.svelte';
@@ -224,6 +226,13 @@
       : null,
   );
 
+  /** The app id segment for /apps/:id routes. */
+  const appId = $derived(
+    router.matches('apps') && router.parts.length >= 2
+      ? (router.parts[1] ?? null)
+      : null,
+  );
+
   /** The provider id segment for /oidc-providers/:id routes. */
   const oidcProviderId = $derived(
     router.matches('oidc-providers') && router.parts.length >= 2
@@ -322,6 +331,10 @@
       <OIDCProviderDetailView id={oidcProviderId} />
     {:else if router.matches('oidc-providers')}
       <OIDCProvidersView />
+    {:else if router.matches('apps') && appId !== null}
+      <AppDetailView id={appId} />
+    {:else if router.matches('apps')}
+      <AppsView />
     {:else if router.matches('queue') && queueId !== null}
       <QueueItemView id={queueId} />
     {:else if router.matches('queue')}

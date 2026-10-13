@@ -26,6 +26,11 @@ export interface ApiResponse<T> {
   status: number;
   data: T | null;
   errorMessage: string | null;
+  /**
+   * The parsed error body of a non-2xx response (RFC 7807 problem-json
+   * with any extension members, e.g. `errors`), or null.
+   */
+  problem?: Record<string, unknown> | null;
 }
 
 /** Parse the herold_public_csrf cookie value from document.cookie. */
@@ -147,6 +152,7 @@ async function request<T>(
 
   if (!response.ok) {
     let errorMessage: string | null = null;
+    let problem: Record<string, unknown> | null = null;
     try {
       // The protoadmin REST surface emits RFC 7807 problem-json on errors
       // (Content-Type: application/problem+json; fields title, detail, type,
@@ -160,6 +166,7 @@ async function request<T>(
         message?: string;
         error?: string;
       };
+      problem = errBody as Record<string, unknown>;
       const parts: string[] = [];
       if (errBody.title) parts.push(errBody.title);
       if (errBody.detail) parts.push(errBody.detail);
@@ -169,7 +176,7 @@ async function request<T>(
     } catch {
       errorMessage = `HTTP ${response.status}`;
     }
-    return { ok: false, status: response.status, data: null, errorMessage };
+    return { ok: false, status: response.status, data: null, errorMessage, problem };
   }
 
   if (response.status === 204) {
