@@ -389,6 +389,41 @@ and the composer hides the offload affordance. Shares count against a
 per-principal storage quota (deduplicated against blobs the principal
 already stores). See `docs/design/server/requirements/25-attachment-shares.md`.
 
+### `[server.apps]` - registered apps (REQ-APP-42, REQ-APP-61)
+
+```toml
+[server.apps]
+enabled = true
+max_payload_bytes = "50 MiB"
+invoke_timeout = "15s"
+allowed_insecure_origins = ["http://127.0.0.1:18080"]
+```
+
+An app is an external web application that offers actions in the
+suite's thread menu (for example "Create donation offer" in a forum).
+When a user picks one, herold sends the thread's raw messages to the app
+in one signed request and opens the URL the app returns. Apps
+themselves are registered, approved and enabled per principal through
+the admin API, the admin UI or `herold app ...`; this block carries only
+the process-wide limits.
+
+- `enabled` (default `true`) turns the surface on. With `false` the
+  `/api/v1/apps` endpoints still manage registrations but no action is
+  offered and `AppAction/invoke` is not available.
+- `max_payload_bytes` (default 50 MiB) bounds the total message size of
+  one invocation; a larger thread fails with `tooLarge` before anything
+  is sent.
+- `invoke_timeout` (default 15 s, at most 5 min) bounds one manifest
+  fetch or invocation end to end.
+- `allowed_insecure_origins` (default empty) lists origins that may use
+  plain `http` and resolve to private or loopback addresses. It exists
+  for the dev instance and CI fakes; leave it empty in production.
+  Entries are origins only (`scheme://host[:port]`).
+
+App management requires `[server.secrets].data_key_ref` (the signing
+secrets are stored sealed); without it the apps endpoints answer `503`.
+See `docs/design/server/requirements/29-apps.md`.
+
 ### `[server.categorise]`
 
 LLM-driven message categorisation (REQ-FILT-200..220) lives in the

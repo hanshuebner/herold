@@ -12,6 +12,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -418,6 +419,12 @@ type ServerConfig struct {
 	// by default but is inert (the JMAP capability is not advertised and
 	// /share routes return 404) until public_base_url is set.
 	AttachmentShares AttachmentSharesConfig `toml:"attachment_shares,omitempty"`
+	// Apps configures the server side of registered apps: the
+	// AppAction/invoke payload bound and timeout, and the origins
+	// exempt from the HTTPS / public-address requirement
+	// (docs/design/server/requirements/29-apps.md REQ-APP-42, REQ-APP-61).
+	// An omitted section enables apps with the documented defaults.
+	Apps AppsConfig `toml:"apps,omitempty"`
 	// OAuthProviders maps provider name to per-provider OAuth 2.0 client
 	// configuration for server-mediated OAuth flows (REQ-AUTH-EXT-SUBMIT-03).
 	// Provider names are normalised to lowercase at parse time. The reserved
@@ -1664,6 +1671,118 @@ type QueueConfig struct {
 	DelayDSNThreshold Duration `toml:"delay_dsn_threshold,omitempty"`
 }
 
+// AppsConfig is the [server.apps] block (REQ-APP-42, REQ-APP-61).
+// Registered apps themselves are application config in the database
+// (REQ-APP-03); this block carries only the process-wide limits.
+//
+//	[server.apps]
+//	enabled = true
+//	max_payload_bytes = "50 MiB"
+//	invoke_timeout = "15s"
+//	allowed_insecure_origins = []
+type AppsConfig struct {
+	// Enabled turns the apps surface on. Defaults to true; the pointer
+	// distinguishes an omitted key from an explicit false.
+	Enabled *bool `toml:"enabled,omitempty"`
+	// MaxPayloadBytes bounds the total size of the messages one
+	// invocation sends; a larger thread fails with tooLarge before any
+	// byte is sent. Default 50 MiB.
+	MaxPayloadBytes ByteSize `toml:"max_payload_bytes,omitempty"`
+	// InvokeTimeout bounds one manifest fetch or invocation end to end
+	// (dial, request, response). Default 15 s.
+	InvokeTimeout Duration `toml:"invoke_timeout,omitempty"`
+	// AllowedInsecureOrigins lists origins ("http://127.0.0.1:18080")
+	// exempt from the HTTPS requirement and from the refusal of
+	// private and loopback destinations. Meant for the dev instance
+	// and CI fakes; empty in production. Entries are normalised with
+	// NormalizeOrigin at Validate.
+	AllowedInsecureOrigins []string `toml:"allowed_insecure_origins,omitempty"`
+}
+
+// AppsEnabled reports whether the apps surface is enabled (default true).
+func (a AppsConfig) AppsEnabled() bool { return a.Enabled == nil || *a.Enabled }
+
+// Apps defaults and bounds (REQ-APP-42).
+const (
+	defaultAppsMaxPayloadBytes = 50 * 1024 * 1024
+	defaultAppsInvokeTimeout   = 15 * time.Second
+	maxAppsInvokeTimeout       = 5 * time.Minute
+)
+
+func applyAppsDefaults(a *AppsConfig) {
+	if a.Enabled == nil {
+		t := true
+		a.Enabled = &t
+	}
+	if a.MaxPayloadBytes == 0 {
+		a.MaxPayloadBytes = ByteSize(defaultAppsMaxPayloadBytes)
+	}
+	if a.InvokeTimeout == 0 {
+		a.InvokeTimeout = Duration(defaultAppsInvokeTimeout)
+	}
+}
+
+func validateApps(a *AppsConfig) error {
+	if a.MaxPayloadBytes < 0 {
+		return fmt.Errorf("sysconfig: [server.apps] max_payload_bytes must be positive")
+	}
+	if a.InvokeTimeout < 0 || a.InvokeTimeout.AsDuration() > maxAppsInvokeTimeout {
+		return fmt.Errorf("sysconfig: [server.apps] invoke_timeout %s outside (0, %s]",
+			a.InvokeTimeout.AsDuration(), maxAppsInvokeTimeout)
+	}
+	for i, o := range a.AllowedInsecureOrigins {
+		norm, err := NormalizeOrigin(o)
+		if err != nil {
+			return fmt.Errorf("sysconfig: [server.apps] allowed_insecure_origins[%d]: %w", i, err)
+		}
+		a.AllowedInsecureOrigins[i] = norm
+	}
+	return nil
+}
+
+// NormalizeOrigin parses raw as a web origin (scheme, host and optional
+// port; no path beyond "/", query, fragment or userinfo) and returns it
+// in the RFC 6454 serialisation: lower-case "scheme://host[:port]", the
+// port present only when it differs from the scheme's default. Scheme
+// must be http or https.
+func NormalizeOrigin(raw string) (string, error) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return "", fmt.Errorf("origin %q: %w", raw, err)
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return "", fmt.Errorf("origin %q: scheme must be http or https", raw)
+	}
+	if u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.ForceQuery ||
+		(u.Path != "" && u.Path != "/") || u.Opaque != "" {
+		return "", fmt.Errorf("origin %q: must be scheme://host[:port] only", raw)
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "" {
+		return "", fmt.Errorf("origin %q: missing host", raw)
+	}
+	defPort := "443"
+	if scheme == "http" {
+		defPort = "80"
+	}
+	port := u.Port()
+	if port == "" {
+		port = defPort
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 1 || n > 65535 {
+		return "", fmt.Errorf("origin %q: invalid port", raw)
+	}
+	if strconv.Itoa(n) == defPort {
+		if strings.Contains(host, ":") {
+			return scheme + "://[" + host + "]", nil
+		}
+		return scheme + "://" + host, nil
+	}
+	return scheme + "://" + net.JoinHostPort(host, strconv.Itoa(n)), nil
+}
+
 // SnoozeConfig tunes the JMAP snooze wake-up worker (REQ-PROTO-49).
 // Default poll cadence is 60 s; values below 5 s are rejected at
 // Validate so operators do not accidentally hammer the messages table
@@ -2734,6 +2853,9 @@ func applyDefaults(c *Config) {
 	// produces a fully defaulted (but inert) configuration; the feature
 	// only becomes active when public_base_url is also set.
 	applyAttachmentSharesDefaults(&c.Server.AttachmentShares)
+	// Apps (REQ-APP-42). A missing [server.apps] block enables apps with
+	// the default payload bound and timeout.
+	applyAppsDefaults(&c.Server.Apps)
 	// IMAP import (REQ-IMAP-IMP-05, -23, -26). A missing [imap_import]
 	// block produces a fully defaulted configuration: allow_password=true,
 	// concurrent_accounts=16, poll_interval=60s.
@@ -3819,6 +3941,10 @@ func Validate(c *Config) error {
 	}
 	// Attachment shares (REQ-SHARE-30..52).
 	if err := validateAttachmentShares(&c.Server.AttachmentShares); err != nil {
+		return err
+	}
+	// Apps (REQ-APP-42, REQ-APP-61).
+	if err := validateApps(&c.Server.Apps); err != nil {
 		return err
 	}
 	// IMAP import (REQ-IMAP-IMP-03, -05, -23, -26).
