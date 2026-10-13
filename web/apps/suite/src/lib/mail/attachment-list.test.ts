@@ -9,7 +9,7 @@
  * the shared Lightbox component (see lib/preview/Lightbox.svelte).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/svelte';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/svelte';
 import AttachmentList from './AttachmentList.svelte';
 import { zipBlobsAsDownload } from './download-zip';
 import type { Email, EmailBodyPart } from './types';
@@ -46,6 +46,9 @@ vi.mock('../i18n/i18n.svelte', () => ({
       'att.close': 'Close',
       'att.aria.open': `Open ${args?.name ?? ''}`,
       'att.aria.download': `Download ${args?.name ?? ''}`,
+      'att.lightbox.position': `${args?.current} of ${args?.total}`,
+      'att.lightbox.prev': 'Previous attachment',
+      'att.lightbox.next': 'Next attachment',
     };
     return map[key] ?? key;
   },
@@ -353,6 +356,41 @@ describe('AttachmentList: clicking the card opens the lightbox (REQ-MAIL-23)', (
     const card = screen.getByRole('button', { name: 'Open data.zip' });
     await fireEvent.click(card);
     expect(screen.queryByRole('dialog')).toBeNull();
+  });
+});
+
+describe('AttachmentList: lightbox navigates across the message\'s attachments (issue #518)', () => {
+  it('opens the lightbox positioned at the clicked card, with the full list as siblings', async () => {
+    const email = makeEmail([
+      { disposition: 'attachment', name: 'file0.png', type: 'image/png' },
+      { disposition: 'attachment', name: 'file1.png', type: 'image/png' },
+      { disposition: 'attachment', name: 'file2.png', type: 'image/png' },
+    ]);
+    render(AttachmentList, { email });
+    const card = screen.getByRole('button', { name: 'Open file1.png' });
+    await fireEvent.click(card);
+    const dialog = await screen.findByRole('dialog');
+    const inDialog = within(dialog);
+    expect(inDialog.getByText('file1.png')).toBeInTheDocument();
+    expect(inDialog.getByText('2 of 3')).toBeInTheDocument();
+
+    await fireEvent.keyDown(dialog, { key: 'ArrowRight' });
+    expect(inDialog.getByText('file2.png')).toBeInTheDocument();
+    expect(inDialog.getByText('3 of 3')).toBeInTheDocument();
+  });
+
+  it('a non-viewable attachment is excluded from the lightbox sibling list', async () => {
+    const email = makeEmail([
+      { disposition: 'attachment', name: 'file0.png', type: 'image/png' },
+      { disposition: 'attachment', name: 'data.zip', type: 'application/zip' },
+      { disposition: 'attachment', name: 'file2.png', type: 'image/png' },
+    ]);
+    render(AttachmentList, { email });
+    const card = screen.getByRole('button', { name: 'Open file0.png' });
+    await fireEvent.click(card);
+    const dialog = await screen.findByRole('dialog');
+    // Only the two image parts are viewable; the zip never enters the list.
+    expect(within(dialog).getByText('1 of 2')).toBeInTheDocument();
   });
 });
 

@@ -505,6 +505,9 @@ export const de = {
   'att.headerIcon.label': 'Hat Anhang',
   'att.aria.open': '{name} öffnen',
   'att.aria.download': '{name} herunterladen',
+  'att.lightbox.position': '{current} von {total}',
+  'att.lightbox.prev': 'Vorheriger Anhang',
+  'att.lightbox.next': 'Nächster Anhang',
   'mail.trimmed.hide': 'Zitat ausblenden',
 
   // ── Pickers (move / label / etc.) ────────────────────────────────────

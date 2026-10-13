@@ -36,7 +36,7 @@
   import { t } from '../i18n/i18n.svelte';
   import { zipBlobsAsDownload } from './download-zip';
   import { attachmentIcon } from './attachment-icon';
-  import Lightbox from '../preview/Lightbox.svelte';
+  import Lightbox, { type LightboxItem } from '../preview/Lightbox.svelte';
 
   interface Props {
     email: Email;
@@ -99,38 +99,54 @@
     return false;
   }
 
-  type LightboxState = {
-    url: string;
-    name: string;
-    kind: 'image' | 'pdf';
-  };
-  let lightbox = $state<LightboxState | null>(null);
+  /**
+   * REQ-MAIL-23 (issue #518): the lightbox navigates across every
+   * viewable attachment of this message, not just the one that was
+   * clicked. `lightboxItems` is the ordered list (same order as the
+   * card strip); `lightboxIndex` is the position of the clicked card
+   * within that list.
+   */
+  function lightboxKind(part: EmailBodyPart): LightboxItem['kind'] | null {
+    if (!part.type) return null;
+    if (part.type.startsWith('image/')) return 'image';
+    if (part.type === 'application/pdf') return 'pdf';
+    return null;
+  }
+
+  let lightboxItems = $state<LightboxItem[] | null>(null);
+  let lightboxIndex = $state(0);
 
   function openLightbox(part: EmailBodyPart): void {
-    if (!accountId || !part.blobId) return;
-    const kind: LightboxState['kind'] | null = part.type.startsWith('image/')
-      ? 'image'
-      : part.type === 'application/pdf'
-        ? 'pdf'
-        : null;
-    if (!kind) return;
-    // Use Content-Disposition: inline so the iframe / img renders the
-    // resource in-page instead of the browser handing it to the
-    // download UI. Without this the PDF lightbox ships a blank pane and
-    // the browser pops a download prompt.
-    const url = jmap.downloadUrl({
-      accountId,
-      blobId: part.blobId,
-      type: part.type,
-      name: part.name ?? 'attachment',
-      disposition: 'inline',
-    });
-    if (!url) return;
-    lightbox = { url, name: part.name ?? 'attachment', kind };
+    if (!accountId) return;
+    const items: LightboxItem[] = [];
+    let clickedIndex = -1;
+    for (const p of attachParts) {
+      const kind = lightboxKind(p);
+      if (!kind || !p.blobId) continue;
+      // Use Content-Disposition: inline so the iframe / img renders the
+      // resource in-page instead of the browser handing it to the
+      // download UI. Without this the PDF lightbox ships a blank pane
+      // and the browser pops a download prompt.
+      const url = jmap.downloadUrl({
+        accountId,
+        blobId: p.blobId,
+        type: p.type,
+        name: p.name ?? 'attachment',
+        disposition: 'inline',
+      });
+      if (!url) continue;
+      if ((p.partId ?? p.blobId) === (part.partId ?? part.blobId)) {
+        clickedIndex = items.length;
+      }
+      items.push({ url, name: p.name ?? 'attachment', kind });
+    }
+    if (items.length === 0 || clickedIndex === -1) return;
+    lightboxItems = items;
+    lightboxIndex = clickedIndex;
   }
 
   function closeLightbox(): void {
-    lightbox = null;
+    lightboxItems = null;
   }
 
   /**
@@ -264,13 +280,8 @@
   </section>
 {/if}
 
-{#if lightbox}
-  <Lightbox
-    src={lightbox.url}
-    name={lightbox.name}
-    kind={lightbox.kind}
-    onClose={closeLightbox}
-  />
+{#if lightboxItems}
+  <Lightbox items={lightboxItems} index={lightboxIndex} onClose={closeLightbox} />
 {/if}
 
 <style>

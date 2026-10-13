@@ -505,6 +505,9 @@ export const en = {
   'att.headerIcon.label': 'Has attachment',
   'att.aria.open': 'Open {name}',
   'att.aria.download': 'Download {name}',
+  'att.lightbox.position': '{current} of {total}',
+  'att.lightbox.prev': 'Previous attachment',
+  'att.lightbox.next': 'Next attachment',
   'mail.trimmed.hide': 'Hide trimmed content',
 
   // ── Pickers (move / label / etc.) ────────────────────────────────────

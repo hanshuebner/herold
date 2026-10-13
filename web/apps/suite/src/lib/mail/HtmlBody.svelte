@@ -520,9 +520,7 @@
 
 {#if imageLightbox}
   <Lightbox
-    src={imageLightbox.url}
-    name={imageLightbox.name}
-    kind="image"
+    items={[{ url: imageLightbox.url, name: imageLightbox.name, kind: 'image' }]}
     onClose={closeImageLightbox}
   />
 {/if}

@@ -684,7 +684,7 @@
 
 {#if lightboxSrc}
   <Lightbox
-    src={lightboxSrc}
+    items={[{ url: lightboxSrc }]}
     onClose={() => { lightboxSrc = null; }}
   />
 {/if}
