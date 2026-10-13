@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"herold_app\":1,\"app_key\":\"a.b.c\",\"name\":{\"en\":\"N\"},\"extensions\":[{\"point\":\"compose.action\",\"id\":\"c\",\"label\":{\"en\":\"C\"},\"scopes\":[\"message.raw\"],\"endpoint\":\"/c\"}]}")

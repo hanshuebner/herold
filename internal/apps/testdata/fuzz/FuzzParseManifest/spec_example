@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\n  \"herold_app\": 1,\n  \"app_key\": \"de.classic-computing.forum.donations\",\n  \"name\": {\"en\": \"VzEkC donation offers\", \"de\": \"VzEkC-Spendenangebote\"},\n  \"extensions\": [\n    {\n      \"point\": \"thread.action\",\n      \"id\": \"donation-offer\",\n      \"label\": {\"en\": \"Create donation offer\", \"de\": \"Spendenangebot erstellen\"},\n      \"icon\": \"gift\",\n      \"scopes\": [\"thread.raw\"],\n      \"endpoint\": \"/vzekc-verlosung/herold/actions/donation-offer\"\n    }\n  ]\n}")

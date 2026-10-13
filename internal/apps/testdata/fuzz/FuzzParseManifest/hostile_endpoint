@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"herold_app\":1,\"app_key\":\"a.b.c\",\"name\":{\"en\":\"N\",\"de-DE\":\"N\"},\"extensions\":[{\"point\":\"thread.action\",\"id\":\"x\",\"label\":{\"en\":\"X\"},\"scopes\":[\"thread.raw\"],\"endpoint\":\"/%2e%2e/admin\"}]}")
