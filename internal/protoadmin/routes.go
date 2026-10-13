@@ -198,6 +198,19 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PATCH /api/v1/webhooks/{id}", authAdmin(s.handlePatchWebhook))
 	mux.HandleFunc("DELETE /api/v1/webhooks/{id}", authAdmin(s.handleDeleteWebhook))
 
+	// Registered apps (REQ-APP-10..14, REQ-APP-30..31). Admin scope +
+	// elevation on every route; 503 without the data key.
+	mux.HandleFunc("GET /api/v1/apps", authAdmin(s.handleListApps))
+	mux.HandleFunc("POST /api/v1/apps", authAdmin(s.handleCreateApp))
+	mux.HandleFunc("GET /api/v1/apps/{id}", authAdmin(s.handleGetApp))
+	mux.HandleFunc("PATCH /api/v1/apps/{id}", authAdmin(s.handlePatchApp))
+	mux.HandleFunc("DELETE /api/v1/apps/{id}", authAdmin(s.handleDeleteApp))
+	mux.HandleFunc("POST /api/v1/apps/{id}/approve", authAdmin(s.handleApproveApp))
+	mux.HandleFunc("POST /api/v1/apps/{id}/refresh", authAdmin(s.handleRefreshApp))
+	mux.HandleFunc("POST /api/v1/apps/{id}/rotate-secret", authAdmin(s.handleRotateAppSecret))
+	mux.HandleFunc("POST /api/v1/apps/{id}/disable", authAdmin(s.handleDisableApp))
+	mux.HandleFunc("POST /api/v1/apps/{id}/enable", authAdmin(s.handleEnableApp))
+
 	// OIDC provider extensions (show / update).
 	mux.HandleFunc("GET /api/v1/oidc/providers/{id}", authAdmin(s.handleGetOIDCProvider))
 	mux.HandleFunc("PATCH /api/v1/oidc/providers/{id}", authAdmin(s.handlePatchOIDCProvider))

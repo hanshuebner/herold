@@ -135,6 +135,7 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(newCertCmd())
 	root.AddCommand(newSpamCmd())
 	root.AddCommand(newHookCmd())
+	root.AddCommand(newAppCmd())
 	root.AddCommand(newDiagCmd())
 	root.AddCommand(newImportCmd())
 	root.AddCommand(newIMAPImportCmd())

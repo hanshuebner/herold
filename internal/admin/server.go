@@ -25,6 +25,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/hanshuebner/herold/internal/acme"
+	"github.com/hanshuebner/herold/internal/apps"
 	"github.com/hanshuebner/herold/internal/archiveretention"
 	"github.com/hanshuebner/herold/internal/auth"
 	"github.com/hanshuebner/herold/internal/authsession"
@@ -1141,6 +1142,15 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		}
 		adminServerOpts.ExternalRetryer = extRetryer
 	}
+	// Registered apps (REQ-APP-10..14, REQ-APP-60). One guarded client
+	// serves the admin manifest fetches and the JMAP invocations; the
+	// signing secrets are sealed with the shared data key.
+	appsClient := apps.NewClient(apps.ClientOptions{
+		Timeout:                cfg.Server.Apps.InvokeTimeout.AsDuration(),
+		AllowedInsecureOrigins: cfg.Server.Apps.AllowedInsecureOrigins,
+		UserAgent:              "herold/" + adminServerOpts.ServerVersion,
+	})
+	adminServerOpts.Apps = protoadmin.AppsOptions{Client: appsClient, DataKey: imapImportDataKey}
 	adminServer := protoadmin.NewServer(
 		st,
 		dir,

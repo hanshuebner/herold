@@ -412,6 +412,10 @@ type Options struct {
 	// <data_dir>/bug-reports. Empty leaves those endpoints returning 501
 	// not_implemented.
 	BugReportsDir string
+
+	// Apps configures the registered-apps endpoints under /api/v1/apps
+	// (REQ-APP-10..14). A nil Apps.DataKey makes them answer 503.
+	Apps AppsOptions
 }
 
 // ClientlogOptions configures the client-log ingest pipeline parameters.
