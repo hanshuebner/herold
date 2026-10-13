@@ -35,6 +35,18 @@ export function setJmapOnUnauthenticated(fn: () => void): void {
   _onUnauthenticated = fn;
 }
 
+/**
+ * Optional callback invoked when a method-call response carries a
+ * `sessionState` different from the pinned session's `state` (RFC 8620
+ * §2, server REQ-APP-50). Registered by auth.svelte.ts, which refetches
+ * the session descriptor.
+ */
+let _onSessionStateChange: ((state: string) => void) | null = null;
+
+export function setJmapOnSessionStateChange(fn: ((state: string) => void) | null): void {
+  _onSessionStateChange = fn;
+}
+
 export class JmapClient {
   #session: SessionResource | null = null;
   #pinnedCapabilities: ReadonlySet<string> = new Set();
@@ -196,7 +208,12 @@ export class JmapClient {
         res.status,
       );
     }
-    return (await res.json()) as MethodCallResponse;
+    const body = (await res.json()) as MethodCallResponse;
+    const pinned = this.#session?.state;
+    if (typeof body.sessionState === 'string' && pinned !== undefined && body.sessionState !== pinned) {
+      _onSessionStateChange?.(body.sessionState);
+    }
+    return body;
   }
 
   /**

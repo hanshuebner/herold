@@ -2253,4 +2253,18 @@ export const de = {
     'Für den Admin-Zugang ist Zwei-Faktor-Authentifizierung erforderlich. TOTP jetzt einrichten?',
   'stepup.enroll.setup': 'Jetzt einrichten',
   'stepup.cancelled': 'Aktion abgebrochen — Authentifizierung erforderlich.',
+  // ── App-Aktionen (REQ-APPS-01..16) ───────────────────────────────────
+  'apps.menuSection': 'App-Aktionen',
+  'apps.handoff.title': 'Übergabe an {app}',
+  'apps.handoff.message': 'Übergabe an {app}…',
+  'apps.popupBlocked':
+    'Ihr Browser hat den neuen Tab für {app} blockiert. Erlauben Sie Pop-ups für Herold und versuchen Sie es erneut.',
+  'apps.tryAgain': 'Erneut versuchen',
+  'apps.error.rejected': '{app}: {text}',
+  'apps.error.rejectedNoText': '{app} hat diese Anfrage abgelehnt.',
+  'apps.error.unavailable': '{app} ist gerade nicht erreichbar. Versuchen Sie es später erneut.',
+  'apps.error.tooLarge': 'Diese Unterhaltung ist zu groß, um sie an {app} zu übergeben.',
+  'apps.error.gone': 'Diese Aktion ist nicht mehr verfügbar.',
+  'apps.error.badUrl': '{app} hat einen Link geliefert, der sich nicht öffnen lässt.',
+  'apps.error.failed': 'Die Übergabe an {app} ist fehlgeschlagen.',
 } as const;

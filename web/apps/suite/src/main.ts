@@ -1,5 +1,7 @@
 import { mount } from 'svelte';
 import App from './App.svelte';
+import AppHandoffView from './lib/apps/AppHandoffView.svelte';
+import { isHandoffHash } from './lib/apps/app-actions';
 import { keyboard } from './lib/keyboard/engine.svelte';
 import { initClientlog } from './lib/clientlog/clientlog.svelte';
 import { initDiagnosticsProvider } from './lib/diagnostics/provider';
@@ -35,9 +37,16 @@ if (!target) {
   throw new Error('#app element missing from index.html');
 }
 
-// One global keydown listener for the whole suite shell.
-keyboard.init();
+// The tab an app action opens renders only the handoff placeholder
+// (REQ-APPS-10): no session bootstrap, no shell, no keyboard engine.
+const app = isHandoffHash(window.location.hash)
+  ? mount(AppHandoffView, { target, props: { hash: window.location.hash } })
+  : mountSuite(target);
 
-const app = mount(App, { target });
+function mountSuite(el: HTMLElement): ReturnType<typeof mount> {
+  // One global keydown listener for the whole suite shell.
+  keyboard.init();
+  return mount(App, { target: el });
+}
 
 export default app;

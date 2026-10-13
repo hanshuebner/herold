@@ -37,6 +37,7 @@ vi.mock('../../lib/jmap/client', () => ({
   },
   strict: vi.fn(),
   setJmapOnUnauthenticated: vi.fn(),
+  setJmapOnSessionStateChange: vi.fn(),
 }));
 
 vi.mock('../../lib/jmap/types', () => ({

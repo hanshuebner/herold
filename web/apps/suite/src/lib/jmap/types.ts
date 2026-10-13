@@ -267,6 +267,17 @@ export const Capability = {
    * Both sides MUST be updated together if the URI changes.
    */
   HeroldThreadExport: 'https://netzhansa.com/jmap/thread-export',
+  /**
+   * App actions (server REQ-APP-50, web REQ-APPS-01). Session-level value
+   * is an empty object; each account's `accountCapabilities` entry is
+   * `{ actions: [{appId, extensionId, point, appName, label, icon}] }`.
+   * Carries the `AppAction/invoke` method.
+   *
+   * Joined wire surface: the Go-side constant lives at
+   * internal/protojmap/appaction/appaction.go Capability.
+   * Both sides MUST be updated together if the URI changes.
+   */
+  HeroldApps: 'https://netzhansa.com/jmap/apps',
 } as const;
 
 export type CapabilityName = (typeof Capability)[keyof typeof Capability];

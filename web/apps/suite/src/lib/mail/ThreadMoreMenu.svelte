@@ -14,6 +14,8 @@
     title?: string;
     /** Icon component rendered before the label at 16px. */
     icon?: Component<{ size?: number }>;
+    /** Further props passed to `icon`, e.g. the name of an app-action icon. */
+    iconProps?: Record<string, unknown>;
     href?: string;
     download?: string;
     onclick?: () => void;
@@ -178,7 +180,7 @@
     {#if item.busy}
       <span class="spinner"></span>
     {:else if item.icon}
-      <item.icon size={16} />
+      <item.icon size={16} {...item.iconProps} />
     {/if}
   </span>
   <span class="menu-item-label">{item.label}</span>

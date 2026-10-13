@@ -14,6 +14,11 @@
   import type { Email } from './types';
   import { pickInitialExpanded } from './pick-initial-expanded';
   import { threadSubject } from './thread-subject';
+  import { auth } from '../auth/auth.svelte';
+  import { i18n } from '../i18n/i18n.svelte';
+  import { deriveAppActions } from '../apps/app-actions';
+  import { appActionsSection } from '../apps/app-actions-menu';
+  import { appInvoker } from '../apps/app-invoke.svelte';
 
   interface Props {
     threadId: string;
@@ -141,6 +146,22 @@
   // default, and the seed for thread-scoped bulk operations
   // (REQ-MAIL-51..54 expansion handles the rest).
   let latest = $derived(emails[emails.length - 1]);
+
+  // App actions for the open thread (REQ-APPS-01..05): derived from the
+  // thread account's apps capability, so a refetched session re-renders
+  // the more-menu section.
+  let threadAccountId = $derived(
+    latest ? (mail.emailAccountId.get(latest.id) ?? mail.mailAccountId) : null,
+  );
+  let appActions = $derived(deriveAppActions(auth.session, threadAccountId, i18n.locale));
+  let menuSections = $derived([
+    appActionsSection(
+      appActions,
+      appInvoker,
+      threadAccountId ? { accountId: threadAccountId, threadId } : null,
+      t('apps.menuSection'),
+    ),
+  ]);
 
   /**
    * Union of custom-mailbox labels across all messages in the thread.
@@ -275,7 +296,7 @@
   {:else if emails.length === 0 || !latest}
     <div class="state">{t('thread.empty')}</div>
   {:else}
-    <ThreadToolbar {threadId} {latest} {standalone} onPrint={() => void printThread()} />
+    <ThreadToolbar {threadId} {latest} {standalone} {menuSections} onPrint={() => void printThread()} />
     <!-- New-reply banner lives OUTSIDE the scroll container so it is always
          visible and never displaces the user's reading position when an
          external message arrives (issue #56). The user must explicitly

@@ -24,7 +24,7 @@
  * the countdown chip (REQ-AS-24) and the step-up modal pre-check (REQ-AS-21).
  */
 
-import { jmap, setJmapOnUnauthenticated } from '../jmap/client';
+import { jmap, setJmapOnSessionStateChange, setJmapOnUnauthenticated } from '../jmap/client';
 import { UnauthenticatedError } from '../jmap/errors';
 import { get, setOnUnauthenticated } from '../api/client';
 import type { SessionResource } from '../jmap/types';
@@ -466,6 +466,56 @@ class Auth {
       // Non-fatal: keep using the existing session descriptor.
     }
   }
+
+  #stateRefresh: Promise<void> | null = null;
+  #stateRefreshAgain = false;
+
+  /**
+   * Refetch the session after a method response reported a different
+   * session state (RFC 8620 §2; REQ-APPS-05). Calls arriving while a
+   * refetch runs coalesce into one follow-up refetch. When only `state`
+   * changed, the new value is written into the existing descriptor so
+   * views deriving from its other fields do not re-run; any other change
+   * replaces the descriptor, which re-derives capabilities such as the
+   * app-action list.
+   */
+  sessionStateChanged(): Promise<void> {
+    if (this.#stateRefresh) {
+      this.#stateRefreshAgain = true;
+      return this.#stateRefresh;
+    }
+    this.#stateRefresh = (async () => {
+      do {
+        this.#stateRefreshAgain = false;
+        await this.#refetchSessionForState();
+      } while (this.#stateRefreshAgain);
+    })().finally(() => {
+      this.#stateRefresh = null;
+    });
+    return this.#stateRefresh;
+  }
+
+  async #refetchSessionForState(): Promise<void> {
+    if (this.status !== 'ready') return;
+    let next: SessionResource;
+    try {
+      next = await jmap.bootstrap();
+    } catch (err) {
+      if (err instanceof UnauthenticatedError) this.signalUnauthenticated(null);
+      return;
+    }
+    const current = this.session;
+    if (current && sameSessionApartFromState(current, next)) {
+      current.state = next.state;
+    } else {
+      this.session = next;
+    }
+  }
+}
+
+/** True when `a` and `b` differ at most in their `state` field. */
+export function sameSessionApartFromState(a: SessionResource, b: SessionResource): boolean {
+  return JSON.stringify({ ...a, state: '' }) === JSON.stringify({ ...b, state: '' });
 }
 
 export const auth = new Auth();
@@ -483,6 +533,9 @@ setOnUnauthenticated((problemType) => {
   auth.signalUnauthenticated(reason);
 });
 setJmapOnUnauthenticated(() => auth.signalUnauthenticated(null));
+setJmapOnSessionStateChange(() => {
+  void auth.sessionStateChanged();
+});
 
 // Proactive idle-expiry check on tab visibility change (REQ-AS-11, re #77).
 // When the tab returns from background after the idle deadline has passed,

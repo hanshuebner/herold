@@ -19,6 +19,7 @@ vi.mock('../jmap/client', () => ({
   jmap: { hasCapability: vi.fn(() => false) },
   strict: (r: unknown[]) => r,
   setJmapOnUnauthenticated: vi.fn(),
+  setJmapOnSessionStateChange: vi.fn(),
 }));
 
 import { jmap } from '../jmap/client';

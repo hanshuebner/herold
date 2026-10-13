@@ -33,6 +33,7 @@ const jmapBootstrap = vi.fn(async () => ({
 vi.mock('../jmap/client', () => ({
   jmap: { bootstrap: jmapBootstrap },
   setJmapOnUnauthenticated: vi.fn(),
+  setJmapOnSessionStateChange: vi.fn(),
 }));
 
 const apiGet = vi.fn();

@@ -2224,4 +2224,18 @@ export const en = {
     'Admin access requires two-factor authentication. Set up TOTP now?',
   'stepup.enroll.setup': 'Set up now',
   'stepup.cancelled': 'Action cancelled — authentication required.',
+  // ── App actions (REQ-APPS-01..16) ────────────────────────────────────
+  'apps.menuSection': 'App actions',
+  'apps.handoff.title': 'Handing over to {app}',
+  'apps.handoff.message': 'Handing over to {app}…',
+  'apps.popupBlocked':
+    'Your browser blocked the new tab for {app}. Allow pop-ups for Herold, then try again.',
+  'apps.tryAgain': 'Try again',
+  'apps.error.rejected': '{app}: {text}',
+  'apps.error.rejectedNoText': '{app} declined this request.',
+  'apps.error.unavailable': '{app} is not reachable right now. Try again later.',
+  'apps.error.tooLarge': 'This conversation is too large to hand over to {app}.',
+  'apps.error.gone': 'This action is no longer available.',
+  'apps.error.badUrl': '{app} returned a link that cannot be opened.',
+  'apps.error.failed': 'Handing over to {app} failed.',
 } as const;

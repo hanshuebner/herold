@@ -34,6 +34,7 @@ vi.mock('../../lib/jmap/client', () => ({
   },
   strict: vi.fn((r: unknown) => r),
   setJmapOnUnauthenticated: vi.fn(),
+  setJmapOnSessionStateChange: vi.fn(),
 }));
 
 // ── Router mock ───────────────────────────────────────────────────────────────
