@@ -103,7 +103,7 @@ Web-side counterpart: `../../web/requirements/28-app-actions.md` (REQ-APPS-*) fo
       "messages": [{"index": 1, "received_at": "2026-10-12T16:29:57Z", "size": 3612345}]
     }
     ```
-  - one part per exported message, named `message`, `Content-Type: message/rfc822`, `filename="NN.eml"`, in export order.
+  - one part per exported message, named `message[]`, `Content-Type: message/rfc822`, `filename="NN.eml"`, in export order. The `[]` suffix makes form parsers that collapse repeated field names (Rack, PHP) collect every part into a list.
 - **REQ-APP-42** System config `[server.apps]`: `enabled` (default `true`), `max_payload_bytes` (default 50 MiB), `invoke_timeout` (default 15 s), `allowed_insecure_origins` (default empty; REQ-APP-61). A thread whose export exceeds `max_payload_bytes` fails the invocation with `tooLarge` before any byte is sent to the app.
 - **REQ-APP-43** Request headers: `Herold-Signature: t=<unix-seconds>,v1=<hex HMAC-SHA256(secret, "v1:" + t + ":" + body)>`, `Herold-Invocation-Id`, `Herold-App-Api: 1`, `User-Agent: herold/<version>`. The signature covers the exact body bytes. Apps MUST verify it in constant time and reject requests whose `t` is more than 300 s from their clock; apps SHOULD reject a repeated `Herold-Invocation-Id`. Herold does not retry an invocation.
 - **REQ-APP-44** The app answers `2xx` with `application/json`, at most 64 KiB:
