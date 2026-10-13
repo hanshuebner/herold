@@ -3556,6 +3556,54 @@ type Metadata interface {
 	// (done/partial/failed). errMsg is persisted only for
 	// EmailBulkJobStatusFailed.
 	FinishEmailBulkJob(ctx context.Context, id EmailBulkJobID, status EmailBulkJobStatus, errMsg string) error
+
+	// -- Apps (REQ-APP-01..13, migration 0118) --
+
+	// InsertApp stores a new app and returns it with ID and timestamps
+	// assigned. Returns ErrConflict when app.AppKey is already
+	// registered.
+	InsertApp(ctx context.Context, app App) (App, error)
+
+	// GetApp returns one app by ID, or ErrNotFound.
+	GetApp(ctx context.Context, id AppID) (App, error)
+
+	// ListApps returns every registered app in ascending ID order.
+	ListApps(ctx context.Context) ([]App, error)
+
+	// UpdateApp persists the mutable fields of app (Origin, both
+	// manifests and digests, SecretSealed, State, AllPrincipals) and
+	// returns the stored row. Returns ErrNotFound when the app does not
+	// exist.
+	UpdateApp(ctx context.Context, app App) (App, error)
+
+	// ApproveAppManifest promotes the pending manifest of app id to the
+	// approved manifest and sets the state to AppStateActive, atomically,
+	// provided the pending digest equals digest (REQ-APP-11). Returns
+	// ErrConflict when nothing is pending or the digest differs, and
+	// ErrNotFound when the app does not exist.
+	ApproveAppManifest(ctx context.Context, id AppID, digest string) (App, error)
+
+	// DeleteApp removes an app and, by cascade, its principal set.
+	// Returns ErrNotFound when the app does not exist.
+	DeleteApp(ctx context.Context, id AppID) error
+
+	// SetAppPrincipals replaces the explicit principal set of app id
+	// (REQ-APP-13). Returns ErrNotFound when the app or any listed
+	// principal does not exist; nothing is written in that case.
+	SetAppPrincipals(ctx context.Context, id AppID, principals []PrincipalID) error
+
+	// ListAppPrincipals returns the explicit principal set of app id in
+	// ascending order.
+	ListAppPrincipals(ctx context.Context, id AppID) ([]PrincipalID, error)
+
+	// ListAppsForPrincipal returns the apps whose actions are offered to
+	// pid (REQ-APP-13): state active and either all_principals set or pid
+	// in the app's principal set. Ascending ID order.
+	ListAppsForPrincipal(ctx context.Context, pid PrincipalID) ([]App, error)
+
+	// RecordAppInvoked sets last_invoked_at of app id to at (REQ-APP-45).
+	// Returns ErrNotFound when the app does not exist.
+	RecordAppInvoked(ctx context.Context, id AppID, at time.Time) error
 }
 
 // BlobReader is a seekable, range-capable blob handle (REQ-STORE-14):

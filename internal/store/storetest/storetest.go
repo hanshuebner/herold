@@ -654,6 +654,10 @@ func Run(t *testing.T, f Factory) {
 		// -- Hosted mailing lists, Stage 4 archive mailbox (epic #187,
 		// REQ-MLIST-70..74, migration 0089) --
 		{"MailingList_ArchiveConfigRoundtrip", testMailingList_ArchiveConfigRoundtrip},
+		// -- Apps (issue #522, REQ-APP-01..13, migration 0118) --
+		{"Apps_CRUD", testApps_CRUD},
+		{"Apps_ApproveManifest", testApps_ApproveManifest},
+		{"Apps_PrincipalsAndOffering", testApps_PrincipalsAndOffering},
 	}
 	for _, c := range cases {
 		tc := c

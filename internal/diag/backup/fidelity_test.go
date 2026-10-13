@@ -799,6 +799,26 @@ func seedFidelityRows(t *testing.T, db *sql.DB) {
 	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		"submig-1", 1, 2, "17", "running", 42, 10, 1, "", int64(1000000), int64(2000000))
 
+	// apps + app_principals (issue #522, migration 0118). app-1 is an
+	// approved app carrying a pending manifest update and enabled for
+	// principal 1; app-2 is pending approval with no approved manifest
+	// (NULL manifest_json) and all_principals on.
+	exec(`INSERT INTO apps (id, app_key, origin, manifest_json, manifest_digest,
+	        pending_manifest_json, pending_manifest_digest, secret_sealed, state,
+	        all_principals, created_at_us, updated_at_us, last_invoked_at_us)
+	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		1, "test.fidelity.one", "https://one.example.test",
+		`{"herold_app":1}`, "aaaa", `{"herold_app":1,"x":2}`, "bbbb",
+		binaryBlob, "active", 0, int64(1000000), int64(2000000), int64(3000000))
+	exec(`INSERT INTO apps (id, app_key, origin, manifest_json, manifest_digest,
+	        pending_manifest_json, pending_manifest_digest, secret_sealed, state,
+	        all_principals, created_at_us, updated_at_us, last_invoked_at_us)
+	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		2, "test.fidelity.two", "http://127.0.0.1:18080",
+		nil, "", `{"herold_app":1}`, "cccc",
+		binaryBlob, "pending_approval", 1, int64(4000000), int64(4000000), 0)
+	exec(`INSERT INTO app_principals (app_id, principal_id) VALUES (?, ?)`, 1, 1)
+
 	// sessions — excluded from backup content by default (backup.go writes
 	// an empty JSONL regardless), but the engine must still round-trip it
 	// correctly since TestFidelity_AllTables drives EnumerateRows/Insert

@@ -178,6 +178,8 @@ var tableReg = map[string]tableDesc{
 	"oauth_refresh_tokens":       {&OAuthRefreshTokenRow{}, "id"},
 	"subaccount_migrations":      {&SubAccountMigrationRow{}, "id"},
 	"api_key_elevations":         {&APIKeyElevationRow{}, "api_key_id"},
+	"apps":                       {&AppRow{}, "id"},
+	"app_principals":             {&AppPrincipalRow{}, "app_id, principal_id"},
 }
 
 // colName extracts the SQL column name from a struct field's json tag.

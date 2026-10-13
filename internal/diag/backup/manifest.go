@@ -945,7 +945,16 @@ const CurrentBackupVersion = 1
 //	column names what the normalized match actually resolved against,
 //	for the transparency record. No new table; LLMClassificationRow
 //	gains the one field.
-const CurrentSchemaVersion = 117
+//
+// 118 — 0118_apps.sql (issue #522, REQ-APP-01, REQ-APP-02). Adds
+//
+//	apps (one row per registered app: approved and pending manifest
+//	snapshots with their digests, the sealed signing secret, state,
+//	all_principals, timestamps) and app_principals (app_id,
+//	principal_id), the explicit enablement set, FK to apps(id) and
+//	principals(id), both ON DELETE CASCADE. New tables; AppRow and
+//	AppPrincipalRow.
+const CurrentSchemaVersion = 118
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can
@@ -1196,4 +1205,9 @@ var TableNames = []string{
 	// have no effect (the parent api_keys row's own state governs
 	// whether the credential is still valid).
 	"api_key_elevations",
+	// Registered apps (issue #522, REQ-APP-01..13, migration 0118).
+	// app_principals FKs to apps(id) and principals(id), both ON DELETE
+	// CASCADE; restored after both parents.
+	"apps",
+	"app_principals",
 }

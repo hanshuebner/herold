@@ -119,6 +119,11 @@ func (s *Store) TruncateAll(ctx context.Context) error {
 		// is NOT reached by CASCADE from any of them; must be enumerated
 		// explicitly or rows leak across subtests.
 		"oauth_clients",
+		// Registered apps (issue #522, migration 0118). No FK to any
+		// table above (app_principals cascades from apps), so apps must
+		// be enumerated explicitly or rows leak across subtests.
+		"app_principals",
+		"apps",
 		"oidc_links",
 		"oidc_providers",
 		"principals",

@@ -1483,3 +1483,31 @@ type OAuthClientRow struct {
 	ClientSecretHash *string `json:"client_secret_hash,omitempty"`
 	CreatedAtUs      int64   `json:"created_at_us"`
 }
+
+// AppRow mirrors one row of the apps table introduced in migration 0118
+// (issue #522, REQ-APP-01, REQ-APP-02). manifest_json and
+// pending_manifest_json are nullable TEXT; secret_sealed is the
+// secrets.Seal ciphertext, serialised as base64 by encoding/json.
+type AppRow struct {
+	ID                    int64   `json:"id"`
+	AppKey                string  `json:"app_key"`
+	Origin                string  `json:"origin"`
+	ManifestJSON          *string `json:"manifest_json,omitempty" nullable:"true"`
+	ManifestDigest        string  `json:"manifest_digest"`
+	PendingManifestJSON   *string `json:"pending_manifest_json,omitempty" nullable:"true"`
+	PendingManifestDigest string  `json:"pending_manifest_digest"`
+	SecretSealed          []byte  `json:"secret_sealed"`
+	State                 string  `json:"state"`
+	AllPrincipals         bool    `json:"all_principals"` // SQLite 0/1, Postgres bool
+	CreatedAtUs           int64   `json:"created_at_us"`
+	UpdatedAtUs           int64   `json:"updated_at_us"`
+	LastInvokedAtUs       int64   `json:"last_invoked_at_us"`
+}
+
+// AppPrincipalRow mirrors one row of the app_principals table
+// introduced in migration 0118 (issue #522, REQ-APP-13). PK is
+// (app_id, principal_id).
+type AppPrincipalRow struct {
+	AppID       int64 `json:"app_id"`
+	PrincipalID int64 `json:"principal_id"`
+}
