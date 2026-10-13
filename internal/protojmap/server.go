@@ -174,6 +174,8 @@ type Server struct {
 	dlMu      sync.Mutex
 	dlBuckets map[store.PrincipalID]*tokenBucket
 
+	threadExporter *ThreadExporter
+
 	mu        sync.Mutex
 	closed    bool
 	servers   []*http.Server
@@ -252,6 +254,7 @@ func NewServer(
 		opts:      opts,
 		dlBuckets: make(map[store.PrincipalID]*tokenBucket),
 	}
+	s.threadExporter = NewThreadExporter(st)
 	if opts.APIKeyLookup != nil {
 		s.apikeyLookup = opts.APIKeyLookup
 	} else {
@@ -280,6 +283,10 @@ func NewServer(
 	// caller's sub-accounts whenever the store has any; this capability
 	// just tells the client the shape is meaningful to look for.
 	s.reg.installCapabilityDescriptor(CapabilitySubAccounts, struct{}{})
+	// Thread export (REQ-TEXP-10): served by this server's own
+	// /jmap/download-thread route, so it is advertised with it.
+	s.reg.installCapabilityDescriptor(CapabilityThreadExport,
+		threadExportCapability{DownloadURL: threadExportDownloadURL})
 	return s
 }
 
@@ -401,6 +408,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /jmap/eventsource", s.requireAuth(s.requireScope(auth.ScopeMailReceive, s.handleEventSource)))
 	mux.HandleFunc("POST /jmap/upload/{accountId}", s.requireAuth(s.requireScope(auth.ScopeMailSend, s.handleUpload)))
 	mux.HandleFunc("GET /jmap/download/{accountId}/{blobId}/{type}/{name}", s.requireAuth(s.requireScope(auth.ScopeMailReceive, s.handleDownload)))
+	mux.HandleFunc("GET /jmap/download-thread/{accountId}/{threadId}/{name}", s.requireAuth(s.requireScope(auth.ScopeMailReceive, s.handleDownloadThread)))
 }
 
 // withConcurrencyLimit caps simultaneous in-flight requests with a

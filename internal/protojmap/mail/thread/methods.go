@@ -137,25 +137,9 @@ func (h *handlerSet) listAllMessages(ctx context.Context, callerPID, ownerPID st
 }
 
 // accessibleMailboxes returns the mailbox set for the requested
-// (callerPID, ownerPID) routing. For caller == owner, or when ownerPID
-// is caller's own sub-account (REQ-SUBACCT-04), it is the owned mailbox
-// list; otherwise it is the ACL-shared subset owned by ownerPID and
-// visible to callerPID.
+// (callerPID, ownerPID) routing; see protojmap.AccessibleMailboxes.
 func (h *handlerSet) accessibleMailboxes(ctx context.Context, callerPID, ownerPID store.PrincipalID) ([]store.Mailbox, error) {
-	if protojmap.HasOwnerAccess(ctx, h.store.Meta(), callerPID, ownerPID) {
-		return h.store.Meta().ListMailboxes(ctx, ownerPID)
-	}
-	shared, err := h.store.Meta().ListMailboxesAccessibleBy(ctx, callerPID)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]store.Mailbox, 0, len(shared))
-	for _, mb := range shared {
-		if mb.PrincipalID == ownerPID {
-			out = append(out, mb)
-		}
-	}
-	return out, nil
+	return protojmap.AccessibleMailboxes(ctx, h.store.Meta(), callerPID, ownerPID)
 }
 
 // computeForPrincipal returns the (msg→thread, thread→[msgs]) maps for
@@ -214,18 +198,11 @@ func renderThreadID(k ThreadKey) jmapID {
 	return "t" + strconv.FormatUint(uint64(k), 10)
 }
 
-// parseThreadID accepts the "t<n>" wire form. The bare numeric form is
-// also accepted for back-compatibility with any caller that constructed
-// a thread id by hand before this format was unified.
+// parseThreadID accepts the "t<n>" wire form (and the bare numeric
+// form); see protojmap.ParseThreadID.
 func parseThreadID(s jmapID) (ThreadKey, bool) {
-	if len(s) > 1 && s[0] == 't' {
-		s = s[1:]
-	}
-	v, err := strconv.ParseUint(s, 10, 64)
-	if err != nil || v == 0 {
-		return 0, false
-	}
-	return ThreadKey(v), true
+	v, ok := protojmap.ParseThreadID(s)
+	return ThreadKey(v), ok
 }
 
 func renderEmailID(id store.MessageID) jmapID {
@@ -367,9 +344,9 @@ func (h *handlerSet) filterThreadRowsByACL(
 	if err != nil {
 		return map[uint64][]store.ThreadMessageRow{}
 	}
-	mbSet := make(map[store.MailboxID]struct{}, len(visible))
+	mbSet := make(map[store.MailboxID]store.Mailbox, len(visible))
 	for _, mb := range visible {
-		mbSet[mb.ID] = struct{}{}
+		mbSet[mb.ID] = mb
 	}
 	out := make(map[uint64][]store.ThreadMessageRow, len(in))
 	for k, rows := range in {
@@ -379,19 +356,7 @@ func (h *handlerSet) filterThreadRowsByACL(
 			if gerr != nil {
 				continue
 			}
-			matched := false
-			for _, mm := range m.Mailboxes {
-				if _, ok := mbSet[mm.MailboxID]; ok {
-					matched = true
-					break
-				}
-			}
-			if !matched {
-				if _, ok := mbSet[m.MailboxID]; ok {
-					matched = true
-				}
-			}
-			if matched {
+			if len(protojmap.VisibleMemberships(m, mbSet)) > 0 {
 				kept = append(kept, r)
 			}
 		}
