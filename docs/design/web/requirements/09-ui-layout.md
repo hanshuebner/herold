@@ -140,7 +140,7 @@ When a thread is open, the top of the reading pane shows the thread-level afford
 |----|-------------|
 | REQ-UI-19a | The thread header has two rows. First row: thread-action toolbar (REQ-UI-19b). Second row: the thread subject with search-term highlighting (when the thread was opened from a search) plus the importance chevron and trailing thread-level actions (print, open-in-new-window). |
 | REQ-UI-19b | Thread-action toolbar — left-to-right — back arrow (returns to the list), archive, report-spam, delete, mark-unread (returns to list and marks the thread `$seen=null`), snooze, add-to-tasks (cut for v1; hidden), move-to (opens a single-mailbox picker), label (opens the label picker), three-dot more-menu (REQ-UI-19c). |
-| REQ-UI-19c | Three-dot more-menu items (thread-level): mark-as-important / not-important, mute-thread, filter-similar, forward-as-attachment, "Switch to simple toolbar" (toggles a compact toolbar variant). The "simple toolbar" mode is a user preference persisted in settings. |
+| REQ-UI-19c | Three-dot more-menu items (thread-level): mark-as-important / not-important, mute-thread, filter-similar, forward-as-attachment, download thread (REQ-MAIL-143), "Switch to simple toolbar" (toggles a compact toolbar variant); below a separator, the app actions offered to the principal (`28-app-actions.md` REQ-APPS-01). The "simple toolbar" mode is a user preference persisted in settings. |
 | REQ-UI-19d | Subject row: the rendered thread subject; if opened from a search, matched terms are highlighted (`<mark>` background `--support-info`). Trailing icons: print (opens the browser print dialog scoped to the thread) and open-in-new-window (opens the thread in a new browser tab via the suite shell's routing). |
 
 ### Message accordion

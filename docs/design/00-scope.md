@@ -1,5 +1,21 @@
 # 00 — Scope and non-goals
 
+**2026-10-13** (rev 12): apps and thread export added. An **app** is an
+external web application the operator registers; it publishes a manifest
+(`/.well-known/herold-app.json`) declaring actions at typed extension points,
+starting with `thread.action`. The suite renders the actions natively; picking
+one makes the herold server export the thread's raw messages and POST them to
+the app over a signed server-to-server request, and the suite opens the
+one-time URL the app returns. No app code runs in herold, the suite stays
+content-blind, and apps receive no herold credentials (NG11 unchanged). Apps
+are distinct from plugins: plugins are local executables with no UI and no
+state access, apps are remote services with a declared, per-invocation data
+grant. Thread export (a whole thread as a zip of `.eml` files) ships as a
+user-facing download and as the building block apps receive. New files
+`server/requirements/29-apps.md` (REQ-APP-*, REQ-TEXP-*) and
+`web/requirements/28-app-actions.md` (REQ-APPS-*); REQ-MAIL-143 and
+REQ-UI-19c amended.
+
 **2026-05-08** (rev 11): Gmail Takeout import promoted to phase-2 scope.
 Driven by the maintainer's own takeout: a fraction of plausible adopters
 are migrating from Gmail and the "start using herold" path without an
@@ -215,6 +231,8 @@ Plugin **contract** (process lifecycle, JSON-RPC schema, versioning) is a stable
 Plugin **catalogue** (installable plugins) is an ecosystem concern; we don't run a registry. Operators install plugins by dropping an executable into `plugins/` in the data dir and declaring it in system config.
 
 Detail: see `server/requirements/11-plugins.md` and `server/architecture/07-plugin-architecture.md`.
+
+Remote integrations that contribute user-facing actions are **apps**, not plugins: operator-registered HTTPS services with a manifest and a per-invocation data grant. Detail: `server/requirements/29-apps.md`.
 
 ## Config split summary
 
