@@ -257,6 +257,16 @@ export const Capability = {
    * Both sides MUST be updated together if the URI changes.
    */
   HeroldEmailQueryExtensions: 'https://netzhansa.com/jmap/email-query-extensions',
+  /**
+   * Thread export as a zip of `.eml` files (server REQ-TEXP-10, web
+   * REQ-MAIL-143). The capability value is
+   * `{ downloadUrl: "/jmap/download-thread/{accountId}/{threadId}/{name}" }`.
+   *
+   * Joined wire surface: the Go-side constant lives at
+   * internal/protojmap/download_thread.go CapabilityThreadExport.
+   * Both sides MUST be updated together if the URI changes.
+   */
+  HeroldThreadExport: 'https://netzhansa.com/jmap/thread-export',
 } as const;
 
 export type CapabilityName = (typeof Capability)[keyof typeof Capability];

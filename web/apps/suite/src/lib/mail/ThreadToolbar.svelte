@@ -10,6 +10,12 @@
    * action row was removed; reactions moved into the message header;
    * reply / forward live in the fixed reply bar at the bottom. The toolbar
    * uses the THREAD_ACTIONS registry directly with a fixed visible count.
+   *
+   * The trailing three-dot more-menu (REQ-UI-19c) carries the thread-level
+   * items that have no toolbar button: mark important / not important and
+   * Download thread (REQ-MAIL-143). Callers append further groups through
+   * `menuSections`; each renders below a separator (app actions,
+   * REQ-APPS-01).
    */
   import { mail, isInAnyJunkMailbox } from './store.svelte';
   import { navigateBackFromThread } from './navigate-back';
@@ -19,6 +25,11 @@
   import { managedRules } from '../settings/managed-rules.svelte';
   import { llmTransparency } from '../llm/transparency.svelte';
   import { THREAD_ACTIONS } from './actions';
+  import { auth } from '../auth/auth.svelte';
+  import { threadDownloadLink } from './thread-download';
+  import ThreadMoreMenu, { type MoreMenuItem, type MoreMenuSection } from './ThreadMoreMenu.svelte';
+  import ImportantIcon from '../icons/ImportantIcon.svelte';
+  import DownloadIcon from '../icons/DownloadIcon.svelte';
   import { t } from '../i18n/i18n.svelte';
   import ArchiveIcon from '../icons/ArchiveIcon.svelte';
   import TrashIcon from '../icons/TrashIcon.svelte';
@@ -55,8 +66,13 @@
      *     navigate back to inside the popup.
      */
     standalone?: boolean;
+    /**
+     * Extra more-menu groups rendered below the built-in items, each
+     * after a separator. Empty groups are not rendered.
+     */
+    menuSections?: MoreMenuSection[];
   }
-  let { threadId, latest, onPrint, standalone = false }: Props = $props();
+  let { threadId, latest, onPrint, standalone = false, menuSections = [] }: Props = $props();
 
   let inboxId = $derived(mail.inbox?.id);
   let trashId = $derived(mail.trash?.id);
@@ -354,6 +370,42 @@
     },
   }));
 
+  // ── More-menu (REQ-UI-19c) ─────────────────────────────────────────────
+
+  let isImportant = $derived(Boolean(latest.keywords.$important));
+
+  // REQ-MAIL-143: absent when the session lacks the thread-export
+  // capability. The zip is named after the thread's first message so a
+  // "Re: " prefix on later replies does not leak into the filename.
+  let downloadLink = $derived(
+    threadDownloadLink(auth.session, {
+      accountId: mail.emailAccountId.get(latest.id) ?? mail.mailAccountId,
+      threadId,
+      subject: threadEmails[0]?.subject ?? latest.subject,
+    }),
+  );
+
+  let menuItems = $derived.by((): MoreMenuItem[] => {
+    const items: MoreMenuItem[] = [
+      {
+        id: 'toggleImportant',
+        label: isImportant ? t('thread.markNotImportant') : t('thread.markImportant'),
+        icon: ImportantIcon,
+        onclick: () => void mail.toggleImportant(latest.id),
+      },
+    ];
+    if (downloadLink) {
+      items.push({
+        id: 'downloadThread',
+        label: t('thread.download'),
+        icon: DownloadIcon,
+        href: downloadLink.href,
+        download: downloadLink.filename,
+      });
+    }
+    return items;
+  });
+
   // All visible thread actions in canonical order — shown directly as icon
   // buttons; there is no overflow menu.
   let orderedThreadActions = $derived.by(() => {
@@ -427,6 +479,8 @@
       {/if}
     </button>
   {/each}
+
+  <ThreadMoreMenu items={menuItems} sections={menuSections} />
 
   <span class="spacer" aria-hidden="true"></span>
 </div>

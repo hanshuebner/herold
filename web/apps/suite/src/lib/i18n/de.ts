@@ -286,6 +286,9 @@ export const de = {
   'thread.move': 'Verschieben',
   'thread.label': 'Labels',
   'thread.moreActions': 'Weitere Aktionen',
+  'thread.markImportant': 'Als wichtig markieren',
+  'thread.markNotImportant': 'Als nicht wichtig markieren',
+  'thread.download': 'Konversation herunterladen',
 
   // ── Thread reader: selbst verfasste Karte ────────────────────────────
   'mail.thread.fromYou': 'Du',

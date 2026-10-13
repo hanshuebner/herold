@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { emlDownloadFilename } from './download-filename';
+import { emlDownloadFilename, threadZipFilename } from './download-filename';
 
 describe('emlDownloadFilename', () => {
   it('uses the subject as-is when it is short and safe', () => {
@@ -62,6 +62,28 @@ describe('emlDownloadFilename', () => {
   it('returns message-unknown.eml when subject, blobId, and emailId are all empty-ish', () => {
     expect(emlDownloadFilename({ subject: '', blobId: '', emailId: '' })).toBe(
       'message-unknown.eml',
+    );
+  });
+});
+
+describe('threadZipFilename (REQ-MAIL-143)', () => {
+  it('uses the sanitised subject with a .zip extension', () => {
+    expect(threadZipFilename({ subject: 'Plans: Q3 / Q4?', threadId: 'T1' })).toBe(
+      'Plans_ Q3 _ Q4_.zip',
+    );
+  });
+
+  it('truncates the subject to 80 chars before appending .zip', () => {
+    const name = threadZipFilename({ subject: 'a'.repeat(120), threadId: 'T1' });
+    expect(name).toBe(`${'a'.repeat(80)}.zip`);
+  });
+
+  it('falls back to thread-<threadId-prefix>.zip when the subject is empty', () => {
+    expect(threadZipFilename({ subject: null, threadId: 'THREAD123456' })).toBe(
+      'thread-THREAD12.zip',
+    );
+    expect(threadZipFilename({ subject: ':: <<>>', threadId: 'THREAD123456' })).toBe(
+      'thread-THREAD12.zip',
     );
   });
 });

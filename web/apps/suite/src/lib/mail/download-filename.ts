@@ -19,15 +19,35 @@ export function emlDownloadFilename(args: {
   blobId?: string | null;
   emailId: string;
 }): string {
-  const cleaned = sanitiseSubject(args.subject);
-  // Treat a subject that reduces to only underscores / whitespace as empty
-  // (e.g. ":: <<>>") — fall back to the blob-id stub so we don't hand the
-  // user a file called "__ ____.eml".
-  if (cleaned && cleaned.replace(/[_\s]/g, '').length > 0) {
-    return `${cleaned}.eml`;
-  }
+  const cleaned = usableSubject(args.subject);
+  if (cleaned) return `${cleaned}.eml`;
   const id = (args.blobId ?? args.emailId).slice(0, 8);
   return `message-${id || 'unknown'}.eml`;
+}
+
+/**
+ * Suggested filename for the "Download thread" zip (REQ-MAIL-143). Same
+ * sanitising rules as {@link emlDownloadFilename}; the fallback is
+ * `thread-<short>.zip` where `<short>` is the first 8 characters of the
+ * thread id. Always ends in `.zip`.
+ */
+export function threadZipFilename(args: {
+  subject: string | null | undefined;
+  threadId: string;
+}): string {
+  const cleaned = usableSubject(args.subject);
+  if (cleaned) return `${cleaned}.zip`;
+  return `thread-${args.threadId.slice(0, 8) || 'unknown'}.zip`;
+}
+
+/**
+ * The sanitised subject, or '' when it reduces to only underscores and
+ * whitespace (e.g. ":: <<>>"), so callers fall back to an id stub
+ * instead of handing the user a file called "__ ____.eml".
+ */
+function usableSubject(raw: string | null | undefined): string {
+  const cleaned = sanitiseSubject(raw);
+  return cleaned.replace(/[_\s]/g, '').length > 0 ? cleaned : '';
 }
 
 function sanitiseSubject(raw: string | null | undefined): string {

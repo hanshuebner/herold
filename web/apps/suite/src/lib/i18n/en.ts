@@ -285,6 +285,9 @@ export const en = {
   'thread.move': 'Move',
   'thread.label': 'Label',
   'thread.moreActions': 'More actions',
+  'thread.markImportant': 'Mark as important',
+  'thread.markNotImportant': 'Mark as not important',
+  'thread.download': 'Download thread',
 
   // ── Thread reader: self-authored card treatment ──────────────────────
   // Displayed in place of the sender name when the From address belongs to

@@ -18,7 +18,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/svelte';
+import { render, screen, fireEvent, within } from '@testing-library/svelte';
 import ThreadToolbar from './ThreadToolbar.svelte';
 import type { Email, Mailbox } from './types';
 
@@ -120,6 +120,9 @@ const { mailMock, routerMock, INBOX_MBX, SENT_MBX, ARCHIVE_MBX, TRASH_MBX, JUNK_
       markThreadSeen: vi.fn().mockResolvedValue(undefined),
       reportSpam: vi.fn().mockResolvedValue(undefined),
       notSpam: vi.fn().mockResolvedValue({ ok: true, undo: vi.fn() }),
+      toggleImportant: vi.fn().mockResolvedValue(undefined),
+      emailAccountId: new Map<string, string>(),
+      mailAccountId: 'acc-primary' as string | null,
     };
 
     const routerMock = { parts: ['mail'] as readonly string[], navigate: vi.fn() };
@@ -143,6 +146,12 @@ vi.mock('./store.svelte', () => ({
   },
 }));
 vi.mock('../router/router.svelte', () => ({ router: routerMock }));
+
+// auth.session drives the thread-export capability gate (REQ-MAIL-143).
+const { authMock } = vi.hoisted(() => ({
+  authMock: { session: null as { capabilities: Record<string, unknown> } | null },
+}));
+vi.mock('../auth/auth.svelte', () => ({ auth: authMock }));
 vi.mock('../i18n/i18n.svelte', () => ({
   t: (key: string) => key,
   localeTag: () => 'en',
@@ -205,6 +214,8 @@ vi.mock('../icons/BlockIcon.svelte', () => ({ default: () => null }));
 vi.mock('../icons/PrintIcon.svelte', () => ({ default: () => null }));
 vi.mock('../icons/NotSpamIcon.svelte', () => ({ default: () => null }));
 vi.mock('../icons/InspectClassificationIcon.svelte', () => ({ default: () => null }));
+vi.mock('../icons/ImportantIcon.svelte', () => ({ default: () => null }));
+vi.mock('../icons/DownloadIcon.svelte', () => ({ default: () => null }));
 
 // ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -612,5 +623,100 @@ describe('ThreadToolbar standalone mode', () => {
     expect(mailMock.bulkArchive).not.toHaveBeenCalled();
     expect(closeSpy).toHaveBeenCalledOnce();
     expect(routerMock.navigate).not.toHaveBeenCalled();
+  });
+});
+
+describe('ThreadToolbar more-menu (REQ-UI-19c, REQ-MAIL-143)', () => {
+  const THREAD_EXPORT = 'https://netzhansa.com/jmap/thread-export';
+
+  beforeEach(() => {
+    mailMock.inbox = INBOX_MBX;
+    mailMock.trash = null;
+    mailMock.mailboxes = new Map();
+    mailMock.emailAccountId = new Map();
+    mailMock.mailAccountId = 'acc-primary';
+    mailMock.toggleImportant.mockClear();
+    authMock.session = {
+      capabilities: {
+        [THREAD_EXPORT]: { downloadUrl: '/jmap/download-thread/{accountId}/{threadId}/{name}' },
+      },
+    };
+  });
+
+  afterEach(() => {
+    authMock.session = null;
+  });
+
+  async function openMenu() {
+    await fireEvent.click(screen.getByRole('button', { name: 'thread.moreActions' }));
+    return screen.getByRole('menu');
+  }
+
+  it('offers Download thread named after the first message of the thread', async () => {
+    const first = { ...makeEmail('e-1', 'T-dl', { 'mbx-inbox': true }), subject: 'Trip: plans' };
+    const reply = { ...makeEmail('e-2', 'T-dl', { 'mbx-inbox': true }), subject: 'Re: Trip: plans' };
+    mailMock.threadEmails = () => [first, reply];
+    renderToolbar(reply);
+
+    const menu = await openMenu();
+    const link = within(menu).getByRole('menuitem', { name: 'thread.download' });
+    expect(link.tagName).toBe('A');
+    expect(link).toHaveAttribute('download', 'Trip_ plans.zip');
+    expect(link).toHaveAttribute('href', '/jmap/download-thread/acc-primary/T-dl/Trip_%20plans.zip');
+  });
+
+  it('targets the owning account of a combined-inbox row', async () => {
+    const email = makeEmail('e-sub', 'T-sub', { 'mbx-inbox': true });
+    mailMock.threadEmails = () => [email];
+    mailMock.emailAccountId = new Map([['e-sub', 'acc-sub']]);
+    renderToolbar(email);
+
+    const menu = await openMenu();
+    expect(within(menu).getByRole('menuitem', { name: 'thread.download' })).toHaveAttribute(
+      'href',
+      '/jmap/download-thread/acc-sub/T-sub/Test.zip',
+    );
+  });
+
+  it('hides Download thread when the session lacks the thread-export capability', async () => {
+    authMock.session = { capabilities: {} };
+    const email = makeEmail('e-1', 'T-nocap', { 'mbx-inbox': true });
+    mailMock.threadEmails = () => [email];
+    renderToolbar(email);
+
+    const menu = await openMenu();
+    expect(within(menu).queryByRole('menuitem', { name: 'thread.download' })).not.toBeInTheDocument();
+    expect(within(menu).getByRole('menuitem', { name: 'thread.markImportant' })).toBeInTheDocument();
+  });
+
+  it('toggles importance on the latest message', async () => {
+    const email = {
+      ...makeEmail('e-imp', 'T-imp', { 'mbx-inbox': true }),
+      keywords: { $seen: true, $important: true } as Record<string, true | undefined>,
+    };
+    mailMock.threadEmails = () => [email];
+    renderToolbar(email);
+
+    const menu = await openMenu();
+    await fireEvent.click(within(menu).getByRole('menuitem', { name: 'thread.markNotImportant' }));
+    expect(mailMock.toggleImportant).toHaveBeenCalledWith('e-imp');
+  });
+
+  it('appends caller-supplied sections below a separator', async () => {
+    const email = makeEmail('e-1', 'T-sec', { 'mbx-inbox': true });
+    mailMock.threadEmails = () => [email];
+    render(ThreadToolbar, {
+      props: {
+        threadId: 'T-sec',
+        latest: email,
+        onPrint: vi.fn(),
+        menuSections: [{ id: 'apps', label: 'Apps', items: [{ id: 'app-1', label: 'Hand over', onclick: vi.fn() }] }],
+      },
+    });
+
+    const menu = await openMenu();
+    expect(within(menu).getByRole('separator')).toBeInTheDocument();
+    const labels = within(menu).getAllByRole('menuitem').map((el) => el.textContent?.trim());
+    expect(labels[labels.length - 1]).toBe('Hand over');
   });
 });
