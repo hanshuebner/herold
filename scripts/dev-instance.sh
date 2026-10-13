@@ -69,6 +69,14 @@
 #               .../requests to inspect/clear recorded POSTs; the same
 #               origin also serves the remote-image fixture below at
 #               .../image.png)
+#           FAKE_APP_ORIGIN=http://127.0.0.1:<port>  (fake herold app,
+#               issue #522, REQ-APP-70/71; registered, approved and
+#               enabled for alice@example.local, whose INBOX holds the
+#               two-message thread "Old computers to give away"; its
+#               thread actions are open-url, notice, reject, fail and
+#               slow; GET/DELETE .../requests inspects/clears recorded
+#               invocations)
+#           FAKE_APP_ID=<id>  (the fake app's id in the apps table)
 #           EXTERNAL_IMAGES_MODE=internalize|passthrough  (issue #443;
 #               "internalize" unless --external-images-passthrough was
 #               given -- see the flag's warning above before treating a
@@ -429,6 +437,79 @@ start_fake_servers() {
 
     log "fake IdP running: auth_url=$FAKEIDP_AUTH_URL client_id=$FAKEIDP_CLIENT_ID"
     log "fake SMTP running: smtp=$FAKESMTP_SMTP_ADDR status=http://$FAKESMTP_HTTP_ADDR"
+}
+
+# start_fake_app DIR — build heroldfakeapp into DIR/bin/, start it, and
+# wait for its report file. Sets these globals for the caller:
+#   FAKEAPP_PID  FAKE_APP_ORIGIN
+#
+# Started unconditionally (issue #522, REQ-APP-71) so every dev instance
+# has an app whose thread actions the Suite can invoke. The fake answers
+# over plain HTTP on 127.0.0.1, which [server.apps]
+# allowed_insecure_origins admits; the slow extension waits past the
+# instance's invoke_timeout so the appUnavailable path is reachable.
+FAKEAPP_PID=""
+FAKE_APP_ORIGIN=""
+FAKE_APP_ID=""
+
+start_fake_app() {
+    local dir="$1"
+    local bin="$dir/bin/heroldfakeapp"
+    mkdir -p "$dir/bin"
+    log "building heroldfakeapp"
+    ( cd "$REPO_ROOT" && go build -o "$bin" ./cmd/heroldfakeapp ) \
+        >"$dir/logs/build-fakeapp.log" 2>&1 \
+        || { cat "$dir/logs/build-fakeapp.log" >&2; die "go build ./cmd/heroldfakeapp failed"; }
+
+    local report="$dir/fakeapp.report"
+    log "starting heroldfakeapp"
+    "$bin" --report-file "$report" --slow-delay 20s \
+        >>"$dir/logs/fakeapp.log" 2>&1 &
+    FAKEAPP_PID=$!
+    if ! wait_for_file "$report" 10; then
+        kill "$FAKEAPP_PID" 2>/dev/null || true
+        die "fake app did not write report within 10s; see $dir/logs/fakeapp.log"
+    fi
+    FAKE_APP_ORIGIN=$(read_report_key "$report" origin)
+    log "fake app running: $FAKE_APP_ORIGIN"
+}
+
+# register_fake_app DIR ADMIN_URL API_KEY — register the fake app through
+# the admin CLI, hand the fake the signing secret herold generated,
+# approve the reviewed manifest digest, enable the app for
+# alice@$SEED_DOMAIN and seed her app-action thread (REQ-APP-71). Sets
+# FAKE_APP_ID.
+register_fake_app() {
+    local dir="$1" admin_url="$2" api_key="$3"
+    local out
+    out=$(HEROLD_API_KEY="$api_key" "$HEROLD_BIN" app add "$FAKE_APP_ORIGIN" \
+        --server-url "$admin_url" --system-config "$dir/system.toml" --json \
+        2>"$dir/logs/app-add.err") \
+        || { cat "$dir/logs/app-add.err" >&2; die "herold app add failed"; }
+    local secret digest
+    FAKE_APP_ID=$(jq -r '.id' <<<"$out")
+    secret=$(jq -r '.secret' <<<"$out")
+    digest=$(jq -r '.pending_manifest_digest' <<<"$out")
+    { [ -n "$FAKE_APP_ID" ] && [ -n "$secret" ] && [ -n "$digest" ]; } \
+        || die "herold app add returned no id/secret/digest"
+    curl -fsS -X PUT --data "$secret" "$FAKE_APP_ORIGIN/secret" >/dev/null \
+        || die "could not hand the signing secret to the fake app"
+    HEROLD_API_KEY="$api_key" "$HEROLD_BIN" app approve "$FAKE_APP_ID" --digest "$digest" \
+        --server-url "$admin_url" --system-config "$dir/system.toml" --json \
+        >/dev/null 2>"$dir/logs/app-approve.err" \
+        || { cat "$dir/logs/app-approve.err" >&2; die "herold app approve failed"; }
+    HEROLD_API_KEY="$api_key" "$HEROLD_BIN" app set "$FAKE_APP_ID" --principal "alice@$SEED_DOMAIN" \
+        --server-url "$admin_url" --system-config "$dir/system.toml" --json \
+        >/dev/null 2>"$dir/logs/app-set.err" \
+        || { cat "$dir/logs/app-set.err" >&2; die "herold app set failed"; }
+    log "fake app registered (id $FAKE_APP_ID), approved and enabled for alice@$SEED_DOMAIN"
+
+    "$HEROLD_BIN" dev seed-app-thread \
+        --system-config "$dir/system.toml" \
+        --principal "alice@$SEED_DOMAIN" \
+        >"$dir/logs/dev-seed-app-thread.log" 2>&1 \
+        || { cat "$dir/logs/dev-seed-app-thread.log" >&2; die "dev seed-app-thread failed"; }
+    cat "$dir/logs/dev-seed-app-thread.log" >&2
 }
 
 # start_fake_fcm DIR — build heroldfakefcm into DIR/bin/, start it, and wait
@@ -882,6 +963,19 @@ extra_ca_file = "$FAKE_UNSUBSCRIBE_CERT_FILE"
 EOF
     log "appended [external_images.network] (fake unsubscribe origin port $FAKE_UNSUBSCRIBE_PORT) to system.toml"
 
+    # Fake herold app (issue #522, REQ-APP-71): started before the server
+    # so [server.apps] already admits its plain-HTTP loopback origin. A
+    # short invoke_timeout keeps the slow extension's appUnavailable path
+    # quick to observe.
+    start_fake_app "$dir"
+    cat >> "$dir/system.toml" <<EOF
+
+[server.apps]
+invoke_timeout = "5s"
+allowed_insecure_origins = ["$FAKE_APP_ORIGIN"]
+EOF
+    log "appended [server.apps] (fake app origin $FAKE_APP_ORIGIN) to system.toml"
+
     # OIDC first-login auto-provisioning fake IdP (REQ-AUTH-56, issue #230):
     # build and start heroldfakeoidc now (no system.toml dependency, unlike
     # the external-submission fakes below); it is registered as an
@@ -1009,6 +1103,10 @@ EOF
     # registry is DB state, only writable through the running server.
     register_oauth2_client "$dir" "$admin_url" "$api_key"
 
+    # Register the fake app and seed alice's app-action thread: the apps
+    # table is DB state, only writable through the running server.
+    register_fake_app "$dir" "$admin_url" "$api_key"
+
     # Register the OIDC first-login auto-provisioning fake IdP now that
     # the admin REST API is reachable (oidc_providers is DB state, only
     # writable through the running server).
@@ -1065,6 +1163,8 @@ FAKEFCM_HTTP_ADDR=${FAKEFCM_HTTP_ADDR:-}
 FAKEUNSUBSCRIBE_PID=${FAKEUNSUBSCRIBE_PID:-}
 FAKE_UNSUBSCRIBE_URL=${FAKE_UNSUBSCRIBE_URL:-}
 FAKEOIDC_PID=${FAKEOIDC_PID:-}
+FAKEAPP_PID=${FAKEAPP_PID:-}
+FAKE_APP_ORIGIN=${FAKE_APP_ORIGIN:-}
 STATE_DIR=$dir
 BACKEND_URL=$backend_url
 ADMIN_URL=$admin_url
@@ -1113,6 +1213,12 @@ EOF
     # paths from a seeded message's List-Unsubscribe header; GET/DELETE
     # <FAKE_UNSUBSCRIBE_URL>/requests inspects/clears recorded POSTs.
     echo "FAKE_UNSUBSCRIBE_URL=$FAKE_UNSUBSCRIBE_URL"
+    # Fake herold app (issue #522): origin and app id. Its thread actions
+    # are offered to alice@$SEED_DOMAIN on the seeded thread "Old
+    # computers to give away"; GET/DELETE <FAKE_APP_ORIGIN>/requests
+    # inspects/clears the invocations it received.
+    echo "FAKE_APP_ORIGIN=$FAKE_APP_ORIGIN"
+    echo "FAKE_APP_ID=$FAKE_APP_ID"
     # issue #443: which [external_images] mode this instance is
     # actually running -- "internalize" unless --external-images-
     # passthrough was given. bob@$SEED_DOMAIN's INBOX carries one
@@ -1130,6 +1236,7 @@ EOF
         [ -n "${FAKEFCM_PID:-}" ] && disown_pids="$disown_pids $FAKEFCM_PID"
         [ -n "${FAKEUNSUBSCRIBE_PID:-}" ] && disown_pids="$disown_pids $FAKEUNSUBSCRIBE_PID"
         [ -n "${FAKEOIDC_PID:-}" ] && disown_pids="$disown_pids $FAKEOIDC_PID"
+        [ -n "${FAKEAPP_PID:-}" ] && disown_pids="$disown_pids $FAKEAPP_PID"
         # shellcheck disable=SC2086
         disown $disown_pids 2>/dev/null || true
         exit 0
@@ -1137,7 +1244,7 @@ EOF
 
     # Foreground mode: register cleanup, then block.
     # Capture fake PIDs into local vars so the cleanup closure sees them.
-    local _fakeidp_pid="${FAKEIDP_PID:-}" _fakesmtp_pid="${FAKESMTP_PID:-}" _fakefcm_pid="${FAKEFCM_PID:-}" _fakeunsubscribe_pid="${FAKEUNSUBSCRIBE_PID:-}" _fakeoidc_pid="${FAKEOIDC_PID:-}"
+    local _fakeidp_pid="${FAKEIDP_PID:-}" _fakesmtp_pid="${FAKESMTP_PID:-}" _fakefcm_pid="${FAKEFCM_PID:-}" _fakeunsubscribe_pid="${FAKEUNSUBSCRIBE_PID:-}" _fakeoidc_pid="${FAKEOIDC_PID:-}" _fakeapp_pid="${FAKEAPP_PID:-}"
     cleanup() {
         log "tearing down instance $id"
         kill_tree "$vite_pid" TERM
@@ -1147,6 +1254,7 @@ EOF
         [ -n "$_fakefcm_pid" ] && kill_tree "$_fakefcm_pid" TERM
         [ -n "$_fakeunsubscribe_pid" ] && kill_tree "$_fakeunsubscribe_pid" TERM
         [ -n "$_fakeoidc_pid" ] && kill_tree "$_fakeoidc_pid" TERM
+        [ -n "$_fakeapp_pid" ] && kill_tree "$_fakeapp_pid" TERM
         sleep 1
         kill_tree "$vite_pid" KILL
         kill_tree "$herold_pid" KILL
@@ -1155,6 +1263,7 @@ EOF
         [ -n "$_fakefcm_pid" ] && kill_tree "$_fakefcm_pid" KILL
         [ -n "$_fakeunsubscribe_pid" ] && kill_tree "$_fakeunsubscribe_pid" KILL
         [ -n "$_fakeoidc_pid" ] && kill_tree "$_fakeoidc_pid" KILL
+        [ -n "$_fakeapp_pid" ] && kill_tree "$_fakeapp_pid" KILL
         rm -rf "$dir"
     }
     trap cleanup EXIT INT TERM
@@ -1168,6 +1277,7 @@ EOF
     [ -n "$_fakefcm_pid" ] && wait_pids="$wait_pids $_fakefcm_pid"
     [ -n "$_fakeunsubscribe_pid" ] && wait_pids="$wait_pids $_fakeunsubscribe_pid"
     [ -n "$_fakeoidc_pid" ] && wait_pids="$wait_pids $_fakeoidc_pid"
+    [ -n "$_fakeapp_pid" ] && wait_pids="$wait_pids $_fakeapp_pid"
     # shellcheck disable=SC2086
     wait $wait_pids
 }
@@ -1205,6 +1315,7 @@ cmd_stop() {
     [ -n "${FAKEFCM_PID:-}" ] && kill_tree "$FAKEFCM_PID" TERM
     [ -n "${FAKEUNSUBSCRIBE_PID:-}" ] && kill_tree "$FAKEUNSUBSCRIBE_PID" TERM
     [ -n "${FAKEOIDC_PID:-}" ] && kill_tree "$FAKEOIDC_PID" TERM
+    [ -n "${FAKEAPP_PID:-}" ] && kill_tree "$FAKEAPP_PID" TERM
     local deadline=$(( $(date +%s) + 5 ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
         local all_dead=1
@@ -1215,6 +1326,7 @@ cmd_stop() {
         [ -n "${FAKEFCM_PID:-}" ] && kill -0 "$FAKEFCM_PID" 2>/dev/null && all_dead=0
         [ -n "${FAKEUNSUBSCRIBE_PID:-}" ] && kill -0 "$FAKEUNSUBSCRIBE_PID" 2>/dev/null && all_dead=0
         [ -n "${FAKEOIDC_PID:-}" ] && kill -0 "$FAKEOIDC_PID" 2>/dev/null && all_dead=0
+        [ -n "${FAKEAPP_PID:-}" ] && kill -0 "$FAKEAPP_PID" 2>/dev/null && all_dead=0
         [ "$all_dead" = "1" ] && break
         sleep 0.2
     done
@@ -1225,6 +1337,7 @@ cmd_stop() {
     [ -n "${FAKEFCM_PID:-}" ] && kill_tree "$FAKEFCM_PID" KILL
     [ -n "${FAKEUNSUBSCRIBE_PID:-}" ] && kill_tree "$FAKEUNSUBSCRIBE_PID" KILL
     [ -n "${FAKEOIDC_PID:-}" ] && kill_tree "$FAKEOIDC_PID" KILL
+    [ -n "${FAKEAPP_PID:-}" ] && kill_tree "$FAKEAPP_PID" KILL
     rm -rf "$dir"
 }
 

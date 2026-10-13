@@ -76,6 +76,7 @@ func newDevCmd() *cobra.Command {
 	c.AddCommand(newDevGenTOTPCodeCmd())
 	c.AddCommand(newDevSeedSeparableIdentityCmd())
 	c.AddCommand(newDevSeedRemoteImageCmd())
+	c.AddCommand(newDevSeedAppThreadCmd())
 	return c
 }
 
