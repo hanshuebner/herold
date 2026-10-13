@@ -213,6 +213,11 @@ func (s *Server) applyMethodDeadline(ctx context.Context, method string) (contex
 		return ctx, nil
 	}
 	d := s.opts.DefaultMethodDeadline
+	if h, ok := s.reg.Resolve(method); ok {
+		if md, ok := h.(MethodDeadliner); ok && md.MethodDeadline() > 0 {
+			d = md.MethodDeadline()
+		}
+	}
 	if override, ok := s.opts.MethodDeadlines[method]; ok && override > 0 {
 		d = override
 	}

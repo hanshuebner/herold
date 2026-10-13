@@ -6,6 +6,9 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
+
+	"github.com/hanshuebner/herold/internal/store"
 )
 
 // CapabilityID is a JMAP capability URI as defined in RFC 8620 §1.7.
@@ -255,6 +258,25 @@ type AccountCapabilityProvider interface {
 	AccountCapability() any
 }
 
+// PrincipalCapabilityProvider supplies a capability whose presence and
+// value depend on the requesting principal (for example the apps
+// capability, REQ-APP-50, which lists the actions offered to that
+// principal). The session descriptor advertises the capability only
+// when ok is true, with value as its account-level descriptor; token
+// is mixed into the session state so a change in what the provider
+// returns changes the state (RFC 8620 §2).
+type PrincipalCapabilityProvider interface {
+	PrincipalCapability(ctx context.Context, p store.Principal) (value any, token string, ok bool)
+}
+
+// MethodDeadliner is implemented by method handlers whose work is
+// bounded by their own timeout (for example an outbound request with a
+// configured limit). The dispatcher applies MethodDeadline in place of
+// DefaultMethodDeadline unless Options.MethodDeadlines names the method.
+type MethodDeadliner interface {
+	MethodDeadline() time.Duration
+}
+
 // CapabilityRegistry tracks installed JMAP datatype handlers. The
 // session descriptor and method dispatcher consult it; concrete types
 // are not named in dispatch code paths. Per
@@ -284,6 +306,9 @@ type CapabilityRegistry struct {
 	// object (RFC 8620 §2 "accountCapabilities.<id>"); populated by
 	// RegisterAccountCapability.
 	acctDescriptors map[CapabilityID]AccountCapabilityProvider
+	// principalCaps holds the capabilities whose presence depends on
+	// the principal; populated by RegisterPrincipalCapability.
+	principalCaps map[CapabilityID]PrincipalCapabilityProvider
 }
 
 // NewCapabilityRegistry returns an empty registry.
@@ -294,7 +319,32 @@ func NewCapabilityRegistry() *CapabilityRegistry {
 		caps:            make(map[CapabilityID]struct{}),
 		capDescriptors:  make(map[CapabilityID]any),
 		acctDescriptors: make(map[CapabilityID]AccountCapabilityProvider),
+		principalCaps:   make(map[CapabilityID]PrincipalCapabilityProvider),
 	}
+}
+
+// RegisterPrincipalCapability installs a capability whose presence and
+// account-level value are computed per principal by provider. The
+// capability is known to the dispatcher (so "using" may list it) but
+// the session descriptor advertises it only to principals for which
+// the provider reports ok.
+func (r *CapabilityRegistry) RegisterPrincipalCapability(cap CapabilityID, provider PrincipalCapabilityProvider) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.caps[cap] = struct{}{}
+	r.principalCaps[cap] = provider
+}
+
+// principalCapabilityProviders returns a copy of the registered
+// per-principal capability providers.
+func (r *CapabilityRegistry) principalCapabilityProviders() map[CapabilityID]PrincipalCapabilityProvider {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make(map[CapabilityID]PrincipalCapabilityProvider, len(r.principalCaps))
+	for k, v := range r.principalCaps {
+		out[k] = v
+	}
+	return out
 }
 
 // Register installs h under cap. The method name h.Method() becomes

@@ -60,6 +60,7 @@ import (
 	"github.com/hanshuebner/herold/internal/protoimap"
 	"github.com/hanshuebner/herold/internal/protoimg"
 	"github.com/hanshuebner/herold/internal/protojmap"
+	jmapappaction "github.com/hanshuebner/herold/internal/protojmap/appaction"
 	"github.com/hanshuebner/herold/internal/protojmap/calendars/imip"
 	jmapchat "github.com/hanshuebner/herold/internal/protojmap/chat"
 	jmapcoach "github.com/hanshuebner/herold/internal/protojmap/coach"
@@ -3219,6 +3220,28 @@ func composeAdminAndUI(
 	jmapimapimport.Register(jmapSrv.Registry(), st,
 		logger.With("subsystem", "jmap-imap-import"), clk,
 		imapImportDataKey)
+
+	// Apps (REQ-APP-40..51): the capability and AppAction/invoke exist
+	// only when [server.apps] is enabled and the data key is present to
+	// open the signing secrets (REQ-APP-14, REQ-APP-42).
+	if cfg.Server.Apps.AppsEnabled() && len(imapImportDataKey) > 0 {
+		jmapappaction.Register(jmapSrv.Registry(), jmapappaction.Options{
+			Store: st,
+			Client: apps.NewClient(apps.ClientOptions{
+				Timeout:                cfg.Server.Apps.InvokeTimeout.AsDuration(),
+				AllowedInsecureOrigins: cfg.Server.Apps.AllowedInsecureOrigins,
+				UserAgent:              "herold/0.1.0",
+			}),
+			DataKey:         imapImportDataKey,
+			MaxPayloadBytes: cfg.Server.Apps.MaxPayloadBytes.AsInt64(),
+			InvokeTimeout:   cfg.Server.Apps.InvokeTimeout.AsDuration(),
+			Logger:          logger.With("subsystem", "jmap-apps"),
+			Clock:           clk,
+		})
+	} else if cfg.Server.Apps.AppsEnabled() {
+		logger.Warn("apps: [server.secrets].data_key_ref is not configured; the apps capability is not advertised",
+			slog.String("subsystem", "jmap-apps"))
+	}
 
 	// SeenAddress (REQ-MAIL-11e..m): recipient autocomplete history, exposed
 	// under urn:ietf:params:jmap:mail (no new capability URI needed).

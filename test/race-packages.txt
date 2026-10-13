@@ -47,6 +47,9 @@ internal/protowebhook
 internal/snooze
 internal/extsubmit
 
+# App invocations stream the request body through an io.Pipe goroutine.
+internal/apps
+
 # Storage engines: pg connection pool. Compliance suite exercises
 # concurrent access.
 #

@@ -45,6 +45,10 @@ const (
 	// the request is cookie-authenticated via the SessionResolver. Bearer-
 	// and Basic-authenticated requests leave it absent.
 	ctxKeySessionID
+	// ctxKeyCookieAuth marks a request authenticated by the Suite
+	// session cookie (no Authorization header), as opposed to a Bearer
+	// API key or Basic credentials.
+	ctxKeyCookieAuth
 )
 
 // PrincipalFromContext returns the authenticated principal attached to
@@ -76,6 +80,19 @@ func SessionIDFromContext(ctx context.Context) string {
 		return v
 	}
 	return ""
+}
+
+// InteractiveSessionFromContext reports whether the request was
+// authenticated by an interactive Suite session: the session cookie,
+// carrying the end-user (or admin) scope. Bearer API keys and Basic
+// credentials are never interactive. AppAction/invoke requires it
+// because an invocation releases mail on the strength of a user's click
+// (REQ-APP-40).
+func InteractiveSessionFromContext(ctx context.Context) bool {
+	if v, _ := ctx.Value(ctxKeyCookieAuth).(bool); !v {
+		return false
+	}
+	return auth.RequireScope(ctx, auth.ScopeEndUser) == nil || auth.RequireScope(ctx, auth.ScopeAdmin) == nil
 }
 
 // requireAuth is middleware that enforces authentication. It supports
@@ -119,6 +136,11 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		}
 		if sessID != "" {
 			ctx = context.WithValue(ctx, ctxKeySessionID, sessID)
+		}
+		// authenticate resolves the session cookie only when no
+		// Authorization header is present.
+		if key == nil && r.Header.Get("Authorization") == "" {
+			ctx = context.WithValue(ctx, ctxKeyCookieAuth, true)
 		}
 		ctx = auth.WithContext(ctx, &auth.AuthContext{
 			PrincipalID: uint64(principal.ID),

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -73,11 +74,24 @@ func (s *Server) buildSessionDescriptor(ctx context.Context, r *http.Request, p 
 	base = strings.TrimRight(base, "/")
 	accountID := AccountIDForPrincipal(p.ID)
 	accountCaps := s.reg.AccountCapabilities()
+	caps := s.reg.Capabilities()
+	// Per-principal capabilities (REQ-APP-50): advertised, with their
+	// account-level value, only to principals the provider offers them
+	// to.
+	for cap, prov := range s.reg.principalCapabilityProviders() {
+		value, _, ok := prov.PrincipalCapability(ctx, p)
+		if !ok {
+			delete(caps, cap)
+			delete(accountCaps, cap)
+			continue
+		}
+		caps[cap] = struct{}{}
+		accountCaps[cap] = value
+	}
 	primary := make(map[CapabilityID]Id, len(accountCaps))
 	for cap := range accountCaps {
 		primary[cap] = accountID
 	}
-	caps := s.reg.Capabilities()
 	// Inject the clientlog capability unconditionally so the SPA always
 	// has a place to read telemetry_enabled and livetail_until.
 	sessID := SessionIDFromContext(ctx)
@@ -298,6 +312,18 @@ func (s *Server) sessionState(ctx context.Context) string {
 		st.EmailSubmission, st.VacationResponse)
 	for _, c := range caps {
 		fmt.Fprintf(h, "c=%s;", c)
+	}
+	// Per-principal capabilities: a change in whether one is offered,
+	// or in its value, changes the session state (REQ-APP-50).
+	provs := s.reg.principalCapabilityProviders()
+	provIDs := make([]string, 0, len(provs))
+	for c := range provs {
+		provIDs = append(provIDs, string(c))
+	}
+	sort.Strings(provIDs)
+	for _, c := range provIDs {
+		_, tok, ok := provs[CapabilityID(c)].PrincipalCapability(ctx, p)
+		fmt.Fprintf(h, "pc=%s;%t;%s;", c, ok, tok)
 	}
 	// Mix in the clientlog session state so changes to telemetry_enabled
 	// or livetail_until cause the client to re-fetch the session descriptor.
