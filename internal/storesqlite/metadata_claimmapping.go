@@ -147,6 +147,11 @@ func (m *metadata) ListClaimMappingRules(ctx context.Context, providerName strin
 // interface doc comment (internal/store/store.go) for the exact diff
 // semantics; this is the SQLite transaction that realises it.
 func (m *metadata) ReconcileIdPGrants(ctx context.Context, subjectID store.PrincipalID, provider string, desired []store.GrantDesired, asOf time.Time) (added, removed []store.Grant, err error) {
+	defer func() {
+		if err != nil || len(added)+len(removed) > 0 {
+			m.s.epochs.BumpAccounts()
+		}
+	}()
 	provenance := "idp:" + provider
 	err = m.runTx(ctx, func(tx *sql.Tx) error {
 		rows, qerr := tx.QueryContext(ctx, `
@@ -261,6 +266,9 @@ func (m *metadata) SweepStaleIdPGrants(ctx context.Context, olderThan time.Time)
 	})
 	if err != nil {
 		return nil, err
+	}
+	if len(removed) > 0 {
+		m.s.epochs.BumpAccounts()
 	}
 	sort.Slice(removed, func(i, j int) bool { return removed[i].ID < removed[j].ID })
 	return removed, nil

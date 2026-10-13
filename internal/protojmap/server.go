@@ -176,6 +176,11 @@ type Server struct {
 
 	threadExporter *ThreadExporter
 
+	// epochs is the store's change signal for the session-state cache;
+	// nil when the store's Metadata does not provide one.
+	epochs     *store.DescriptorEpochs
+	stateCache *sessionStateCache
+
 	mu        sync.Mutex
 	closed    bool
 	servers   []*http.Server
@@ -255,6 +260,10 @@ func NewServer(
 		dlBuckets: make(map[store.PrincipalID]*tokenBucket),
 	}
 	s.threadExporter = NewThreadExporter(st)
+	s.stateCache = newSessionStateCache()
+	if src, ok := st.Meta().(store.DescriptorEpochSource); ok {
+		s.epochs = src.DescriptorEpochs()
+	}
 	if opts.APIKeyLookup != nil {
 		s.apikeyLookup = opts.APIKeyLookup
 	} else {

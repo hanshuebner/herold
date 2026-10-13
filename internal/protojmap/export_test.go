@@ -59,5 +59,5 @@ func (s *Server) SessionStateForTest(ctx context.Context, pid store.PrincipalID,
 	}
 	ctx = context.WithValue(ctx, ctxKeyPrincipal, p)
 	ctx = context.WithValue(ctx, ctxKeySessionID, sessionID)
-	return s.sessionState(ctx)
+	return s.sessionState(ctx, nil)
 }

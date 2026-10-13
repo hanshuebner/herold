@@ -26,6 +26,7 @@ func grantDefaults(g store.Grant) store.Grant {
 }
 
 func (m *metadata) InsertGrant(ctx context.Context, g store.Grant) (store.Grant, error) {
+	defer m.s.epochs.BumpAccounts()
 	g = grantDefaults(g)
 	now := m.s.clock.Now().UTC()
 	var grantedBy *int64
@@ -65,6 +66,7 @@ func (m *metadata) InsertGrant(ctx context.Context, g store.Grant) (store.Grant,
 }
 
 func (m *metadata) DeleteGrant(ctx context.Context, g store.Grant) error {
+	defer m.s.epochs.BumpAccounts()
 	g = grantDefaults(g)
 	return m.runTx(ctx, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx, `

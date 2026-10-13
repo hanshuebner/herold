@@ -1362,6 +1362,7 @@ func mailboxACLPrincipal(kind string, id int64) *store.PrincipalID {
 }
 
 func (m *metadata) SetMailboxACL(ctx context.Context, mailboxID store.MailboxID, principalID *store.PrincipalID, rights store.ACLRights, grantedBy store.PrincipalID) error {
+	defer m.s.epochs.BumpAccounts()
 	now := m.s.clock.Now().UTC()
 	subjectKind, subjectID := mailboxACLSubject(principalID)
 	resourceID := strconv.FormatUint(uint64(mailboxID), 10)
@@ -1556,6 +1557,7 @@ func (m *metadata) ListMailboxesAccessibleBy(ctx context.Context, pid store.Prin
 }
 
 func (m *metadata) RemoveMailboxACL(ctx context.Context, mailboxID store.MailboxID, principalID *store.PrincipalID) error {
+	defer m.s.epochs.BumpAccounts()
 	subjectKind, subjectID := mailboxACLSubject(principalID)
 	resourceID := strconv.FormatUint(uint64(mailboxID), 10)
 	return m.runTx(ctx, func(tx *sql.Tx) error {

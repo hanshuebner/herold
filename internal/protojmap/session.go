@@ -2,15 +2,13 @@ package protojmap
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"sort"
 	"strings"
 	"time"
 
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -61,8 +59,47 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 }
 
 // buildSessionDescriptor assembles the body. Split out so unit tests
-// can inspect it directly without going through HTTP.
+// can inspect it directly without going through HTTP. It also refreshes
+// the cached session-state digests from what it read, so the state it
+// returns and the sessionState of later POST /jmap responses agree.
 func (s *Server) buildSessionDescriptor(ctx context.Context, r *http.Request, p store.Principal) sessionDescriptor {
+	base := s.baseURL(r)
+	acctKey := s.accountsCacheKey()
+	view, complete := s.buildAccountsView(ctx, p)
+	acctDigest := s.stateCache.putAccounts(p.ID, acctKey, view, complete && s.epochs != nil)
+	sessID := SessionIDFromContext(ctx)
+	clogEpoch := s.epochs.Sessions()
+	clog, clogUntil, clogComplete := s.loadClientLogCapability(ctx, sessID)
+	clogDigest := s.stateCache.putClientlog(sessID, clogEpoch, clog, clogUntil, clogComplete && s.epochs != nil)
+	caps := view.Capabilities
+	// Inject the clientlog capability unconditionally so the SPA always
+	// has a place to read telemetry_enabled and livetail_until.
+	caps[CapabilityClientLog] = clog
+	// Inject the per-principal extimg-internalize-backlog state
+	// (REQ-EXTIMG-BG-21). The SPA reads this on bootstrap to decide
+	// whether to render the "Images are being processed" notice.
+	// Failures fall through silently — the SPA degrades to "no notice"
+	// rather than refusing to bootstrap on a transient store hiccup.
+	// The value is a point-in-time status the SPA refreshes on its own
+	// InternalizeStatus push type (REQ-EXTIMG-BG-INTERNAL-30), so the
+	// session state leaves it out.
+	caps[CapabilityInternalizeStatus] = s.buildInternalizeStatusCapability(ctx, p)
+	return sessionDescriptor{
+		Capabilities:    caps,
+		Accounts:        view.Accounts,
+		PrimaryAccounts: view.PrimaryAccounts,
+		Username:        p.CanonicalEmail,
+		APIURL:          base + "/jmap",
+		DownloadURL:     base + "/jmap/download/{accountId}/{blobId}/{type}/{name}",
+		UploadURL:       base + "/jmap/upload/{accountId}",
+		EventSourceURL:  base + "/jmap/eventsource?types={types}&closeafter={closeafter}&ping={ping}",
+		State:           combineSessionState(acctDigest, clogDigest, p.CanonicalEmail, base),
+	}
+}
+
+// baseURL is the origin the session descriptor's URLs are built on:
+// Options.BaseURL when set, else the request's scheme and Host.
+func (s *Server) baseURL(r *http.Request) string {
 	base := s.opts.BaseURL
 	if base == "" && r != nil {
 		scheme := "http"
@@ -71,7 +108,24 @@ func (s *Server) buildSessionDescriptor(ctx context.Context, r *http.Request, p 
 		}
 		base = scheme + "://" + r.Host
 	}
-	base = strings.TrimRight(base, "/")
+	return strings.TrimRight(base, "/")
+}
+
+// accountsView is the part of the session descriptor read from the
+// principal's store rows and the capability registry: capabilities,
+// accounts and primaryAccounts, before the clientlog and
+// internalize-status capabilities are added.
+type accountsView struct {
+	Capabilities    map[CapabilityID]any `json:"capabilities"`
+	Accounts        map[Id]accountDesc   `json:"accounts"`
+	PrimaryAccounts map[CapabilityID]Id  `json:"primaryAccounts"`
+}
+
+// buildAccountsView assembles the accountsView for p. complete is false
+// when a store read failed and the view omits what that read would have
+// contributed; such a view is served but not cached.
+func (s *Server) buildAccountsView(ctx context.Context, p store.Principal) (accountsView, bool) {
+	complete := true
 	accountID := AccountIDForPrincipal(p.ID)
 	accountCaps := s.reg.AccountCapabilities()
 	caps := s.reg.Capabilities()
@@ -79,8 +133,13 @@ func (s *Server) buildSessionDescriptor(ctx context.Context, r *http.Request, p 
 	// account-level value, only to principals the provider offers them
 	// to.
 	for cap, prov := range s.reg.principalCapabilityProviders() {
-		value, _, ok := prov.PrincipalCapability(ctx, p)
-		if !ok {
+		value, ok, err := prov.PrincipalCapability(ctx, p)
+		if err != nil {
+			loggerFromContext(ctx, s.log).Warn("session.principal_capability_failed",
+				"activity", observe.ActivityInternal, "capability", string(cap), "err", err)
+			complete = false
+		}
+		if err != nil || !ok {
 			delete(caps, cap)
 			delete(accountCaps, cap)
 			continue
@@ -92,16 +151,6 @@ func (s *Server) buildSessionDescriptor(ctx context.Context, r *http.Request, p 
 	for cap := range accountCaps {
 		primary[cap] = accountID
 	}
-	// Inject the clientlog capability unconditionally so the SPA always
-	// has a place to read telemetry_enabled and livetail_until.
-	sessID := SessionIDFromContext(ctx)
-	caps[CapabilityClientLog] = s.buildClientLogCapability(ctx, sessID)
-	// Inject the per-principal extimg-internalize-backlog state
-	// (REQ-EXTIMG-BG-21). The SPA reads this on bootstrap to decide
-	// whether to render the "Images are being processed" notice.
-	// Failures fall through silently — the SPA degrades to "no notice"
-	// rather than refusing to bootstrap on a transient store hiccup.
-	caps[CapabilityInternalizeStatus] = s.buildInternalizeStatusCapability(ctx, p)
 	accounts := map[Id]accountDesc{
 		accountID: {
 			Name:                p.CanonicalEmail,
@@ -118,41 +167,37 @@ func (s *Server) buildSessionDescriptor(ctx context.Context, r *http.Request, p 
 	// store hiccup must not 500 session bootstrap. Per-mailbox ACL is
 	// re-checked by the mail/* handlers; this surface is purely the
 	// discovery hint.
-	s.appendSecondaryAccounts(ctx, accounts, accountCaps, p.ID)
+	if !s.appendSecondaryAccounts(ctx, accounts, accountCaps, p.ID) {
+		complete = false
+	}
 	// REQ-SUBACCT-03: surface every sub-account owned by the caller as
 	// its own accounts[] entry. Unlike appendSecondaryAccounts (ACL
 	// discovery), sub-accounts are unconditionally the caller's own --
 	// no ACL grant is involved.
-	s.appendSubAccounts(ctx, accounts, accountCaps, p.ID)
-	desc := sessionDescriptor{
-		Capabilities:    caps,
-		Accounts:        accounts,
-		PrimaryAccounts: primary,
-		Username:        p.CanonicalEmail,
-		APIURL:          base + "/jmap",
-		DownloadURL:     base + "/jmap/download/{accountId}/{blobId}/{type}/{name}",
-		UploadURL:       base + "/jmap/upload/{accountId}",
-		EventSourceURL:  base + "/jmap/eventsource?types={types}&closeafter={closeafter}&ping={ping}",
-		State:           s.sessionState(ctx),
+	if !s.appendSubAccounts(ctx, accounts, accountCaps, p.ID) {
+		complete = false
 	}
-	return desc
+	return accountsView{Capabilities: caps, Accounts: accounts, PrimaryAccounts: primary}, complete
 }
 
 // appendSecondaryAccounts walks the caller's accessible-mailbox set,
 // groups by owner principal, and emits one accounts[] entry per
 // foreign owner (REQ-PROTO-33). IsReadOnly is true when no mailbox in
 // the foreign account grants any write-capable bit (i, w, k, s, t, e).
-// Anyone-rows count toward the rights mask alongside direct rows.
+// Anyone-rows count toward the rights mask alongside direct rows. It
+// reports false when a store read failed and an account may be missing
+// or mis-flagged.
 func (s *Server) appendSecondaryAccounts(
 	ctx context.Context,
 	accounts map[Id]accountDesc,
 	accountCaps map[CapabilityID]any,
 	callerPID store.PrincipalID,
-) {
+) bool {
 	shared, err := s.store.Meta().ListMailboxesAccessibleBy(ctx, callerPID)
-	if err != nil || len(shared) == 0 {
-		return
+	if err != nil {
+		return false
 	}
+	complete := true
 	ownerMailboxes := make(map[store.PrincipalID][]store.Mailbox)
 	for _, mb := range shared {
 		if mb.PrincipalID == callerPID {
@@ -166,12 +211,14 @@ func (s *Server) appendSecondaryAccounts(
 	for ownerPID, mboxes := range ownerMailboxes {
 		owner, oerr := s.store.Meta().GetPrincipalByID(ctx, ownerPID)
 		if oerr != nil {
+			complete = false
 			continue
 		}
 		readOnly := true
 		for _, mb := range mboxes {
 			rows, aerr := s.store.Meta().GetMailboxACL(ctx, mb.ID)
 			if aerr != nil {
+				complete = false
 				continue
 			}
 			for _, row := range rows {
@@ -198,6 +245,7 @@ func (s *Server) appendSecondaryAccounts(
 			AccountCapabilities: accountCaps,
 		}
 	}
+	return complete
 }
 
 // appendSubAccounts adds one accounts[] entry per sub-principal owned
@@ -207,17 +255,17 @@ func (s *Server) appendSecondaryAccounts(
 // isReadOnly is always false: the parent reaches every one of its own
 // sub-accounts with full owner rights (protojmap.HasOwnerAccess is the
 // seam every mail/* handler routes through). Failures fall through
-// silently for the same reason appendSecondaryAccounts does: a
-// transient store hiccup must not 500 session bootstrap.
+// for the same reason appendSecondaryAccounts does: a transient store
+// hiccup must not 500 session bootstrap; it reports false then.
 func (s *Server) appendSubAccounts(
 	ctx context.Context,
 	accounts map[Id]accountDesc,
 	accountCaps map[CapabilityID]any,
 	callerPID store.PrincipalID,
-) {
+) bool {
 	subs, err := s.store.Meta().ListSubPrincipals(ctx, callerPID)
 	if err != nil {
-		return
+		return false
 	}
 	for _, sub := range subs {
 		id := AccountIDForPrincipal(sub.ID)
@@ -231,6 +279,7 @@ func (s *Server) appendSubAccounts(
 			AccountCapabilities: accountCaps,
 		}
 	}
+	return true
 }
 
 // internalizeStatusDesc is the typed capability value carrying the
@@ -279,104 +328,6 @@ func principalIDFromAccountID(id Id) (store.PrincipalID, bool) {
 		n = n*10 + uint64(c-'0')
 	}
 	return store.PrincipalID(n), true
-}
-
-// sessionState returns the session-state hash advertised in the
-// session descriptor and on every POST /jmap response. RFC 8620 §2:
-// "this is an opaque string ... when the value of any of the per-
-// account state strings change ... the value of this string MUST also
-// change". We compute it as a hash of the per-principal JMAPStates row
-// plus the registered capability list so a capability hot-reload
-// changes the hash too.
-//
-// The clientlog columns (telemetry_enabled, livetail_until) are also
-// mixed in: when the admin activates live-tail or the user flips the
-// telemetry flag, the session state changes and the client re-fetches
-// the full session descriptor.
-func (s *Server) sessionState(ctx context.Context) string {
-	p, ok := PrincipalFromContext(ctx)
-	if !ok {
-		return "anonymous"
-	}
-	st, err := s.store.Meta().GetJMAPStates(ctx, p.ID)
-	if err != nil {
-		// On read failure return a deterministic placeholder so the
-		// response is still well-formed; a transient store hiccup must
-		// not 500 the whole envelope.
-		return "unknown"
-	}
-	caps := s.reg.SortedCapabilityIDs()
-	h := sha256.New()
-	fmt.Fprintf(h, "pid=%d;mb=%d;em=%d;th=%d;id=%d;es=%d;vr=%d;",
-		st.PrincipalID, st.Mailbox, st.Email, st.Thread, st.Identity,
-		st.EmailSubmission, st.VacationResponse)
-	for _, c := range caps {
-		fmt.Fprintf(h, "c=%s;", c)
-	}
-	// Per-principal capabilities: a change in whether one is offered,
-	// or in its value, changes the session state (REQ-APP-50).
-	provs := s.reg.principalCapabilityProviders()
-	provIDs := make([]string, 0, len(provs))
-	for c := range provs {
-		provIDs = append(provIDs, string(c))
-	}
-	sort.Strings(provIDs)
-	for _, c := range provIDs {
-		_, tok, ok := provs[CapabilityID(c)].PrincipalCapability(ctx, p)
-		fmt.Fprintf(h, "pc=%s;%t;%s;", c, ok, tok)
-	}
-	// Mix in the clientlog session state so changes to telemetry_enabled
-	// or livetail_until cause the client to re-fetch the session descriptor.
-	sessID := SessionIDFromContext(ctx)
-	if sessID != "" {
-		if row, err := s.store.Meta().GetSession(ctx, sessID); err == nil {
-			lt := int64(0)
-			if row.ClientlogLivetailUntil != nil {
-				lt = row.ClientlogLivetailUntil.UnixMicro()
-			}
-			telInt := 0
-			if row.ClientlogTelemetryEnabled {
-				telInt = 1
-			}
-			fmt.Fprintf(h, "clog_tel=%d;clog_lt=%d;", telInt, lt)
-		}
-	}
-	// REQ-PROTO-33: mix in per-foreign-account state digests so a
-	// mutation in any visible secondary account invalidates the
-	// session-state hash and the client re-fetches the session
-	// descriptor (e.g. when an ACL grant adds a new account).
-	if shared, ferr := s.store.Meta().ListMailboxesAccessibleBy(ctx, p.ID); ferr == nil {
-		seen := make(map[store.PrincipalID]struct{}, len(shared))
-		for _, mb := range shared {
-			if mb.PrincipalID == p.ID {
-				continue
-			}
-			if _, dup := seen[mb.PrincipalID]; dup {
-				continue
-			}
-			seen[mb.PrincipalID] = struct{}{}
-			if fst, fserr := s.store.Meta().GetJMAPStates(ctx, mb.PrincipalID); fserr == nil {
-				fmt.Fprintf(h, "fa=%d;mb=%d;em=%d;",
-					fst.PrincipalID, fst.Mailbox, fst.Email)
-			}
-		}
-	}
-	// REQ-SUBACCT-03: mix in every sub-account's own state digest so a
-	// mutation there invalidates the session-state hash too, even
-	// though the sub-account's own per-datatype "state" strings (as
-	// returned by Mailbox/get, Email/get, etc.) advance completely
-	// independently of the parent's -- each is read straight off the
-	// sub-account's own PrincipalID via the ordinary GetJMAPStates /
-	// GetMaxChangeSeqForKind path, never mixed with the parent's.
-	if subs, serr := s.store.Meta().ListSubPrincipals(ctx, p.ID); serr == nil {
-		for _, sub := range subs {
-			if sst, sserr := s.store.Meta().GetJMAPStates(ctx, sub.ID); sserr == nil {
-				fmt.Fprintf(h, "sa=%d;mb=%d;em=%d;",
-					sst.PrincipalID, sst.Mailbox, sst.Email)
-			}
-		}
-	}
-	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
 // coreCapability is the JSON-marshalable body of the JMAP Core

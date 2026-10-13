@@ -8,8 +8,6 @@ package appaction
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -96,12 +94,11 @@ type capabilityValue struct {
 // appIDString renders an app id on the wire.
 func appIDString(id store.AppID) string { return strconv.FormatUint(uint64(id), 10) }
 
-// offeredActions returns the actions offered to pid and the apps they
-// come from.
-func (h *handler) offeredActions(ctx context.Context, pid store.PrincipalID) ([]action, []store.App, error) {
+// offeredActions returns the actions offered to pid.
+func (h *handler) offeredActions(ctx context.Context, pid store.PrincipalID) ([]action, error) {
 	rows, err := h.opts.Store.Meta().ListAppsForPrincipal(ctx, pid)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	var out []action
 	for _, a := range rows {
@@ -123,29 +120,22 @@ func (h *handler) offeredActions(ctx context.Context, pid store.PrincipalID) ([]
 			})
 		}
 	}
-	return out, rows, nil
+	return out, nil
 }
 
 type capabilityProvider struct{ h *handler }
 
 // PrincipalCapability advertises the capability only when the
-// principal has at least one offered action; the token digests the
-// offered apps and their approved manifests so any change re-keys the
-// session state (REQ-APP-50).
-func (c capabilityProvider) PrincipalCapability(ctx context.Context, p store.Principal) (any, string, bool) {
-	actions, rows, err := c.h.offeredActions(ctx, p.ID)
+// principal has at least one offered action (REQ-APP-50).
+func (c capabilityProvider) PrincipalCapability(ctx context.Context, p store.Principal) (any, bool, error) {
+	actions, err := c.h.offeredActions(ctx, p.ID)
 	if err != nil {
-		c.h.log.Warn("apps.capability_failed", "activity", observe.ActivityInternal, "err", err)
-		return nil, "", false
+		return nil, false, err
 	}
 	if len(actions) == 0 {
-		return nil, "", false
+		return nil, false, nil
 	}
-	sum := sha256.New()
-	for _, a := range rows {
-		fmt.Fprintf(sum, "%d:%s;", a.ID, a.ManifestDigest)
-	}
-	return capabilityValue{Actions: actions}, hex.EncodeToString(sum.Sum(nil))[:16], true
+	return capabilityValue{Actions: actions}, true, nil
 }
 
 type invokeHandler struct{ h *handler }

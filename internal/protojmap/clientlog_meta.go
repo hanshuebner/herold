@@ -65,8 +65,18 @@ type clientLogCapability struct {
 // is absent or the lookup fails the returned descriptor has
 // TelemetryEnabled=false and no LivetailUntil.
 func (s *Server) buildClientLogCapability(ctx context.Context, sessionID string) clientLogCapability {
+	cap, _, _ := s.loadClientLogCapability(ctx, sessionID)
+	return cap
+}
+
+// loadClientLogCapability is buildClientLogCapability plus what the
+// session-state cache needs: validUntil is the livetail expiry when the
+// descriptor carries one (the descriptor drops the field at that
+// instant) and zero otherwise; complete is false when the session row
+// could not be read for a reason other than its absence.
+func (s *Server) loadClientLogCapability(ctx context.Context, sessionID string) (cap clientLogCapability, validUntil time.Time, complete bool) {
 	if sessionID == "" {
-		return clientLogCapability{}
+		return clientLogCapability{}, time.Time{}, true
 	}
 	row, err := s.store.Meta().GetSession(ctx, sessionID)
 	if err != nil {
@@ -77,17 +87,17 @@ func (s *Server) buildClientLogCapability(ctx context.Context, sessionID string)
 				"session_id", sessionID,
 				"err", err,
 			)
+			return clientLogCapability{}, time.Time{}, false
 		}
-		return clientLogCapability{}
+		return clientLogCapability{}, time.Time{}, true
 	}
-	cap := clientLogCapability{
-		TelemetryEnabled: row.ClientlogTelemetryEnabled,
-	}
+	cap.TelemetryEnabled = row.ClientlogTelemetryEnabled
 	if row.ClientlogLivetailUntil != nil && row.ClientlogLivetailUntil.After(s.clk.Now()) {
 		ts := formatRFC3339Millis(*row.ClientlogLivetailUntil)
 		cap.LivetailUntil = &ts
+		validUntil = *row.ClientlogLivetailUntil
 	}
-	return cap
+	return cap, validUntil, true
 }
 
 // formatRFC3339Millis formats t as RFC 3339 with millisecond precision

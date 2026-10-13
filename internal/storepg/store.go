@@ -33,6 +33,10 @@ type Store struct {
 	// internalizeNotify mirrors the storesqlite hook for the
 	// extimg-internalize-worker (REQ-EXTIMG-BG-08). Mark / Insert paths
 	// call it after a row commits with internalize_pending = 1.
+	// epochs counts writes to the rows the JMAP session descriptor is
+	// built from (store.DescriptorEpochs).
+	epochs store.DescriptorEpochs
+
 	internalizeNotifyMu sync.RWMutex
 	internalizeNotify   func()
 

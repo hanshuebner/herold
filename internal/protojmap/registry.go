@@ -3,9 +3,9 @@ package protojmap
 import (
 	"context"
 	"encoding/json"
-	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hanshuebner/herold/internal/store"
@@ -262,11 +262,14 @@ type AccountCapabilityProvider interface {
 // value depend on the requesting principal (for example the apps
 // capability, REQ-APP-50, which lists the actions offered to that
 // principal). The session descriptor advertises the capability only
-// when ok is true, with value as its account-level descriptor; token
-// is mixed into the session state so a change in what the provider
-// returns changes the state (RFC 8620 §2).
+// when ok is true, with value as its account-level descriptor; a
+// non-nil err omits the capability from that descriptor. The session
+// state digests value, so it changes whenever the provider's answer
+// does (RFC 8620 §2). The session state is cached until
+// store.DescriptorEpochs.Accounts moves, so a provider reads only rows
+// whose writes bump that counter.
 type PrincipalCapabilityProvider interface {
-	PrincipalCapability(ctx context.Context, p store.Principal) (value any, token string, ok bool)
+	PrincipalCapability(ctx context.Context, p store.Principal) (value any, ok bool, err error)
 }
 
 // MethodDeadliner is implemented by method handlers whose work is
@@ -309,7 +312,13 @@ type CapabilityRegistry struct {
 	// principalCaps holds the capabilities whose presence depends on
 	// the principal; populated by RegisterPrincipalCapability.
 	principalCaps map[CapabilityID]PrincipalCapabilityProvider
+	// gen counts registrations; the cached session state is keyed on it
+	// so a registration after startup changes the state.
+	gen atomic.Uint64
 }
+
+// Generation returns a counter that advances on every registration.
+func (r *CapabilityRegistry) Generation() uint64 { return r.gen.Load() }
 
 // NewCapabilityRegistry returns an empty registry.
 func NewCapabilityRegistry() *CapabilityRegistry {
@@ -331,6 +340,7 @@ func NewCapabilityRegistry() *CapabilityRegistry {
 func (r *CapabilityRegistry) RegisterPrincipalCapability(cap CapabilityID, provider PrincipalCapabilityProvider) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	defer r.gen.Add(1)
 	r.caps[cap] = struct{}{}
 	r.principalCaps[cap] = provider
 }
@@ -361,6 +371,7 @@ func (r *CapabilityRegistry) Register(cap CapabilityID, h MethodHandler) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	defer r.gen.Add(1)
 	if _, dup := r.methods[method]; dup {
 		panic("protojmap: duplicate method handler: " + method)
 	}
@@ -377,6 +388,7 @@ func (r *CapabilityRegistry) Register(cap CapabilityID, h MethodHandler) {
 func (r *CapabilityRegistry) RegisterCapabilityDescriptor(cap CapabilityID, descriptor any) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	defer r.gen.Add(1)
 	r.caps[cap] = struct{}{}
 	r.capDescriptors[cap] = descriptor
 }
@@ -397,6 +409,7 @@ func (r *CapabilityRegistry) installCapabilityDescriptor(cap CapabilityID, descr
 func (r *CapabilityRegistry) RegisterAccountCapability(cap CapabilityID, provider AccountCapabilityProvider) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	defer r.gen.Add(1)
 	r.caps[cap] = struct{}{}
 	r.acctDescriptors[cap] = provider
 }
@@ -463,20 +476,6 @@ func (r *CapabilityRegistry) HasCapability(cap CapabilityID) bool {
 	defer r.mu.RUnlock()
 	_, ok := r.caps[cap]
 	return ok
-}
-
-// SortedCapabilityIDs returns the registered capability URIs in
-// ascending lexical order. Used by the session-descriptor "state"
-// hash to make the hash stable across request orderings.
-func (r *CapabilityRegistry) SortedCapabilityIDs() []CapabilityID {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	out := make([]CapabilityID, 0, len(r.caps))
-	for cap := range r.caps {
-		out = append(out, cap)
-	}
-	sort.Slice(out, func(i, j int) bool { return string(out[i]) < string(out[j]) })
-	return out
 }
 
 // coreEchoHandler implements RFC 8620 §4 Core/echo: the canonical

@@ -326,7 +326,69 @@ func TestCapability_OfferedActionsAndState(t *testing.T) {
 		if s2.State == before {
 			t.Fatal("session state unchanged after the offered actions changed")
 		}
+		if got := f.postState(f.alice.ID); got != s2.State {
+			t.Fatalf("POST sessionState %q != GET state %q", got, s2.State)
+		}
+
+		// Re-enabling restores the descriptor and with it the state.
+		app.State = store.AppStateActive
+		if _, err := st.Meta().UpdateApp(ctx, app); err != nil {
+			t.Fatalf("UpdateApp: %v", err)
+		}
+		if got := f.postState(f.alice.ID); got != before {
+			t.Fatalf("session state after re-enabling = %q, want %q", got, before)
+		}
+
+		// Enabling the app for bob changes bob's state and leaves
+		// alice's alone; withdrawing it reverts bob's.
+		bobBefore := f.postState(f.bob.ID)
+		if err := st.Meta().SetAppPrincipals(ctx, f.app.ID, []store.PrincipalID{f.alice.ID, f.bob.ID}); err != nil {
+			t.Fatalf("SetAppPrincipals: %v", err)
+		}
+		bobEnabled := f.postState(f.bob.ID)
+		if bobEnabled == bobBefore {
+			t.Fatal("bob's session state unchanged after the app was enabled for him")
+		}
+		if bs := f.session(f.bob.ID); bs.State != bobEnabled {
+			t.Fatalf("bob GET state %q != POST sessionState %q", bs.State, bobEnabled)
+		} else if _, ok := bs.Capabilities[string(appaction.Capability)]; !ok {
+			t.Fatal("capability not advertised to bob after enabling")
+		}
+		if got := f.postState(f.alice.ID); got != before {
+			t.Fatalf("alice's session state changed when bob was enabled: %q -> %q", before, got)
+		}
+		if err := st.Meta().SetAppPrincipals(ctx, f.app.ID, []store.PrincipalID{f.alice.ID}); err != nil {
+			t.Fatalf("SetAppPrincipals: %v", err)
+		}
+		if got := f.postState(f.bob.ID); got != bobBefore {
+			t.Fatalf("bob's session state after disabling = %q, want %q", got, bobBefore)
+		}
 	})
+}
+
+// postState returns the sessionState of a Core/echo call by pid over
+// the session cookie.
+func (f *fixture) postState(pid store.PrincipalID) string {
+	f.t.Helper()
+	body, _ := json.Marshal(map[string]any{
+		"using":       []string{"urn:ietf:params:jmap:core"},
+		"methodCalls": []any{[]any{"Core/echo", map[string]any{}, "c0"}},
+	})
+	req, _ := http.NewRequest("POST", f.httpd.URL+"/jmap", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: "test-session", Value: strconv.FormatUint(uint64(pid), 10)})
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		f.t.Fatalf("POST /jmap: %v", err)
+	}
+	defer res.Body.Close()
+	var out struct {
+		SessionState string `json:"sessionState"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil || out.SessionState == "" {
+		f.t.Fatalf("decode POST /jmap: %v (%+v)", err, out)
+	}
+	return out.SessionState
 }
 
 func TestInvoke_OpenURLAndAudit(t *testing.T) {

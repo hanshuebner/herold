@@ -13,6 +13,7 @@ import (
 // migrations/0039_sessions.sql.
 
 func (m *metadata) UpsertSession(ctx context.Context, s store.SessionRow) error {
+	defer m.s.epochs.BumpSessions()
 	var livetailUs *int64
 	if s.ClientlogLivetailUntil != nil {
 		v := usMicros(*s.ClientlogLivetailUntil)
@@ -85,6 +86,7 @@ func (m *metadata) GetSession(ctx context.Context, sessionID string) (store.Sess
 }
 
 func (m *metadata) DeleteSession(ctx context.Context, sessionID string) error {
+	defer m.s.epochs.BumpSessions()
 	return m.runTx(ctx, func(tx pgx.Tx) error {
 		res, err := tx.Exec(ctx,
 			`DELETE FROM sessions WHERE session_id = $1`, sessionID)
@@ -99,6 +101,7 @@ func (m *metadata) DeleteSession(ctx context.Context, sessionID string) error {
 }
 
 func (m *metadata) UpdateSessionTelemetry(ctx context.Context, sessionID string, enabled bool) error {
+	defer m.s.epochs.BumpSessions()
 	return m.runTx(ctx, func(tx pgx.Tx) error {
 		res, err := tx.Exec(ctx, `
 			UPDATE sessions
@@ -161,6 +164,9 @@ func (m *metadata) ClearExpiredLivetail(ctx context.Context, nowMicros int64) (i
 		cleared = int(res.RowsAffected())
 		return nil
 	})
+	if err != nil || cleared > 0 {
+		m.s.epochs.BumpSessions()
+	}
 	return cleared, err
 }
 
@@ -209,6 +215,7 @@ func (m *metadata) ListSessionsByPrincipal(ctx context.Context, principalID stor
 }
 
 func (m *metadata) TombstoneSession(ctx context.Context, sessionID string, principalID store.PrincipalID, nowMicros int64, tombstoneTTLMicros int64) error {
+	defer m.s.epochs.BumpSessions()
 	return m.runTx(ctx, func(tx pgx.Tx) error {
 		res, err := tx.Exec(ctx, `
 			UPDATE sessions

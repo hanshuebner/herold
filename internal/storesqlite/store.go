@@ -41,6 +41,10 @@ type Store struct {
 	// freshly-imported message wakes the drain loop without a polling
 	// delay. Nil during normal test setup; set via
 	// SetInternalizeNotifyHook.
+	// epochs counts writes to the rows the JMAP session descriptor is
+	// built from (store.DescriptorEpochs).
+	epochs store.DescriptorEpochs
+
 	internalizeNotifyMu sync.RWMutex
 	internalizeNotify   func()
 

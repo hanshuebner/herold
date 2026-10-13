@@ -656,6 +656,7 @@ func Run(t *testing.T, f Factory) {
 		{"MailingList_ArchiveConfigRoundtrip", testMailingList_ArchiveConfigRoundtrip},
 		// -- Apps (issue #522, REQ-APP-01..13, migration 0118) --
 		{"Apps_CRUD", testApps_CRUD},
+		{"DescriptorEpochs", testDescriptorEpochs},
 		{"Apps_ApproveManifest", testApps_ApproveManifest},
 		{"Apps_PrincipalsAndOffering", testApps_PrincipalsAndOffering},
 	}

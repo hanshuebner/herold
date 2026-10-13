@@ -99,7 +99,7 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 
 	resp := Response{
 		MethodResponses: make([]Invocation, 0, len(req.MethodCalls)),
-		SessionState:    s.sessionState(ctx),
+		SessionState:    s.sessionState(ctx, r),
 		CreatedIDs:      req.CreatedIDs,
 	}
 	for _, call := range req.MethodCalls {

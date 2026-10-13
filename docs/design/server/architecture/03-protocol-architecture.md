@@ -91,6 +91,8 @@ The session descriptor's `capabilities` map and each `Account`'s `accountCapabil
 
 Consequence: adding a JMAP datatype later (`urn:ietf:params:jmap:submission`, `:vacationresponse`, or — should the v1 scope position on groupware (`docs/00-scope.md` NG3) ever be revisited — `:calendars` / `:contacts`) is purely additive: register the handler, add the type's storage, declare its capability. The session descriptor, push channel, and batch processor need no edits.
 
+The session `state` (REQ-PROTO-43) is computed in `internal/protojmap/session_state.go` from the descriptor content. The store-derived part (capabilities, accounts, primaryAccounts) is cached per principal and keyed on `store.DescriptorEpochs.Accounts` plus the capability registry's generation; the clientlog part is cached per session, keyed on `store.DescriptorEpochs.Sessions` and valid until a livetail expiry it carries. Both backends advance the counters after the commit of every write to principal, mailbox-grant, mailbox-deletion, app and session-clientlog rows (the `DescriptorEpochs` compliance case in `internal/store/storetest` lists them), so a `POST /jmap` reads nothing for its `sessionState` until one of those writes lands. The counters are in-process: they cover the writers inside the running server.
+
 The `Account` abstraction (one Principal → N Accounts, each with its own capability subset) is also where shared-mailbox handling (phase 2) lives. Build it now even though v1 will only mint one Account per Principal — retrofitting an Account boundary into already-shipped JMAP state strings is migration-grade work.
 
 #### Sub-accounts and Identity separation (REQ-SUBACCT-01..11)

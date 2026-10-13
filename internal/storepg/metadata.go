@@ -25,6 +25,9 @@ type metadata struct {
 	s *Store
 }
 
+// DescriptorEpochs implements store.DescriptorEpochSource.
+func (m *metadata) DescriptorEpochs() *store.DescriptorEpochs { return &m.s.epochs }
+
 // mapErr converts a pgx / pgconn error into the public sentinel
 // vocabulary. 23505 (unique_violation) -> ErrConflict; no-rows ->
 // ErrNotFound; 23503 (foreign_key_violation) -> ErrConflict (wrapping).
@@ -191,6 +194,7 @@ func quotaPrincipalID(ctx context.Context, tx pgx.Tx, pid int64) (int64, error) 
 }
 
 func (m *metadata) UpdatePrincipal(ctx context.Context, p store.Principal) error {
+	defer m.s.epochs.BumpAccounts()
 	if p.Kind == store.PrincipalKindSubAccount && (p.PasswordHash != "" || len(p.TOTPSecret) > 0) {
 		return fmt.Errorf(
 			"storepg: sub-principal cannot carry a credential: %w", store.ErrInvalidArgument)
@@ -228,6 +232,7 @@ func (m *metadata) UpdatePrincipal(ctx context.Context, p store.Principal) error
 // -- sub-principals (REQ-SUBACCT-01..06) -------------------------------
 
 func (m *metadata) InsertSubPrincipal(ctx context.Context, parentID store.PrincipalID, p store.Principal) (store.Principal, error) {
+	defer m.s.epochs.BumpAccounts()
 	if p.PasswordHash != "" || len(p.TOTPSecret) > 0 {
 		return store.Principal{}, fmt.Errorf(
 			"storepg: sub-principal cannot carry a credential: %w", store.ErrInvalidArgument)
@@ -916,6 +921,7 @@ func (m *metadata) ListMailboxes(ctx context.Context, principalID store.Principa
 }
 
 func (m *metadata) DeleteMailbox(ctx context.Context, id store.MailboxID) error {
+	defer m.s.epochs.BumpAccounts()
 	now := m.s.clock.Now().UTC()
 	return m.runTx(ctx, func(tx pgx.Tx) error {
 		var pid int64
@@ -3363,6 +3369,7 @@ func checkNoOwnedMailingLists(ctx context.Context, tx pgx.Tx, pid int64) error {
 }
 
 func (m *metadata) DeletePrincipal(ctx context.Context, pid store.PrincipalID) error {
+	defer m.s.epochs.BumpAccounts()
 	now := m.s.clock.Now().UTC()
 	return m.runTx(ctx, func(tx pgx.Tx) error {
 		var exists int64

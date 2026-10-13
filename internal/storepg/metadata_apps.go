@@ -80,6 +80,7 @@ func validateAppRowPG(app store.App) error {
 }
 
 func (m *metadata) InsertApp(ctx context.Context, app store.App) (store.App, error) {
+	defer m.s.epochs.BumpAccounts()
 	if app.State == "" {
 		app.State = store.AppStatePendingApproval
 	}
@@ -135,6 +136,7 @@ func (m *metadata) ListApps(ctx context.Context) ([]store.App, error) {
 }
 
 func (m *metadata) UpdateApp(ctx context.Context, app store.App) (store.App, error) {
+	defer m.s.epochs.BumpAccounts()
 	if err := validateAppRowPG(app); err != nil {
 		return store.App{}, err
 	}
@@ -163,6 +165,7 @@ func (m *metadata) UpdateApp(ctx context.Context, app store.App) (store.App, err
 }
 
 func (m *metadata) ApproveAppManifest(ctx context.Context, id store.AppID, digest string) (store.App, error) {
+	defer m.s.epochs.BumpAccounts()
 	nowUs := usMicros(m.s.clock.Now().UTC())
 	var out store.App
 	err := m.runTx(ctx, func(tx pgx.Tx) error {
@@ -196,6 +199,7 @@ func (m *metadata) ApproveAppManifest(ctx context.Context, id store.AppID, diges
 }
 
 func (m *metadata) DeleteApp(ctx context.Context, id store.AppID) error {
+	defer m.s.epochs.BumpAccounts()
 	return m.runTx(ctx, func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx, `DELETE FROM apps WHERE id = $1`, int64(id))
 		if err != nil {
@@ -209,6 +213,7 @@ func (m *metadata) DeleteApp(ctx context.Context, id store.AppID) error {
 }
 
 func (m *metadata) SetAppPrincipals(ctx context.Context, id store.AppID, principals []store.PrincipalID) error {
+	defer m.s.epochs.BumpAccounts()
 	return m.runTx(ctx, func(tx pgx.Tx) error {
 		var one int64
 		if err := tx.QueryRow(ctx, `SELECT 1 FROM apps WHERE id = $1 FOR UPDATE`, int64(id)).Scan(&one); err != nil {

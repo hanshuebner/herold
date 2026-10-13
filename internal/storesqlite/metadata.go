@@ -28,6 +28,9 @@ type metadata struct {
 	s *Store
 }
 
+// DescriptorEpochs implements store.DescriptorEpochSource.
+func (m *metadata) DescriptorEpochs() *store.DescriptorEpochs { return &m.s.epochs }
+
 // mapErr converts a SQLite driver error into the public sentinel
 // vocabulary. Unknown errors are returned unchanged (wrapped by callers
 // with fmt.Errorf("...: %w", err)).
@@ -226,6 +229,7 @@ func quotaPrincipalID(ctx context.Context, tx *sql.Tx, pid int64) (int64, error)
 }
 
 func (m *metadata) UpdatePrincipal(ctx context.Context, p store.Principal) error {
+	defer m.s.epochs.BumpAccounts()
 	if p.Kind == store.PrincipalKindSubAccount && (p.PasswordHash != "" || len(p.TOTPSecret) > 0) {
 		return fmt.Errorf(
 			"storesqlite: sub-principal cannot carry a credential: %w", store.ErrInvalidArgument)
@@ -272,6 +276,7 @@ func (m *metadata) UpdatePrincipal(ctx context.Context, p store.Principal) error
 // -- sub-principals (REQ-SUBACCT-01..06) -------------------------------
 
 func (m *metadata) InsertSubPrincipal(ctx context.Context, parentID store.PrincipalID, p store.Principal) (store.Principal, error) {
+	defer m.s.epochs.BumpAccounts()
 	if p.PasswordHash != "" || len(p.TOTPSecret) > 0 {
 		return store.Principal{}, fmt.Errorf(
 			"storesqlite: sub-principal cannot carry a credential: %w", store.ErrInvalidArgument)
@@ -1030,6 +1035,7 @@ func (m *metadata) ListMailboxes(ctx context.Context, principalID store.Principa
 }
 
 func (m *metadata) DeleteMailbox(ctx context.Context, id store.MailboxID) error {
+	defer m.s.epochs.BumpAccounts()
 	return m.runTx(ctx, func(tx *sql.Tx) error {
 		var pid int64
 		var curPriority sql.NullInt64
@@ -3616,6 +3622,7 @@ func checkNoOwnedMailingLists(ctx context.Context, tx *sql.Tx, pid int64) error 
 }
 
 func (m *metadata) DeletePrincipal(ctx context.Context, pid store.PrincipalID) error {
+	defer m.s.epochs.BumpAccounts()
 	now := m.s.clock.Now().UTC()
 	return m.runTx(ctx, func(tx *sql.Tx) error {
 		// Confirm existence up-front so the caller can distinguish
