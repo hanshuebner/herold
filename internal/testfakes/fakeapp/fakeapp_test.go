@@ -106,8 +106,16 @@ func TestExtensions(t *testing.T) {
 		first.Parts[0].ContentType != "message/rfc822" || first.ContextType != "application/json" || first.AppAPI != "1" {
 		t.Fatalf("first invocation = %+v", first)
 	}
-	if last := invs[len(invs)-1]; last.SignatureValid || last.Status != http.StatusUnauthorized {
-		t.Fatalf("bad-signature invocation = %+v", last)
+	// The slow invocation is recorded when its handler returns, after the
+	// client gave up, so the bad-signature one is found by content.
+	var badSig *Invocation
+	for i := range invs {
+		if invs[i].Extension == ExtNotice && !invs[i].SignatureValid {
+			badSig = &invs[i]
+		}
+	}
+	if badSig == nil || badSig.Status != http.StatusUnauthorized {
+		t.Fatalf("bad-signature invocation = %+v (all: %+v)", badSig, invs)
 	}
 
 	req, _ := http.NewRequest(http.MethodDelete, s.Origin()+"/requests", nil)
