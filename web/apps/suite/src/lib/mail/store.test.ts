@@ -190,8 +190,11 @@ describe('expandToThreadIds', () => {
 // ── pickEmailsToMarkUnreadFromHere (REQ-MAIL-133a) ──────────────────────────
 //
 // Gmail-style "Mark unread from here": anchor on the chosen message, flip
-// $seen=null on every email in the thread whose receivedAt >= anchor's
-// receivedAt AND that is currently $seen=true.
+// $seen=null on the anchor and every email after it in thread order
+// (threadEmails' array position, the same receivedAt-then-message-id order
+// the server's Thread/get uses) that is currently $seen=true. A message
+// before the anchor in thread order is never flipped, even when it shares
+// the anchor's receivedAt second (re #527).
 
 function makeSeenEmail(id: string, receivedAt: string, seen: boolean): Email {
   return {
@@ -252,21 +255,34 @@ describe('pickEmailsToMarkUnreadFromHere', () => {
     expect(pickEmailsToMarkUnreadFromHere([], 'e1')).toEqual([]);
   });
 
-  it('skips emails with an unparseable receivedAt', () => {
+  it('selects by thread position regardless of an unparseable receivedAt on an intermediate message', () => {
     const threadEmails: Email[] = [
       makeSeenEmail('e1', '2026-01-01T10:00:00Z', true),
       makeSeenEmail('e2', 'not a date', true),
       makeSeenEmail('e3', '2026-01-03T10:00:00Z', true),
     ];
-    expect(pickEmailsToMarkUnreadFromHere(threadEmails, 'e1')).toEqual(['e1', 'e3']);
+    expect(pickEmailsToMarkUnreadFromHere(threadEmails, 'e1')).toEqual(['e1', 'e2', 'e3']);
   });
 
-  it('returns an empty list when the anchor receivedAt is unparseable', () => {
+  it('matches the anchor by id even when its receivedAt is unparseable, and still selects by thread position', () => {
     const threadEmails: Email[] = [
       makeSeenEmail('e1', 'not a date', true),
       makeSeenEmail('e2', '2026-01-02T10:00:00Z', true),
     ];
-    expect(pickEmailsToMarkUnreadFromHere(threadEmails, 'e1')).toEqual([]);
+    expect(pickEmailsToMarkUnreadFromHere(threadEmails, 'e1')).toEqual(['e1', 'e2']);
+  });
+
+  // re #527: three messages share one receivedAt second (the whole-second
+  // granularity of the server's receivedAt column). Anchoring on the
+  // middle one must flip only the middle and the last — never the first,
+  // which precedes the anchor in thread order despite the tied second.
+  it('does not flip a same-second message that precedes the anchor in thread order', () => {
+    const threadEmails: Email[] = [
+      makeSeenEmail('e1', '2026-01-01T10:00:00Z', true),
+      makeSeenEmail('e2', '2026-01-01T10:00:00Z', true),
+      makeSeenEmail('e3', '2026-01-01T10:00:00Z', true),
+    ];
+    expect(pickEmailsToMarkUnreadFromHere(threadEmails, 'e2')).toEqual(['e2', 'e3']);
   });
 });
 

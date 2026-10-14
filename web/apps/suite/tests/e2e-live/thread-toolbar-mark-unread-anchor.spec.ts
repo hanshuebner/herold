@@ -121,12 +121,6 @@ async function seedThread(count: number, subjectBase: string): Promise<string> {
     const s = i === 1 ? subject : `Re: ${subject}`;
     await sendSmtp(SMTP_ADDR!, 'sender@example.local', ALICE, s, `Message number ${i} in the thread.`, headers);
     prevMsgId = msgId;
-    // receivedAt has whole-second granularity; without a gap, every
-    // message in a tight SMTP loop lands in the same second, which
-    // makes markUnreadFromHere's receivedAt >= anchor.receivedAt test
-    // (REQ-MAIL-133a) flip every same-second message regardless of
-    // anchor -- the real repro has replies minutes/hours apart.
-    await new Promise((r) => setTimeout(r, 1100));
   }
   return subject;
 }

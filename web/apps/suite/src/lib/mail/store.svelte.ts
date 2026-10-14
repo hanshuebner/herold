@@ -6360,25 +6360,27 @@ export { allVisibleSelected };
 
 /**
  * Pure helper for `markUnreadFromHere` (REQ-MAIL-133a). Given the list of
- * emails in a thread and an anchor email id, returns the ids that should
- * be flipped to `$seen=null`: emails whose `receivedAt >= anchor.receivedAt`
- * AND that are currently `$seen=true`. Anchor itself is included when it
- * is currently seen. Emails with unparseable timestamps are skipped.
+ * emails in a thread (in thread order, i.e. the order `threadEmails()`
+ * returns — the server's `receivedAt`-then-message-id order) and an
+ * anchor email id, returns the ids that should be flipped to
+ * `$seen=null`: the anchor and every email after it in thread order that
+ * is currently `$seen=true`. Selection is by array position, not by
+ * comparing `receivedAt` values, so a message that precedes the anchor
+ * in thread order is never flipped even when it shares the anchor's
+ * `receivedAt` second (re #527) — `receivedAt` only has whole-second
+ * precision, so same-second siblings are common from fast programmatic
+ * replies, autoresponders, and bulk imports.
  */
 export function pickEmailsToMarkUnreadFromHere(
   threadEmails: readonly Email[],
   anchorEmailId: string,
 ): string[] {
-  const anchor = threadEmails.find((e) => e.id === anchorEmailId);
-  if (!anchor) return [];
-  const anchorTime = new Date(anchor.receivedAt).getTime();
-  if (!Number.isFinite(anchorTime)) return [];
+  const anchorIndex = threadEmails.findIndex((e) => e.id === anchorEmailId);
+  if (anchorIndex === -1) return [];
   const ids: string[] = [];
-  for (const e of threadEmails) {
-    if (!e.keywords.$seen) continue;
-    const t = new Date(e.receivedAt).getTime();
-    if (!Number.isFinite(t)) continue;
-    if (t >= anchorTime) ids.push(e.id);
+  for (let i = anchorIndex; i < threadEmails.length; i++) {
+    const e = threadEmails[i]!;
+    if (e.keywords.$seen) ids.push(e.id);
   }
   return ids;
 }

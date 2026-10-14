@@ -3,6 +3,8 @@ package thread
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +14,7 @@ import (
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
+	"github.com/hanshuebner/herold/internal/storepg"
 	"github.com/hanshuebner/herold/internal/storesqlite"
 )
 
@@ -26,13 +29,12 @@ func newStore(t *testing.T) store.Store {
 	return s
 }
 
-func setup(t *testing.T) (*handlerSet, store.Store, store.Principal, store.Mailbox) {
+func setupWithStore(t *testing.T, st store.Store, canonicalEmail string) (*handlerSet, store.Store, store.Principal, store.Mailbox) {
 	t.Helper()
-	st := newStore(t)
 	ctx := context.Background()
 	p, err := st.Meta().InsertPrincipal(ctx, store.Principal{
 		Kind:           store.PrincipalKindUser,
-		CanonicalEmail: "alice@example.test",
+		CanonicalEmail: canonicalEmail,
 	})
 	if err != nil {
 		t.Fatalf("insert principal: %v", err)
@@ -46,6 +48,34 @@ func setup(t *testing.T) (*handlerSet, store.Store, store.Principal, store.Mailb
 		t.Fatalf("insert mailbox: %v", err)
 	}
 	return &handlerSet{store: st}, st, p, mb
+}
+
+func setup(t *testing.T) (*handlerSet, store.Store, store.Principal, store.Mailbox) {
+	t.Helper()
+	return setupWithStore(t, newStore(t), "alice@example.test")
+}
+
+// setupPostgres is setup's Postgres counterpart (mirrors the
+// setupFixturePostgres pattern in internal/protojmap/mail/email):
+// opens storepg against HEROLD_PG_DSN and skips when it is unset or
+// unreachable, so tests using it run as a no-op locally and as a real
+// parity check in CI's storepg leg. The principal's canonical email is
+// nanosecond-suffixed because storepg.Open connects to a persistent
+// database rather than a fresh per-test file.
+func setupPostgres(t *testing.T) (*handlerSet, store.Store, store.Principal, store.Mailbox) {
+	t.Helper()
+	dsn := os.Getenv("HEROLD_PG_DSN")
+	if dsn == "" {
+		t.Skip("HEROLD_PG_DSN not set; skipping Postgres leg")
+	}
+	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	st, err := storepg.Open(context.Background(), dsn, t.TempDir(), nil, clk)
+	if err != nil {
+		t.Skipf("storepg.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	canonicalEmail := fmt.Sprintf("tk-samesecond-%d@example.test", time.Now().UnixNano())
+	return setupWithStore(t, st, canonicalEmail)
 }
 
 func insertMsg(t *testing.T, st store.Store, mb store.Mailbox, msgID, inReplyTo, subject string) store.MessageID {
@@ -82,6 +112,87 @@ func insertMsgWithRefs(t *testing.T, st store.Store, mb store.Mailbox, msgID, in
 	}
 	t.Fatalf("inserted message UID=%d not found", uid)
 	return 0
+}
+
+// insertMsgAt is insertMsgWithRefs's counterpart that pins ReceivedAt to a
+// caller-supplied instant, so a test can seed several messages sharing one
+// whole-second receivedAt value (re #527).
+func insertMsgAt(t *testing.T, st store.Store, mb store.Mailbox, msgID, inReplyTo, references, subject string, receivedAt time.Time) store.MessageID {
+	t.Helper()
+	uid, _, err := st.Meta().InsertMessage(context.Background(), store.Message{
+		Blob:       store.BlobRef{Hash: "deadbeef" + msgID, Size: 1},
+		ReceivedAt: receivedAt,
+		Envelope: store.Envelope{
+			Subject:    subject,
+			MessageID:  msgID,
+			InReplyTo:  inReplyTo,
+			References: references,
+		},
+	}, []store.MessageMailbox{{MailboxID: mb.ID}})
+	if err != nil {
+		t.Fatalf("insert message: %v", err)
+	}
+	msgs, err := st.Meta().ListMessages(context.Background(), mb.ID, store.MessageFilter{
+		Limit: 1000, WithEnvelope: true,
+	})
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	for _, m := range msgs {
+		if m.UID == uid {
+			return m.ID
+		}
+	}
+	t.Fatalf("inserted message UID=%d not found", uid)
+	return 0
+}
+
+// testSameSecondThreadOrder pins REQ-MAIL-133a's server-side contract:
+// Thread/get's EmailIDs for messages that share one whole-second
+// receivedAt value are ordered deterministically by (receivedAt, message
+// id) — RFC 8621 Section 8.1 — regardless of insertion order or which
+// backend stores the rows. Run against both SQLite and Postgres (re
+// #527): the ordering is produced by sortThreadRows, a Go-level stable
+// sort over the rows ListThreadsByKeys returns, so backend parity here
+// specifically pins that ListThreadsByKeys's unordered SQL rows still
+// resolve to the same EmailIDs order everywhere.
+func testSameSecondThreadOrder(t *testing.T, h *handlerSet, st store.Store, p store.Principal, mb store.Mailbox) {
+	t.Helper()
+	sameSecond := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	id1 := insertMsgAt(t, st, mb, "<ss1@example.test>", "", "", "Same second", sameSecond)
+	id2 := insertMsgAt(t, st, mb, "<ss2@example.test>", "<ss1@example.test>", "", "Re: Same second", sameSecond)
+	id3 := insertMsgAt(t, st, mb, "<ss3@example.test>", "<ss2@example.test>", "<ss1@example.test> <ss2@example.test>", "Re: Same second", sameSecond)
+
+	args, _ := json.Marshal(map[string]any{"accountId": protojmap.AccountIDForPrincipal(p.ID)})
+	resp, mErr := getHandler{h: h}.executeAs(p, args)
+	if mErr != nil {
+		t.Fatalf("Thread/get: %v", mErr)
+	}
+	g := resp.(getResponse)
+	if len(g.List) != 1 {
+		t.Fatalf("expected 1 thread, got %d: %+v", len(g.List), g)
+	}
+	thr := g.List[0]
+	want := []string{renderEmailID(id1), renderEmailID(id2), renderEmailID(id3)}
+	if len(thr.EmailIDs) != len(want) {
+		t.Fatalf("EmailIDs = %v, want %v", thr.EmailIDs, want)
+	}
+	for i, got := range thr.EmailIDs {
+		if got != want[i] {
+			t.Fatalf("EmailIDs[%d] = %s, want %s (same-second order must be insertion/message-id order: %v)",
+				i, got, want[i], thr.EmailIDs)
+		}
+	}
+}
+
+func TestThread_Get_SameSecondOrder_SQLite(t *testing.T) {
+	h, st, p, mb := setup(t)
+	testSameSecondThreadOrder(t, h, st, p, mb)
+}
+
+func TestThread_Get_SameSecondOrder_Postgres(t *testing.T) {
+	h, st, p, mb := setupPostgres(t)
+	testSameSecondThreadOrder(t, h, st, p, mb)
 }
 
 func TestThread_Get_DerivedFromMessages(t *testing.T) {
