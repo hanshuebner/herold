@@ -28,6 +28,7 @@
   import { auth } from '../auth/auth.svelte';
   import { threadDownloadLink } from './thread-download';
   import ThreadMoreMenu, { type MoreMenuItem, type MoreMenuSection } from './ThreadMoreMenu.svelte';
+  import { pickMarkUnreadAnchor } from './mark-unread-anchor';
   import ImportantIcon from '../icons/ImportantIcon.svelte';
   import DownloadIcon from '../icons/DownloadIcon.svelte';
   import { t } from '../i18n/i18n.svelte';
@@ -71,8 +72,24 @@
      * after a separator. Empty groups are not rendered.
      */
     menuSections?: MoreMenuSection[];
+    /**
+     * The set of currently-expanded message ids (re #526), owned by
+     * ThreadReader. Drives the Mark unread button's anchor: the first
+     * expanded message in thread order, or the thread's last message
+     * when nothing is expanded. Optional for callers (tests) that don't
+     * exercise Mark unread; defaults to an empty set, which anchors on
+     * the last message.
+     */
+    expanded?: ReadonlySet<string>;
   }
-  let { threadId, latest, onPrint, standalone = false, menuSections = [] }: Props = $props();
+  let {
+    threadId,
+    latest,
+    onPrint,
+    standalone = false,
+    menuSections = [],
+    expanded = new Set(),
+  }: Props = $props();
 
   let inboxId = $derived(mail.inbox?.id);
   let trashId = $derived(mail.trash?.id);
@@ -170,8 +187,19 @@
     leaveThread();
   }
 
+  /**
+   * Mark unread (re #526): anchored at the first currently-expanded
+   * message (the messages the user has actually seen), falling back to
+   * the last message when nothing is expanded. Delegates to the same
+   * `markUnreadFromHere` operation the per-message "Mark unread from
+   * here" kebab item uses (REQ-MAIL-133a) -- optimistic with Undo,
+   * leaving collapsed earlier messages untouched -- instead of
+   * `markThreadSeen`, which flipped every message in the thread
+   * regardless of what was shown.
+   */
   function markUnread(): void {
-    void mail.markThreadSeen(threadId, false);
+    const anchor = pickMarkUnreadAnchor(threadEmails, expanded);
+    if (anchor) void mail.markUnreadFromHere(threadId, anchor);
     leaveThread();
   }
 

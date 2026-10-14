@@ -328,7 +328,7 @@
   {:else if emails.length === 0 || !latest}
     <div class="state">{t('thread.empty')}</div>
   {:else}
-    <ThreadToolbar {threadId} {latest} {standalone} {menuSections} onPrint={() => void printThread()} />
+    <ThreadToolbar {threadId} {latest} {standalone} {menuSections} {expanded} onPrint={() => void printThread()} />
     <!-- New-reply banner lives OUTSIDE the scroll container so it is always
          visible and never displaces the user's reading position when an
          external message arrives (issue #56). The user must explicitly

@@ -118,6 +118,7 @@ const { mailMock, routerMock, INBOX_MBX, SENT_MBX, ARCHIVE_MBX, TRASH_MBX, JUNK_
       bulkDelete: vi.fn().mockResolvedValue(undefined),
       restoreFromTrash: vi.fn().mockResolvedValue(undefined),
       markThreadSeen: vi.fn().mockResolvedValue(undefined),
+      markUnreadFromHere: vi.fn().mockResolvedValue(undefined),
       reportSpam: vi.fn().mockResolvedValue(undefined),
       notSpam: vi.fn().mockResolvedValue({ ok: true, undo: vi.fn() }),
       toggleImportant: vi.fn().mockResolvedValue(undefined),
@@ -401,6 +402,58 @@ describe('ThreadToolbar formerly-overflow actions (re #117)', () => {
     expect(
       screen.queryByRole('button', { name: /actions\.moreActions/i }),
     ).not.toBeInTheDocument();
+  });
+});
+
+// ── "Mark unread" anchors on the expanded set (re #526) ─────────────────────────
+describe('ThreadToolbar Mark unread anchors on the expanded set (re #526)', () => {
+  const e1 = makeEmail('e-mu-1', 'tid-mu', { 'mbx-inbox': true });
+  const e2 = makeEmail('e-mu-2', 'tid-mu', { 'mbx-inbox': true });
+  const e3 = makeEmail('e-mu-3', 'tid-mu', { 'mbx-inbox': true });
+  const e4 = makeEmail('e-mu-4', 'tid-mu', { 'mbx-inbox': true });
+  const e5 = makeEmail('e-mu-5', 'tid-mu', { 'mbx-inbox': true });
+
+  beforeEach(() => {
+    mailMock.inbox = INBOX_MBX;
+    mailMock.trash = null;
+    mailMock.threadEmails = (tid: string) => (tid === 'tid-mu' ? [e1, e2, e3, e4, e5] : []);
+    mailMock.markUnreadFromHere.mockClear();
+    mailMock.markThreadSeen.mockClear();
+  });
+
+  it('anchors markUnreadFromHere at the first expanded message when only the last two are expanded', async () => {
+    render(ThreadToolbar, {
+      props: { threadId: 'tid-mu', latest: e5, onPrint: vi.fn(), expanded: new Set([e4.id, e5.id]) },
+    });
+    const btn = screen.getByRole('button', { name: 'thread.markUnread' });
+    await fireEvent.click(btn);
+    expect(mailMock.markUnreadFromHere).toHaveBeenCalledWith('tid-mu', e4.id);
+    expect(mailMock.markThreadSeen).not.toHaveBeenCalled();
+  });
+
+  it('anchors at the sole expanded message in the middle of the thread', async () => {
+    render(ThreadToolbar, {
+      props: { threadId: 'tid-mu', latest: e5, onPrint: vi.fn(), expanded: new Set([e3.id]) },
+    });
+    const btn = screen.getByRole('button', { name: 'thread.markUnread' });
+    await fireEvent.click(btn);
+    expect(mailMock.markUnreadFromHere).toHaveBeenCalledWith('tid-mu', e3.id);
+  });
+
+  it('falls back to the last message when nothing is expanded', async () => {
+    render(ThreadToolbar, {
+      props: { threadId: 'tid-mu', latest: e5, onPrint: vi.fn(), expanded: new Set<string>() },
+    });
+    const btn = screen.getByRole('button', { name: 'thread.markUnread' });
+    await fireEvent.click(btn);
+    expect(mailMock.markUnreadFromHere).toHaveBeenCalledWith('tid-mu', e5.id);
+  });
+
+  it('falls back to the last message when the expanded prop is omitted entirely', async () => {
+    renderToolbar(e5);
+    const btn = screen.getByRole('button', { name: 'thread.markUnread' });
+    await fireEvent.click(btn);
+    expect(mailMock.markUnreadFromHere).toHaveBeenCalledWith('tid-mu', e5.id);
   });
 });
 
