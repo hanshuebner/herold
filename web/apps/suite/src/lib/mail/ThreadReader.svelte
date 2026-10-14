@@ -13,6 +13,7 @@
   import { labelForeground } from './label-color';
   import type { Email } from './types';
   import { pickInitialExpanded } from './pick-initial-expanded';
+  import { pickInitialScrollTarget } from './initial-scroll-target';
   import { threadSubject } from './thread-subject';
   import { auth } from '../auth/auth.svelte';
   import { i18n } from '../i18n/i18n.svelte';
@@ -78,6 +79,25 @@
       `[data-email-id="${CSS.escape(firstNew.id)}"]`,
     );
     target?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  }
+
+  /**
+   * Scroll the first message of the initial expansion into view on thread
+   * open (re #525), aligned to the start of the scroll container. Uses the
+   * same two-animation-frame wait as `handleAccept`'s pending-arrival
+   * scroll: the first frame lets Svelte lay out the newly-expanded
+   * accordions, the second lets the browser settle that layout before the
+   * scroll measurement runs.
+   */
+  async function scrollToInitialExpansion(emailId: string): Promise<void> {
+    await new Promise((r) => requestAnimationFrame(() => r(null)));
+    await new Promise((r) => requestAnimationFrame(() => r(null)));
+    const container = scrollContainerEl;
+    if (!container) return;
+    const target = container.querySelector<HTMLElement>(
+      `[data-email-id="${CSS.escape(emailId)}"]`,
+    );
+    target?.scrollIntoView({ block: 'start' });
   }
 
   /**
@@ -225,6 +245,13 @@
   // anti-pattern described in web/CLAUDE.md.
   let prevEmailIds = new Set<string>();
 
+  // Plain (non-reactive) latch for the initial-scroll gate (re #525): set
+  // true as soon as the initial scroll has fired for this thread open, so
+  // a later reactive update within the same open (a pending arrival, a
+  // dedupe-driven re-render) never re-scrolls a thread the user has
+  // already scrolled, or scrolled away from by hand.
+  let scrolledOnOpen = false;
+
   $effect(() => {
     if (!initialised && emails.length > 0) {
       const initial = pickInitialExpanded(emails);
@@ -236,6 +263,11 @@
       // initial emails as "new" on the same render).
       prevEmailIds = new Set(emails.map((e) => e.id));
       initialised = true;
+      const scrollTarget = pickInitialScrollTarget(initial, scrolledOnOpen);
+      if (scrollTarget) {
+        scrolledOnOpen = true;
+        void scrollToInitialExpansion(scrollTarget);
+      }
     }
   });
 
