@@ -1449,10 +1449,20 @@ func TestDelayDSN_EmittedAfterThreshold(t *testing.T) {
 	// merely indicates the deliverer hook ran, not that the worker has
 	// reached RescheduleQueueItem. Advancing while the worker is still
 	// mid-Deliver can race clk.Now() causing NextAttemptAt to land in
-	// the future. The scheduler arms its poll timer for the earliest
-	// NextAttemptAt, so even a missed Advance is self-healing: when the
-	// deferred row is already due, wait<=0 and FakeClock.After fires
-	// immediately on the next scheduler loop.
+	// the future.
+	//
+	// A second race survives even after waitDeferred: the scheduler
+	// computes its poll "wait" duration from clk.Now() and only then
+	// calls q.clk.NewTimer(wait) to register it (re #528). If this
+	// test's Advance lands in that gap, NewTimer reads the
+	// already-advanced clock and arms a deadline strictly ahead of the
+	// new now -- not "<=0 and self-healing" as the computation alone
+	// would suggest, since the duration it adds was measured against
+	// the stale pre-Advance now. Nothing but another Advance crosses
+	// that deadline, so the row sits Deferred forever from this test's
+	// perspective. waitForSchedulerTimer proves the scheduler's
+	// NewTimer call has already happened -- and so is reading the same
+	// now this Advance is about to move -- before firing it.
 	waitDeferred := func(want int32) bool {
 		return waitFor(t, 5*time.Second, func() bool {
 			rows, _ := f.store.Meta().ListQueueItems(f.ctx,
@@ -1467,6 +1477,7 @@ func TestDelayDSN_EmittedAfterThreshold(t *testing.T) {
 	}
 	// Advance the clock past the threshold so the second attempt
 	// triggers a delay DSN.
+	waitForSchedulerTimer(t, f.clk, 1)
 	f.clk.Advance(2 * time.Minute)
 	if !waitDeferred(2) {
 		t.Fatalf("second attempt never deferred for envelope %s", envID)
@@ -1519,12 +1530,14 @@ func TestDelayDSN_EmittedAfterThreshold(t *testing.T) {
 	// reschedule the next attempt exhausts the schedule and the row
 	// transitions to QueueStateFailed instead of Deferred.
 	for _, want := range []int32{3, 4} {
+		waitForSchedulerTimer(t, f.clk, 1)
 		f.clk.Advance(2 * time.Minute)
 		if !waitDeferred(want) {
 			t.Fatalf("attempt %d never deferred for envelope %s", want+1, envID)
 		}
 	}
 	// Final advance: schedule exhausts and the row should reach Failed.
+	waitForSchedulerTimer(t, f.clk, 1)
 	f.clk.Advance(2 * time.Minute)
 	if !waitFor(t, 5*time.Second, func() bool {
 		rows, _ := f.store.Meta().ListQueueItems(f.ctx,
@@ -1575,8 +1588,22 @@ func TestDelayDSN_SuppressedByNotifyNever(t *testing.T) {
 	// callCount: the latter increments at the START of Deliver, before
 	// the worker has reached RescheduleQueueItem, so a fake-clock
 	// Advance triggered off callCount can race the worker's mid-flight
-	// reschedule. The scheduler arms for the earliest NextAttemptAt, so
-	// even a missed Advance self-heals when the row is already due.
+	// reschedule.
+	//
+	// waitForSchedulerTimer before the Advance closes a second race
+	// (re #528): the scheduler computes its poll "wait" duration from
+	// clk.Now(), then separately calls q.clk.NewTimer(wait) to arm it.
+	// If Advance lands between those two steps, NewTimer reads the
+	// already-advanced clock and adds the stale (pre-Advance) duration
+	// on top of it, arming a deadline strictly ahead of the new now --
+	// not the "<=0, self-healing" case the duration computation alone
+	// would suggest, since that duration was measured against a now
+	// this Advance has since moved past. Nothing but another Advance
+	// ever crosses that deadline, so the row stays Deferred at
+	// Attempts==1 forever from this test's perspective.
+	// waitForSchedulerTimer(t, f.clk, 1) proves the scheduler's
+	// NewTimer call has already happened -- reading the same now this
+	// Advance is about to move -- before firing it.
 	waitDeferred := func(want int32) bool {
 		return waitFor(t, 5*time.Second, func() bool {
 			rows, _ := f.store.Meta().ListQueueItems(f.ctx,
@@ -1589,6 +1616,7 @@ func TestDelayDSN_SuppressedByNotifyNever(t *testing.T) {
 	if !waitDeferred(1) {
 		t.Fatalf("first attempt never deferred for envelope %s", envID)
 	}
+	waitForSchedulerTimer(t, f.clk, 1)
 	f.clk.Advance(2 * time.Minute)
 	if !waitDeferred(2) {
 		t.Fatalf("second attempt never deferred for envelope %s", envID)
