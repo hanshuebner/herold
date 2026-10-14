@@ -143,6 +143,16 @@ func (s *Server) runEventSource(
 		)
 	}
 
+	// lastPushedState holds, per JMAP type name, the state string most
+	// recently sent to THIS subscription (RFC 8620 §7.1: "changed" lists
+	// only the types whose state changed since the last StateChange this
+	// subscription received). It starts empty so the first push below
+	// reports every subscribed type regardless of its value; a
+	// reconnecting client starts a fresh runEventSource call and
+	// therefore a fresh empty map, which is why the first push after
+	// every connect still carries the full set.
+	lastPushedState := map[string]string{}
+
 	// Emit one initial StateChange immediately after priming so the
 	// client has authoritative current state for every subscribed type
 	// without having to wait for the next change. This also closes the
@@ -150,11 +160,12 @@ func (s *Server) runEventSource(
 	// and the server priming its cursor — the initial event re-asserts
 	// state, the client compares against its cache, and refetches only
 	// if they differ. closeafter=state is satisfied by this event.
-	if ev, err := s.buildStateChange(ctx, p, types); err == nil {
+	if ev, full, err := s.buildStateChange(ctx, p, types, lastPushedState); err == nil {
 		if err := writeSSEStateChange(w, ev); err != nil {
 			return err
 		}
 		flusher.Flush()
+		lastPushedState = full
 		if closeAfterState {
 			return nil
 		}
@@ -231,13 +242,23 @@ func (s *Server) runEventSource(
 				continue
 			}
 			pendingChanged = false
-			ev, err := s.buildStateChange(ctx, p, types)
+			ev, full, err := s.buildStateChange(ctx, p, types, lastPushedState)
 			if err != nil {
 				log.Warn("eventsource.state_failed",
 					"activity", "internal",
 					"err", err,
 					"principal_id", uint64(p.ID),
 				)
+				continue
+			}
+			lastPushedState = full
+			if len(ev.Changed[AccountIDForPrincipal(p.ID)]) == 0 {
+				// Every subscribed type's state matches what this
+				// subscription was last sent (RFC 8620 §7.1: "changed"
+				// lists only types whose state changed). The polling
+				// cycle that armed this flush saw a change-feed row for
+				// a type we are not subscribed to, or re-derived the
+				// same value; either way there is nothing to report.
 				continue
 			}
 			if err := writeSSEStateChange(w, ev); err != nil {
@@ -274,17 +295,32 @@ func (s *Server) runEventSource(
 // Mismatching the data side here is the canonical "new mail arrives
 // but the inbox does not refresh" failure: clients early-return when
 // the pushed state string equals the one they already cached.
-func (s *Server) buildStateChange(ctx context.Context, p store.Principal, types map[string]struct{}) (stateChangeEvent, error) {
-	row, err := s.collectStateMap(ctx, p, types)
+//
+// last is the full per-type state map most recently sent to this
+// subscription (empty on the first call of a connection). Per RFC 8620
+// §7.1 the returned event's "changed" map carries only the types whose
+// state differs from last — a type whose value did not move since the
+// last push to this subscription must not be reported again, even
+// though it is still computed here (so the caller can compare it on
+// the next call). full is the complete newly-derived map the caller
+// should remember as "last" for its next comparison.
+func (s *Server) buildStateChange(ctx context.Context, p store.Principal, types map[string]struct{}, last map[string]string) (ev stateChangeEvent, full map[string]string, err error) {
+	full, err = s.collectStateMap(ctx, p, types)
 	if err != nil {
-		return stateChangeEvent{}, err
+		return stateChangeEvent{}, nil, err
+	}
+	changed := make(map[string]string, len(full))
+	for typeName, state := range full {
+		if lastState, ok := last[typeName]; !ok || lastState != state {
+			changed[typeName] = state
+		}
 	}
 	return stateChangeEvent{
 		Type: "StateChange",
 		Changed: map[Id]map[string]string{
-			AccountIDForPrincipal(p.ID): row,
+			AccountIDForPrincipal(p.ID): changed,
 		},
-	}, nil
+	}, full, nil
 }
 
 // collectStateMap returns the typeName -> state-string map for the
