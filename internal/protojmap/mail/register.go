@@ -85,14 +85,14 @@ func RegisterWithOptions(
 }
 
 // mailAccountCapability is the per-account capability provider. RFC 8621
-// §1 lists the fields verbatim; we publish the conservative defaults
-// that match the v1 storage surface (one mailbox per email, no
-// tree-restriction beyond name uniqueness, modest per-call limits).
+// §1 lists the fields verbatim; the values match the storage surface:
+// an email may belong to any number of mailboxes (REQ-PROTO-128), no
+// tree restriction beyond name uniqueness, modest per-call limits.
 type mailAccountCapability struct{}
 
 func (mailAccountCapability) AccountCapability() any {
 	return mailAccountCapabilityBody{
-		MaxMailboxesPerEmail:       1,
+		MaxMailboxesPerEmail:       nil,
 		MaxMailboxDepth:            nil,
 		MaxSizeMailboxName:         255,
 		MaxSizeAttachmentsPerEmail: 50 * 1024 * 1024,
@@ -104,7 +104,7 @@ func (mailAccountCapability) AccountCapability() any {
 // mailAccountCapabilityBody is the JSON-marshaled body. Pointer fields
 // encode "no limit" with an explicit null per RFC 8621 §1.
 type mailAccountCapabilityBody struct {
-	MaxMailboxesPerEmail       int      `json:"maxMailboxesPerEmail"`
+	MaxMailboxesPerEmail       *int     `json:"maxMailboxesPerEmail"`
 	MaxMailboxDepth            *int     `json:"maxMailboxDepth"`
 	MaxSizeMailboxName         int      `json:"maxSizeMailboxName"`
 	MaxSizeAttachmentsPerEmail int64    `json:"maxSizeAttachmentsPerEmail"`
