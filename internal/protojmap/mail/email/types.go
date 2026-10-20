@@ -106,6 +106,9 @@ type jmapEmail struct {
 	InReplyTo  []string `json:"inReplyTo,omitempty"`
 	References []string `json:"references,omitempty"`
 	SentAt     string   `json:"sentAt,omitempty"`
+	// Headers is every header field of the message in order with its
+	// raw value (RFC 8621 §4.1.3); set only when requested by name.
+	Headers []bodyPartHeader `json:"headers,omitempty"`
 
 	// Body parts (RFC 8621 §4.1.4). Populated only on Email/parse and
 	// when the caller asks for bodyStructure / bodyValues; the cheap
@@ -191,6 +194,7 @@ type jmapEmailWire struct {
 	InReplyTo                 []string             `json:"inReplyTo,omitempty"`
 	References                []string             `json:"references,omitempty"`
 	SentAt                    string               `json:"sentAt,omitempty"`
+	Headers                   []bodyPartHeader     `json:"headers,omitempty"`
 	BodyStructure             *bodyPart            `json:"bodyStructure,omitempty"`
 	BodyValues                map[string]bodyValue `json:"bodyValues,omitempty"`
 	TextBody                  []bodyPart           `json:"textBody,omitempty"`
@@ -232,6 +236,7 @@ func (e jmapEmail) MarshalJSON() ([]byte, error) {
 		InReplyTo:                 e.InReplyTo,
 		References:                e.References,
 		SentAt:                    e.SentAt,
+		Headers:                   e.Headers,
 		BodyStructure:             e.BodyStructure,
 		BodyValues:                e.BodyValues,
 		TextBody:                  e.TextBody,

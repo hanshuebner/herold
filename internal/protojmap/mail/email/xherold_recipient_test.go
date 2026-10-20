@@ -76,6 +76,51 @@ func TestEmailGet_InjectsXHeroldRecipient(t *testing.T) {
 	}
 }
 
+// TestEmailGet_XHeroldRecipient_StoredCopyIgnored: a header property
+// reads the last field of its name (RFC 8621 section 4.1.3), so an
+// X-Herold-Recipient field a sender wrote into the message must not
+// outrank the one herold injects. Email/get reports only the injected
+// field.
+func TestEmailGet_XHeroldRecipient_StoredCopyIgnored(t *testing.T) {
+	f := setupFixture(t)
+	body := "From: bob@sender.test\r\nTo: alice@example.test\r\n" +
+		"X-Herold-Recipient: forged@example.test\r\nSubject: hi\r\n\r\nbody"
+	ref := f.putBlob(t, body)
+	now := f.srv.Clock.Now()
+	msg := store.Message{
+		InternalDate: now,
+		ReceivedAt:   now,
+		Size:         ref.Size,
+		Blob:         ref,
+		Envelope:     store.Envelope{Subject: "hi", From: "bob@sender.test", To: "alice@example.test", Date: now},
+	}
+	want := "alice+work@example.test"
+	if _, _, err := f.srv.Store.Meta().InsertMessage(context.Background(), msg, []store.MessageMailbox{{
+		MailboxID:  f.inbox.ID,
+		ReceivedTo: want,
+	}}); err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+	mid := mostRecentMessageID(t, f)
+	_, raw := f.invoke(t, "Email/get", map[string]any{
+		"accountId":  protojmap.AccountIDForPrincipal(f.pid),
+		"ids":        []string{fmt.Sprintf("%d", mid)},
+		"properties": []string{"header:X-Herold-Recipient:asText", "header:X-Herold-Recipient:asText:all"},
+	})
+	var resp struct {
+		List []struct {
+			Last string   `json:"header:X-Herold-Recipient:asText"`
+			All  []string `json:"header:X-Herold-Recipient:asText:all"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil || len(resp.List) != 1 {
+		t.Fatalf("Email/get: %v: %s", err, raw)
+	}
+	if got := resp.List[0]; got.Last != want || len(got.All) != 1 || got.All[0] != want {
+		t.Fatalf("X-Herold-Recipient = %q, all = %q; want %q only", got.Last, got.All, want)
+	}
+}
+
 // TestEmailGet_LegacyEmptyReceivedTo_NoInjection asserts the legacy
 // case (REQ-FLOW-34): when received_to is empty (pre-feature
 // memberships, Email/set drafts, JMAP imports), the renderer emits

@@ -1,7 +1,7 @@
 package email
 
 // Test for the header:*:asText dynamic header accessor's RFC 2047 charset
-// handling (re #259). resolveHeaderProperty built its own zero-value
+// handling (re #259). The accessor once built its own zero-value
 // mime.WordDecoder, which shares the #257 defect: an encoded-word in a
 // charset htmlindex knows but the stdlib does not special-case inline
 // (ISO-8859-15, windows-1252, ...) makes mime.WordDecoder.DecodeHeader
@@ -11,11 +11,9 @@ package email
 import (
 	"strings"
 	"testing"
-
-	"github.com/hanshuebner/herold/internal/mailparse"
 )
 
-func TestResolveHeaderProperty_AsText_DecodesHtmlindexOnlyCharset(t *testing.T) {
+func TestHeaderPropertyValue_AsText_DecodesHtmlindexOnlyCharset(t *testing.T) {
 	// "Grüße" in ISO-8859-15 bytes: 47 72 fc df 65 -> base64 R3L832U=
 	raw := "From: sender@example.local\r\n" +
 		"To: recipient@example.local\r\n" +
@@ -27,22 +25,17 @@ func TestResolveHeaderProperty_AsText_DecodesHtmlindexOnlyCharset(t *testing.T) 
 		"\r\n" +
 		"hi\r\n"
 
-	parsed, err := mailparse.Parse(strings.NewReader(raw), mailparse.NewParseOptions())
-	if err != nil {
-		t.Fatalf("mailparse.Parse: %v", err)
-	}
-
-	got := resolveHeaderProperty(parsed, "header:X-Test:asText")
+	got := headerPropertyValue(rawHeaderFields([]byte(raw)), "header:X-Test:asText")
 	const want = `"Grüße"`
 	if string(got) != want {
-		t.Errorf("resolveHeaderProperty asText = %s, want %s", got, want)
+		t.Errorf("header:X-Test:asText = %s, want %s", got, want)
 	}
 }
 
-// TestResolveHeaderProperty_AsText_UnsupportedCharsetDegradesGracefully
+// TestHeaderPropertyValue_AsText_UnsupportedCharsetDegradesGracefully
 // guards that a charset unknown even to htmlindex still yields a
 // best-effort non-empty, non-encoded-word value.
-func TestResolveHeaderProperty_AsText_UnsupportedCharsetDegradesGracefully(t *testing.T) {
+func TestHeaderPropertyValue_AsText_UnsupportedCharsetDegradesGracefully(t *testing.T) {
 	raw := "From: sender@example.local\r\n" +
 		"To: recipient@example.local\r\n" +
 		"X-Test: =?totally-bogus-charset?Q?Hi=FC?=\r\n" +
@@ -53,12 +46,7 @@ func TestResolveHeaderProperty_AsText_UnsupportedCharsetDegradesGracefully(t *te
 		"\r\n" +
 		"hi\r\n"
 
-	parsed, err := mailparse.Parse(strings.NewReader(raw), mailparse.NewParseOptions())
-	if err != nil {
-		t.Fatalf("mailparse.Parse: %v", err)
-	}
-
-	got := string(resolveHeaderProperty(parsed, "header:X-Test:asText"))
+	got := string(headerPropertyValue(rawHeaderFields([]byte(raw)), "header:X-Test:asText"))
 	if got == "null" {
 		t.Fatalf("value blanked entirely for an unsupported charset")
 	}

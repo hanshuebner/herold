@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net/mail"
 	"sort"
 	"strconv"
 	"strings"
@@ -170,7 +169,7 @@ func propertiesNeedBody(props *[]string) bool {
 	for _, p := range *props {
 		switch p {
 		case "bodyStructure", "textBody", "htmlBody", "attachments",
-			"bodyValues", "references":
+			"bodyValues", "references", "headers":
 			return true
 		}
 		// Dynamic header accessors: "header:X:asY"
@@ -499,117 +498,34 @@ func renderFullWithProperties(
 		}
 	}
 
-	// Populate dynamic header property accessors.
+	// The headers property and the dynamic header properties (RFC 8621
+	// §4.1.3) read the header fields as they appear in the message.
 	if properties != nil {
-		if out.HeaderProperties == nil {
-			out.HeaderProperties = make(map[string]json.RawMessage)
+		var fields []rawHeaderField
+		for _, prop := range *properties {
+			if prop == "headers" || strings.HasPrefix(prop, "header:") {
+				fields = rawHeaderFields(rawBody)
+				if len(rawBody) != len(rawBodyOrig) {
+					fields = withoutStoredXHeroldRecipient(fields)
+				}
+				break
+			}
+		}
+		if wantProp(properties, "headers") {
+			out.Headers = emailHeaders(fields)
 		}
 		for _, prop := range *properties {
 			if !strings.HasPrefix(prop, "header:") {
 				continue
 			}
-			val := resolveHeaderProperty(parsed, prop)
-			out.HeaderProperties[prop] = val
+			if out.HeaderProperties == nil {
+				out.HeaderProperties = make(map[string]json.RawMessage)
+			}
+			out.HeaderProperties[prop] = headerPropertyValue(fields, prop)
 		}
-	} else {
-		// properties == nil: populate all dynamic header properties that
-		// appear in the parsed message. In practice JMAP clients that want
-		// header accessors name them explicitly; nil means "standard props
-		// only" per RFC 8621.  We skip the full-scan here (no-op for nil).
 	}
 
 	return out, nil
-}
-
-// resolveHeaderProperty decodes a dynamic header accessor like
-// "header:Subject:asText" or "header:References:asMessageIds".
-// Returns the JSON-encoded value or JSON null when not present.
-func resolveHeaderProperty(parsed mailparse.Message, prop string) json.RawMessage { //nolint:gocritic
-	// prop format: "header:<HeaderName>:<form>" or "header:<HeaderName>"
-	// (raw form when no form suffix).
-	parts := strings.SplitN(prop, ":", 3)
-	if len(parts) < 2 {
-		return json.RawMessage("null")
-	}
-	headerName := parts[1]
-	form := "asRaw"
-	if len(parts) == 3 {
-		form = parts[2]
-	}
-
-	// Header lookup is case-insensitive.
-	raw := parsed.Headers.Get(headerName)
-	if raw == "" {
-		return jsonNull()
-	}
-
-	switch strings.ToLower(form) {
-	case "asraw", "":
-		// RFC 8621 §4.1.2.4: asRaw returns the raw header value with
-		// leading space preserved.
-		encoded, _ := json.Marshal(" " + strings.TrimSpace(raw))
-		return json.RawMessage(encoded)
-	case "astext":
-		// Decoded text; for Subject this is the RFC 2047-decoded value.
-		// mailparse.DecodeHeader resolves charsets via the same
-		// htmlindex-backed registry the body decoder uses (re #257, re
-		// #259) rather than a bare mime.WordDecoder that blanks the whole
-		// header on a charset like ISO-8859-15 it does not special-case.
-		decoded := mailparse.DecodeHeader(strings.TrimSpace(raw))
-		if decoded == "" {
-			return jsonNull()
-		}
-		encoded, _ := json.Marshal(decoded)
-		return json.RawMessage(encoded)
-	case "asdate":
-		// RFC 8621 §4.1.2.4: asDate returns a UTCDate string.
-		t, err := mail.ParseDate(strings.TrimSpace(raw))
-		if err != nil {
-			return jsonNull()
-		}
-		encoded, _ := json.Marshal(rfc3339UTC(t))
-		return json.RawMessage(encoded)
-	case "asaddresses":
-		// Array of jmapAddress.
-		addrs := parseAddressList(raw)
-		if addrs == nil {
-			return json.RawMessage("[]")
-		}
-		encoded, _ := json.Marshal(addrs)
-		return json.RawMessage(encoded)
-	case "asgroupedaddresses":
-		// Array of {name, addresses}. We flatten groups into flat addresses
-		// for simplicity (RFC 8621 §4.1.2.4 says group name is preserved).
-		addrs := parseAddressList(raw)
-		if addrs == nil {
-			return json.RawMessage("[]")
-		}
-		// Wrap all in a single unnamed group.
-		type groupedAddress struct {
-			Name      *string       `json:"name"`
-			Addresses []jmapAddress `json:"addresses"`
-		}
-		group := groupedAddress{Name: nil, Addresses: addrs}
-		encoded, _ := json.Marshal([]groupedAddress{group})
-		return json.RawMessage(encoded)
-	case "asmessageids":
-		// Array of message-id strings (angle brackets stripped).
-		ids := splitMessageIDs(raw)
-		if len(ids) == 0 {
-			return json.RawMessage("[]")
-		}
-		encoded, _ := json.Marshal(ids)
-		return json.RawMessage(encoded)
-	case "asurls":
-		// Array of URL strings.
-		urls := extractURLs(raw)
-		if len(urls) == 0 {
-			return json.RawMessage("[]")
-		}
-		encoded, _ := json.Marshal(urls)
-		return json.RawMessage(encoded)
-	}
-	return jsonNull()
 }
 
 // splitMessageIDs parses a space-separated list of message-id values,
@@ -619,23 +535,6 @@ func splitMessageIDs(raw string) []string {
 	var out []string
 	for _, part := range strings.Fields(raw) {
 		part = strings.Trim(part, "<>")
-		if part != "" {
-			out = append(out, part)
-		}
-	}
-	return out
-}
-
-// extractURLs extracts URL-like strings from a header value.
-func extractURLs(raw string) []string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return nil
-	}
-	// Simple: split on whitespace and return non-empty tokens.
-	var out []string
-	for _, part := range strings.Fields(raw) {
-		part = strings.Trim(part, "<>\"'")
 		if part != "" {
 			out = append(out, part)
 		}
