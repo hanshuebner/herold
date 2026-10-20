@@ -146,8 +146,11 @@ type rcptEntry struct {
 	localPart   string
 	domain      string
 	principalID directory.PrincipalID
-	notify      string
-	orcpt       string
+	// sentBySelf marks a loopback delivery of mail principalID submitted
+	// itself; its mailbox copies arrive with $seen.
+	sentBySelf bool
+	notify     string
+	orcpt      string
 	// synthetic flags an accept-without-principal RCPT (REQ-DIR-RCPT-07).
 	synthetic bool
 	// routeTag is the opaque correlation token returned by the

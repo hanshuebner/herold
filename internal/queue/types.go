@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"time"
+
+	"github.com/hanshuebner/herold/internal/store"
 )
 
 // ErrConflict is returned by Submit when the supplied IdempotencyKey
@@ -91,6 +93,9 @@ type DeliveryRequest struct {
 	// delivery. The orchestrator never batches multiple recipients into
 	// one DeliveryRequest; one queue row is one DeliveryRequest.
 	Recipient string
+	// PrincipalID is the principal that submitted the message, or 0
+	// for mail the server produced itself (DSNs, forwarding fan-out).
+	PrincipalID store.PrincipalID
 	// Message is the fully-rendered message stream (post-signing if the
 	// caller asked for signing). Includes headers + CRLF + body. The
 	// deliverer must consume the reader exactly once; the orchestrator

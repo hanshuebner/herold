@@ -46,6 +46,9 @@ type IngestRecipient struct {
 	Addr string
 	// PrincipalID is the owning principal resolved from the store.
 	PrincipalID directory.PrincipalID
+	// SentBySelf reports that PrincipalID submitted the message itself;
+	// every mailbox copy of it is delivered with $seen.
+	SentBySelf bool
 }
 
 // IngestBytes runs the inbound delivery pipeline for pre-fetched message
@@ -286,6 +289,7 @@ func (s *Server) IngestBytes(ctx context.Context, req IngestRequest) error {
 			addr:        rc.Addr,
 			principalID: rc.PrincipalID,
 			domain:      domainOfRecipient(rc.Addr),
+			sentBySelf:  rc.SentBySelf,
 		}
 		ok, derr := fakeSess.deliverOne(ctx, rcEntry, finalBytes, blobRef, msg, authResults, classification, ownAddresses)
 		if derr != nil {

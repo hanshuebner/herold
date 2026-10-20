@@ -355,6 +355,12 @@ func (sess *session) finishMessageWithBlob(
 			anyOK = true
 			continue
 		}
+		// A submission-listener client sending to its own principal
+		// delivers locally right here; that mail arrives read.
+		if (sess.mode == SubmissionSTARTTLS || sess.mode == SubmissionImplicitTLS) &&
+			sess.authenticated && rc.principalID != 0 && rc.principalID == sess.authPrincipal {
+			rc.sentBySelf = true
+		}
 		ok, derr := sess.deliverOne(ctx, rc, finalBytes, blobRef, msg, authResults, classification, ownAddresses)
 		if derr != nil {
 			sess.log.ErrorContext(ctx, "smtp delivery failed",
@@ -656,6 +662,10 @@ func (sess *session) deliverOne(
 		// membership row. Idempotent with a Sieve setflag "\Seen".
 		if tagHit {
 			msgFlags |= tagEffect.extraSeenFlag()
+		}
+		// Mail the principal sent to itself arrives read.
+		if rc.sentBySelf {
+			msgFlags |= store.MessageFlagSeen
 		}
 		// REQ-FILT-200: only categorise messages destined for the inbox,
 		// after Sieve fileinto. classification.Category is already the

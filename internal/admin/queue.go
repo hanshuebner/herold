@@ -177,6 +177,8 @@ func (d loopbackDeliverer) Deliver(ctx context.Context, req queue.DeliveryReques
 		Recipients: []protosmtp.IngestRecipient{{
 			Addr:        req.Recipient,
 			PrincipalID: pid,
+			// Mail a principal sends to itself arrives read.
+			SentBySelf: req.PrincipalID != 0 && req.PrincipalID == pid,
 		}},
 	}); err != nil {
 		return queue.DeliveryOutcome{

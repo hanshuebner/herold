@@ -899,10 +899,11 @@ func (q *Queue) deliver(parentCtx context.Context, item store.QueueItem) {
 	}
 
 	req := DeliveryRequest{
-		MailFrom:   item.MailFrom,
-		Recipient:  item.RcptTo,
-		Message:    messageReader,
-		REQUIRETLS: intent.REQUIRETLS,
+		MailFrom:    item.MailFrom,
+		Recipient:   item.RcptTo,
+		PrincipalID: item.PrincipalID,
+		Message:     messageReader,
+		REQUIRETLS:  intent.REQUIRETLS,
 	}
 
 	start := q.clk.Now()
