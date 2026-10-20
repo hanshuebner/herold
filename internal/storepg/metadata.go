@@ -3815,6 +3815,14 @@ func (m *metadata) QueryEmailFast(
 
 	if opts.InMailbox != nil {
 		where = append(where, "mm.mailbox_id = "+ph(int64(*opts.InMailbox)))
+	} else {
+		// Without a mailbox to join on, join each message to its
+		// canonical membership (the lowest mailbox_id, the row an
+		// unscoped GetMessage reads its keywords from) so the result
+		// lists every message once and keyword predicates see the
+		// keywords Email/get reports.
+		where = append(where, "mm.mailbox_id = (SELECT MIN(mm1.mailbox_id) "+
+			"FROM message_mailboxes mm1 WHERE mm1.message_id = m.id)")
 	}
 	if len(opts.InMailboxOtherThan) > 0 {
 		phs := make([]string, len(opts.InMailboxOtherThan))
