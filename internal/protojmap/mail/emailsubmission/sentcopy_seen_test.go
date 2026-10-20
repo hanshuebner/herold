@@ -6,12 +6,11 @@ package emailsubmission
 // (web/apps/suite/src/lib/compose/compose.svelte.ts) drives this via the
 // standard RFC 8621 SS7.5 onSuccessUpdateEmail patch on EmailSubmission/set
 // -- move Drafts->Sent, clear $draft, set $seen -- so this test drives the
-// same patch through setHandler.executeAs and asserts the resulting Sent
+// same patch through the /jmap endpoint and asserts the resulting Sent
 // copy carries $seen.
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -19,7 +18,6 @@ import (
 	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
-	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/storesqlite"
 )
@@ -83,32 +81,32 @@ func testEmailSubmissionSentCopySeen(t *testing.T, st store.Store) {
 		t.Fatal("precondition: draft should start unseen")
 	}
 
-	// Submit, with the same onSuccessUpdateEmail patch compose.svelte.ts
-	// sends on Send: mailboxIds Drafts->null, Sent->true; keywords $draft
-	// ->null, $seen->true.
-	args, marshalErr := json.Marshal(map[string]any{
-		"accountId": protojmap.AccountIDForPrincipal(p.ID),
-		"create": map[string]any{
-			"k1": map[string]any{
-				"identityId": "default",
-				"emailId":    renderEmailID(draftMsgID),
+	// Submit through /jmap, with the same onSuccessUpdateEmail patch
+	// compose.svelte.ts sends on Send: mailboxIds Drafts->null, Sent->true;
+	// keywords $draft->null, $seen->true. The dispatcher applies it with
+	// the implicit Email/set.
+	c := serveJMAP(t, h, st, p)
+	got := c.call(t, allCapabilities,
+		[]any{"EmailSubmission/set", map[string]any{
+			"accountId": c.account,
+			"create": map[string]any{
+				"k1": map[string]any{
+					"identityId": "default",
+					"emailId":    renderEmailID(draftMsgID),
+				},
 			},
-		},
-		"onSuccessUpdateEmail": map[string]any{
-			"#k1": map[string]any{
-				fmt.Sprintf("mailboxIds/%d", draftsMB.ID): nil,
-				fmt.Sprintf("mailboxIds/%d", sentMB.ID):   true,
-				"keywords/$draft":                         nil,
-				"keywords/$seen":                          true,
+			"onSuccessUpdateEmail": map[string]any{
+				"#k1": map[string]any{
+					fmt.Sprintf("mailboxIds/%d", draftsMB.ID): nil,
+					fmt.Sprintf("mailboxIds/%d", sentMB.ID):   true,
+					"keywords/$draft":                         nil,
+					"keywords/$seen":                          true,
+				},
 			},
-		},
-	})
-	if marshalErr != nil {
-		t.Fatalf("marshal args: %v", marshalErr)
-	}
-	_, mErr := setHandler{h: h}.executeAs(p, args)
-	if mErr != nil {
-		t.Fatalf("EmailSubmission/set: %v", mErr)
+		}, "c0"},
+	)
+	if len(got) != 2 || got[1].Name != "Email/set" {
+		t.Fatalf("EmailSubmission/set: %d responses, want EmailSubmission/set + Email/set", len(got))
 	}
 
 	after, err := st.Meta().GetMessage(ctx, draftMsgID)

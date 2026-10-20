@@ -574,6 +574,18 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 		resp.Created[clientID] = created
 		mutated = true
 	}
+	// The onSuccess arguments name updated and destroyed submissions by
+	// id; read their rows (and so the Email each submitted) before the
+	// destroy loop deletes them.
+	before := make(map[jmapID]store.EmailSubmissionRow)
+	if len(req.OnSuccessUpdateEmail) > 0 || len(req.OnSuccessDestroyEmail) > 0 {
+		ids := append(append([]jmapID{}, keysOf(req.Update)...), req.Destroy...)
+		for _, id := range ids {
+			if row, err := s.h.store.Meta().GetEmailSubmission(ctx, id); err == nil && row.PrincipalID == p.ID {
+				before[id] = row
+			}
+		}
+	}
 	// EmailSubmission/set update is constrained per RFC 8621 §5.4: only
 	// undoStatus may transition to "canceled". We surface a forbidden
 	// SetError for any other key.
@@ -619,219 +631,109 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 	}
 	resp.NewState = stateString(stAfter.EmailSubmission)
 
-	// onSuccessUpdateEmail: RFC 8621 §7.5 implicit Email/set.
-	// For each successful create entry referenced in onSuccessUpdateEmail,
-	// apply the given patch to the associated email and append an implicit
-	// Email/set response.
-	if len(req.OnSuccessUpdateEmail) > 0 && len(resp.Created) > 0 {
-		implicitResp, mErr := s.h.applyOnSuccessUpdateEmail(ctx, p, req.OnSuccessUpdateEmail, resp.Created)
-		if mErr != nil {
-			// Treat as serverFail rather than rolling back the submission.
-			return resp, nil
-		}
-		if implicitResp != nil {
-			primaryBytes, err := json.Marshal(resp)
-			if err != nil {
-				return resp, nil
-			}
-			extraBytes, err := json.Marshal(implicitResp)
-			if err != nil {
-				return resp, nil
-			}
-			return protojmap.MultipleInvocations{
-				Primary: primaryBytes,
-				Extra: []protojmap.Invocation{
-					{Name: "Email/set", Args: extraBytes},
-				},
-			}, nil
-		}
+	implicitArgs, ok := s.h.implicitEmailSet(ctx, p, req, resp, before)
+	if !ok {
+		return resp, nil
 	}
-	return resp, nil
-}
-
-// implicitEmailSetResponse is the wire form of the implicit Email/set
-// triggered by onSuccessUpdateEmail (RFC 8621 §7.5).
-type implicitEmailSetResponse struct {
-	AccountID    string                     `json:"accountId"`
-	OldState     string                     `json:"oldState,omitempty"`
-	NewState     string                     `json:"newState"`
-	Updated      map[jmapID]*implicitUpdate `json:"updated,omitempty"`
-	NotUpdated   map[jmapID]setError        `json:"notUpdated,omitempty"`
-	Created      map[jmapID]any             `json:"created,omitempty"`
-	Destroyed    []jmapID                   `json:"destroyed,omitempty"`
-	NotCreated   map[jmapID]setError        `json:"notCreated,omitempty"`
-	NotDestroyed map[jmapID]setError        `json:"notDestroyed,omitempty"`
-}
-
-type implicitUpdate struct{} // null in JSON — update returned as null per RFC 8620
-
-func (u *implicitUpdate) MarshalJSON() ([]byte, error) { return []byte("null"), nil }
-
-// applyOnSuccessUpdateEmail applies the onSuccessUpdateEmail patch to each
-// successfully created submission's email. Returns the implicit Email/set
-// response or nil if nothing to do.
-func (h *handlerSet) applyOnSuccessUpdateEmail(
-	ctx context.Context,
-	p store.Principal,
-	patches map[jmapID]json.RawMessage,
-	created map[string]jmapEmailSubmission,
-) (*implicitEmailSetResponse, *protojmap.MethodError) {
-	st, err := h.store.Meta().GetJMAPStates(ctx, p.ID)
+	primaryBytes, err := json.Marshal(resp)
 	if err != nil {
 		return nil, protojmap.NewMethodError("serverFail", err.Error())
 	}
-	oldEmailState := strconv.FormatInt(st.Email, 10)
-	resp := &implicitEmailSetResponse{
-		AccountID: accountIDForPrincipal(p),
-		OldState:  oldEmailState,
-	}
-	mutated := false
-	for ref, patch := range patches {
-		// Resolve "#clientID" reference to the created submission.
-		clientID := strings.TrimPrefix(ref, "#")
-		sub, ok := created[clientID]
-		if !ok {
-			// Reference doesn't match any created submission; skip.
-			if resp.NotUpdated == nil {
-				resp.NotUpdated = make(map[jmapID]setError)
-			}
-			resp.NotUpdated[ref] = setError{Type: "notFound",
-				Description: "creation reference " + ref + " not found in this request's created submissions"}
-			continue
-		}
-		emailID := sub.EmailID
-		mid, ok := parseEmailID(emailID)
-		if !ok {
-			if resp.NotUpdated == nil {
-				resp.NotUpdated = make(map[jmapID]setError)
-			}
-			resp.NotUpdated[emailID] = setError{Type: "notFound"}
-			continue
-		}
-		msg, err := h.store.Meta().GetMessage(ctx, mid)
-		if err != nil {
-			if resp.NotUpdated == nil {
-				resp.NotUpdated = make(map[jmapID]setError)
-			}
-			resp.NotUpdated[emailID] = setError{Type: "notFound"}
-			continue
-		}
-		// Parse the patch as a flat JSON object and apply.
-		if perr := h.applyEmailPatch(ctx, p, msg, patch); perr != nil {
-			if resp.NotUpdated == nil {
-				resp.NotUpdated = make(map[jmapID]setError)
-			}
-			resp.NotUpdated[emailID] = *perr
-			continue
-		}
-		if resp.Updated == nil {
-			resp.Updated = make(map[jmapID]*implicitUpdate)
-		}
-		resp.Updated[emailID] = nil
-		mutated = true
-	}
-	if mutated {
-		if _, err := h.store.Meta().IncrementJMAPState(ctx, p.ID, store.JMAPStateKindEmail); err != nil {
-			return nil, protojmap.NewMethodError("serverFail", err.Error())
-		}
-	}
-	stAfter, err := h.store.Meta().GetJMAPStates(ctx, p.ID)
-	if err != nil {
-		return nil, protojmap.NewMethodError("serverFail", err.Error())
-	}
-	resp.NewState = strconv.FormatInt(stAfter.Email, 10)
-	return resp, nil
+	return protojmap.MultipleInvocations{
+		Primary:  primaryBytes,
+		Implicit: []protojmap.Invocation{{Name: "Email/set", Args: implicitArgs}},
+	}, nil
 }
 
-// applyEmailPatch applies a flat Email/set patch to a message, handling
-// mailboxIds and keywords partial patches per RFC 8621 §4.2.
-func (h *handlerSet) applyEmailPatch(
+// implicitEmailSetArgs is the argument object of the implicit Email/set
+// call that onSuccessUpdateEmail / onSuccessDestroyEmail make.
+type implicitEmailSetArgs struct {
+	AccountID string                     `json:"accountId"`
+	Update    map[jmapID]json.RawMessage `json:"update,omitempty"`
+	Destroy   []jmapID                   `json:"destroy,omitempty"`
+}
+
+// implicitEmailSet builds the implicit Email/set of RFC 8621 §7.5: for
+// each EmailSubmission the request created, updated or destroyed, the
+// onSuccessUpdateEmail patch applies to the Email it submitted and
+// onSuccessDestroyEmail destroys that Email. Keys name a submission by
+// id or, for one created in this call, by "#" and its creation id.
+// before holds the rows of the updated and destroyed submissions, read
+// before the call changed them. Returns ok=false when neither argument
+// names a submission that succeeded.
+//
+// An external submission whose relay has not finished reads the Email
+// when it relays, so its Email stays in place and is left out of the
+// destroy list.
+func (h *handlerSet) implicitEmailSet(
 	ctx context.Context,
 	p store.Principal,
-	msg store.Message,
-	patch json.RawMessage,
-) *setError {
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal(patch, &m); err != nil {
-		return &setError{Type: "invalidProperties", Description: err.Error()}
+	req setRequest,
+	resp setResponse,
+	before map[jmapID]store.EmailSubmissionRow,
+) (json.RawMessage, bool) {
+	if len(req.OnSuccessUpdateEmail) == 0 && len(req.OnSuccessDestroyEmail) == 0 {
+		return nil, false
 	}
-	var addFlags, clearFlags store.MessageFlags
-	var addKW, clearKW []string
-	targetMailboxID := store.MailboxID(0) // 0 = no move
-	for k, v := range m {
-		switch {
-		case k == "keywords/$seen":
-			if string(v) == "null" {
-				clearFlags |= store.MessageFlagSeen
-			} else {
-				addFlags |= store.MessageFlagSeen
-			}
-		case k == "keywords/$answered":
-			if string(v) == "null" {
-				clearFlags |= store.MessageFlagAnswered
-			} else {
-				addFlags |= store.MessageFlagAnswered
-			}
-		case k == "keywords/$flagged":
-			if string(v) == "null" {
-				clearFlags |= store.MessageFlagFlagged
-			} else {
-				addFlags |= store.MessageFlagFlagged
-			}
-		case k == "keywords/$draft":
-			if string(v) == "null" {
-				clearFlags |= store.MessageFlagDraft
-			} else {
-				addFlags |= store.MessageFlagDraft
-			}
-		case strings.HasPrefix(k, "keywords/"):
-			kw := k[len("keywords/"):]
-			if string(v) == "null" {
-				clearKW = append(clearKW, kw)
-			} else {
-				addKW = append(addKW, kw)
-			}
-		case strings.HasPrefix(k, "mailboxIds/"):
-			mbID := k[len("mailboxIds/"):]
-			id, err := strconv.ParseUint(mbID, 10, 64)
-			if err != nil || id == 0 {
-				return &setError{Type: "invalidProperties",
-					Description: "invalid mailboxId in patch: " + mbID}
-			}
-			if string(v) == "null" {
-				// Remove from this mailbox — in v1 single-mailbox model,
-				// this is a no-op if the message is not in this mailbox.
-			} else {
-				// Add to this mailbox — in v1 single-mailbox model, this is
-				// a move.
-				targetMailboxID = store.MailboxID(id)
+	type succeeded struct {
+		emailID     jmapID
+		relaysLater bool
+	}
+	subs := make(map[jmapID]succeeded)
+	for clientID, created := range resp.Created {
+		relaysLater := false
+		if row, err := h.store.Meta().GetEmailSubmission(ctx, created.ID); err == nil {
+			relaysLater = row.External && row.UndoStatus == string(undoStatusPending)
+		}
+		subs["#"+clientID] = succeeded{emailID: created.EmailID, relaysLater: relaysLater}
+	}
+	for id := range resp.Updated {
+		if row, ok := before[id]; ok {
+			subs[id] = succeeded{
+				emailID:     renderEmailID(row.EmailID),
+				relaysLater: row.External && row.UndoStatus == string(undoStatusPending),
 			}
 		}
 	}
-	flagsMailboxID := msg.MailboxID
-	if targetMailboxID != 0 && targetMailboxID != msg.MailboxID {
-		// Verify the principal owns the target mailbox.
-		mb, err := h.store.Meta().GetMailboxByID(ctx, targetMailboxID)
-		if err != nil || mb.PrincipalID != p.ID {
-			return &setError{Type: "notFound", Description: "target mailbox not found"}
-		}
-		if err := h.store.Meta().MoveMessage(ctx, msg.ID, msg.MailboxID, targetMailboxID); err != nil {
-			return &setError{Type: "serverFail", Description: err.Error()}
-		}
-		// After MoveMessage the source row is gone — subsequent
-		// UpdateMessageFlags must target the new mailbox or it would
-		// hit ErrNotFound (the source row is what onSuccessUpdateEmail
-		// callers see when they combine a move with a keyword change,
-		// e.g. drafts->sent + clear $draft).
-		flagsMailboxID = targetMailboxID
-	}
-	if addFlags != 0 || clearFlags != 0 || len(addKW) > 0 || len(clearKW) > 0 {
-		if _, err := h.store.Meta().UpdateMessageFlags(ctx, msg.ID, flagsMailboxID,
-			addFlags, clearFlags, addKW, clearKW, 0); err != nil {
-			return &setError{Type: "serverFail", Description: err.Error()}
+	for _, id := range resp.Destroyed {
+		if row, ok := before[id]; ok {
+			subs[id] = succeeded{emailID: renderEmailID(row.EmailID)}
 		}
 	}
-	return nil
+
+	args := implicitEmailSetArgs{AccountID: accountIDForPrincipal(p)}
+	for ref, patch := range req.OnSuccessUpdateEmail {
+		sub, ok := subs[ref]
+		if !ok {
+			continue
+		}
+		if args.Update == nil {
+			args.Update = make(map[jmapID]json.RawMessage)
+		}
+		args.Update[sub.emailID] = patch
+	}
+	destroyed := make(map[jmapID]bool)
+	for _, ref := range req.OnSuccessDestroyEmail {
+		sub, ok := subs[ref]
+		if !ok || destroyed[sub.emailID] {
+			continue
+		}
+		if sub.relaysLater {
+			slog.InfoContext(ctx, "emailsubmission: onSuccessDestroyEmail keeps the email of a pending external relay",
+				"submission", ref, "email_id", sub.emailID)
+			continue
+		}
+		destroyed[sub.emailID] = true
+		args.Destroy = append(args.Destroy, sub.emailID)
+	}
+	if len(args.Update) == 0 && len(args.Destroy) == 0 {
+		return nil, false
+	}
+	raw, err := json.Marshal(args)
+	if err != nil {
+		return nil, false
+	}
+	return raw, true
 }
 
 func (s setHandler) processCreate(ctx context.Context, p store.Principal, raw json.RawMessage) (jmapEmailSubmission, *setError) {
@@ -1861,4 +1763,13 @@ func (h *handlerSet) isLocalDomain(ctx context.Context, dom string) (bool, error
 		}
 	}
 	return false, nil
+}
+
+// keysOf returns the keys of m in no particular order.
+func keysOf(m map[jmapID]json.RawMessage) []jmapID {
+	out := make([]jmapID, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }

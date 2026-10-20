@@ -1391,11 +1391,7 @@ class ComposeStore {
   /**
    * Sends the compose. `opts.archiveOnSend` files the just-created copy
    * into Archive, alongside Sent, once the send completes (a follow-up
-   * plain Email/set update, not the submission's onSuccessUpdateEmail --
-   * that implicit-update path moves the email to a single target
-   * mailbox rather than adding one, so a second mailboxIds/<id>:true key
-   * there would race the Sent-mailbox key non-deterministically instead
-   * of adding to it). Send + Archive (ThreadInlineComposer.sendAndArchive)
+   * Email/set update). Send + Archive (ThreadInlineComposer.sendAndArchive)
    * uses this so the reply itself is archived, not only the pre-existing
    * Inbox members it already knew about (re #376).
    */
@@ -1682,17 +1678,10 @@ class ComposeStore {
       }
 
       // Send + Archive (re #376): file the just-sent copy into Archive
-      // alongside Sent. A plain Email/set update, not a second
-      // mailboxIds/<id>:true key on the submission's onSuccessUpdateEmail
-      // patch above -- that implicit-update path applies a single target
-      // mailbox move (see applyEmailPatch's "v1 single-mailbox model" in
-      // internal/protojmap/mail/emailsubmission/methods.go), so a second
-      // key there would non-deterministically race the Sent-mailbox key
-      // instead of adding to it. The plain Email/set path used here diffs
-      // the current membership against the patch and adds/removes
-      // incrementally, so Archive lands alongside Sent. Fire-and-forget:
-      // a failure here leaves the reply in Sent only, which is still a
-      // valid (if not fully archived) terminal state, not a broken one.
+      // alongside Sent with a follow-up Email/set update that adds the
+      // Archive membership. Fire-and-forget: a failure here leaves the
+      // reply in Sent only, which is still a valid (if not fully
+      // archived) terminal state, not a broken one.
       if (opts?.archiveOnSend && sentEmailId) {
         const archiveMailboxId = this.#archiveMailboxId();
         if (archiveMailboxId) {
