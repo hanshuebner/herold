@@ -560,14 +560,13 @@ func (h *handlerSet) createEmail(
 	}
 	msg.ID = mid
 
-	// Thread resolution runs inside insertMessageTx and may assign a
-	// thread_id that differs from the zero value in msg.ThreadID (the
-	// transaction modifies the DB row but does not propagate back to
-	// the caller's struct). Fetch the assigned thread_id so the create
-	// response is authoritative: RFC 8621 §4.6 requires all server-set
-	// properties, including threadId, to be correct in the created map.
+	// Render the stored row: the insert assigns the thread_id and the
+	// per-mailbox memberships, so the created object carries the
+	// threadId, mailboxIds and keywords Email/get reports (RFC 8621
+	// §4.6 requires server-set properties such as threadId to be
+	// correct in the created map).
 	if m, fetchErr := h.store.Meta().GetMessage(ctx, mid); fetchErr == nil {
-		msg.ThreadID = m.ThreadID
+		msg = m
 	}
 
 	// Render the created email. Use the full render path so that

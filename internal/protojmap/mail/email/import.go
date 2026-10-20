@@ -403,6 +403,11 @@ func (i *importHandler) importOne(
 	if _, err := i.h.store.Meta().IncrementJMAPState(ctx, ownerPID, store.JMAPStateKindThread); err != nil {
 		return jmapEmail{}, nil, fmt.Errorf("email: bump thread state: %w", err)
 	}
+	// Render the stored row so the created object carries the
+	// mailboxIds, keywords and threadId Email/get reports.
+	if stored, err := i.h.store.Meta().GetMessage(ctx, mid); err == nil {
+		msg = stored
+	}
 	return renderEmailMetadata(msg), nil, nil
 }
 
