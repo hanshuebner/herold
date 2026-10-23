@@ -243,40 +243,82 @@ test.describe('attachment lightbox navigation across a message (issue #518)', ()
     const cards = page.locator('.attachments .card');
     await expect(cards).toHaveCount(4, { timeout: 15_000 });
 
-    // Simulate slow downloads: every inline blob download is held for
-    // 1.5 s. The request log shows which URLs were requested.
-    const requested: string[] = [];
+    // Gate every inline blob download on a per-attachment latch the test
+    // releases explicitly, so "loaded" and "still loading" are states the
+    // test controls rather than timing it hopes for.
+    const gates = new Map<string, { open: () => void; promise: Promise<void> }>();
+    const finished = new Set<string>();
+    const gateFor = (name: string) => {
+      let g = gates.get(name);
+      if (!g) {
+        let open!: () => void;
+        const promise = new Promise<void>((r) => (open = r));
+        g = { open, promise };
+        gates.set(name, g);
+      }
+      return g;
+    };
+    const nameOf = (url: string) => decodeURIComponent(url.split('?')[0]!.split('/').pop()!);
     await page.route('**/*disposition=inline*', async (route) => {
-      requested.push(route.request().url());
-      await new Promise((r) => setTimeout(r, 1500));
+      const name = nameOf(route.request().url());
+      await gateFor(name).promise;
       await route.continue();
     });
+    page.on('requestfinished', (req) => {
+      if (req.url().includes('disposition=inline')) finished.add(nameOf(req.url()));
+    });
+    const release = (name: string) => gateFor(name).open();
 
-    await cards.filter({ hasText: 'PC1.jpg' }).click();
-    const dialog = page.getByRole('dialog');
-    await expect(dialog.locator('.lightbox-name')).toHaveText('PC1.jpg');
-    await expect(dialog.locator('.lightbox-spinner')).toBeVisible();
+    try {
+      await cards.filter({ hasText: 'PC1.jpg' }).click();
+      const dialog = page.getByRole('dialog');
+      await expect(dialog.locator('.lightbox-name')).toHaveText('PC1.jpg');
 
-    // Once the first image has arrived, the spinner is gone and the
-    // neighbour has been requested ahead of any stepping.
-    await expect(dialog.locator('.lightbox-spinner')).toHaveCount(0, { timeout: 10_000 });
-    await expect.poll(() => requested.length, { timeout: 10_000 }).toBeGreaterThan(1);
+      // Opening shows the spinner, not a blank frame, while PC1 is held.
+      await expect(dialog.locator('.lightbox-spinner')).toBeVisible();
+      await expect(dialog.locator('img.lightbox-img:not(.pending)')).toHaveCount(0);
+      release('PC1.jpg');
+      await expect(dialog.locator('.lightbox-spinner')).toHaveCount(0);
+      await expect(dialog.locator('img.lightbox-img:not(.pending)')).toHaveCount(1);
 
-    // Step to the last (not yet prefetched) attachment by jumping:
-    // the position indicator and name update immediately and the
-    // stale image is replaced by the spinner.
-    await page.keyboard.press('ArrowRight');
-    await page.keyboard.press('ArrowRight');
-    await page.keyboard.press('ArrowRight');
-    await expect(dialog.locator('.lightbox-position')).toHaveText('4 of 4');
-    await expect(dialog.locator('.lightbox-name')).toHaveText('PC4.jpg');
-    await expect(dialog.locator('.lightbox-spinner')).toBeVisible();
-    await expect(dialog.locator('img.lightbox-img:not(.pending)')).toHaveCount(0);
+      // Spinner contract: PC2 was only requested (prefetch) and is still
+      // held, so stepping to it shows the spinner and no stale image,
+      // while the name and position update at once.
+      await page.keyboard.press('ArrowRight');
+      await expect(dialog.locator('.lightbox-name')).toHaveText('PC2.jpg');
+      await expect(dialog.locator('.lightbox-position')).toHaveText('2 of 4');
+      await expect(dialog.locator('.lightbox-spinner')).toBeVisible();
+      await expect(dialog.locator('img.lightbox-img:not(.pending)')).toHaveCount(0);
+      release('PC2.jpg');
+      await expect(dialog.locator('.lightbox-spinner')).toHaveCount(0);
+      await expect(dialog.locator('img.lightbox-img:not(.pending)')).toHaveCount(1);
 
-    await expect(dialog.locator('.lightbox-spinner')).toHaveCount(0, { timeout: 10_000 });
-    await expect(dialog.locator('img.lightbox-img:not(.pending)')).toHaveCount(1);
+      // Prefetch contract: PC3 was requested as a neighbour. Let it finish
+      // while PC2 is on screen, then step to it; a spinner must never
+      // appear at any point during the step.
+      release('PC3.jpg');
+      await expect.poll(() => finished.has('PC3.jpg'), { timeout: 15_000 }).toBe(true);
+      // Allow the prefetch Image's load event to run in the page.
+      await page.waitForTimeout(500);
+      await page.evaluate(() => {
+        const w = window as unknown as { __spinnerSeen: boolean };
+        w.__spinnerSeen = false;
+        new MutationObserver(() => {
+          if (document.querySelector('.lightbox-spinner')) w.__spinnerSeen = true;
+        }).observe(document.body, { childList: true, subtree: true });
+      });
+      await page.keyboard.press('ArrowRight');
+      await expect(dialog.locator('.lightbox-name')).toHaveText('PC3.jpg');
+      await expect(dialog.locator('img.lightbox-img:not(.pending)')).toHaveCount(1);
+      await page.waitForTimeout(300);
+      expect(
+        await page.evaluate(() => (window as unknown as { __spinnerSeen: boolean }).__spinnerSeen),
+      ).toBe(false);
 
-    await page.keyboard.press('Escape');
-    await expect(page.getByRole('dialog')).toHaveCount(0);
+      await page.keyboard.press('Escape');
+      await expect(page.getByRole('dialog')).toHaveCount(0);
+    } finally {
+      for (const n of attachmentNames) release(`${n}`);
+    }
   });
 });
