@@ -829,6 +829,93 @@ func TestDownload_RejectsUnknownDisposition(t *testing.T) {
 	}
 }
 
+// TestDownload_ImmutableCacheHeaders asserts that a download addressed by
+// blob id carries a long-lived private Cache-Control and a strong ETag,
+// and that a matching If-None-Match is answered 304 with no body (issue
+// #518: the lightbox revisits attachments and the bytes behind a blob id
+// never change).
+func TestDownload_ImmutableCacheHeaders(t *testing.T) {
+	f := newFixture(t)
+	body := []byte("cacheable download body")
+	ref, err := f.store.Blobs().Put(context.Background(), bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("blob put: %v", err)
+	}
+	accountID := protojmap.AccountIDForPrincipal(f.pid)
+	url := fmt.Sprintf("/jmap/download/%s/%s/text%%2Fplain/file.txt?disposition=inline", accountID, ref.Hash)
+	res, raw := f.doRequest("GET", url, f.apiKey, nil)
+	if res.StatusCode != http.StatusOK || !bytes.Equal(raw, body) {
+		t.Fatalf("status = %d body = %q", res.StatusCode, raw)
+	}
+	cc := res.Header.Get("Cache-Control")
+	for _, want := range []string{"private", "max-age=", "immutable"} {
+		if !strings.Contains(cc, want) {
+			t.Fatalf("Cache-Control = %q, want it to contain %q", cc, want)
+		}
+	}
+	etag := res.Header.Get("ETag")
+	if etag != `"`+ref.Hash+`"` {
+		t.Fatalf("ETag = %q, want the quoted blob hash", etag)
+	}
+
+	req, err := http.NewRequest("GET", f.httpd.URL+url, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+f.apiKey)
+	req.Header.Set("If-None-Match", etag)
+	res2, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("conditional GET: %v", err)
+	}
+	defer res2.Body.Close()
+	if res2.StatusCode != http.StatusNotModified {
+		t.Fatalf("conditional status = %d, want 304", res2.StatusCode)
+	}
+}
+
+// TestDownload_ImmutableCache_PartBlob asserts the same policy for the
+// synthetic "<msgHash>/p<N>" part ids the Suite uses for attachments.
+func TestDownload_ImmutableCache_PartBlob(t *testing.T) {
+	f := newFixture(t)
+	raw := "Content-Type: multipart/mixed; boundary=B\r\n\r\n" +
+		"--B\r\nContent-Type: text/plain\r\n\r\nhi\r\n" +
+		"--B\r\nContent-Type: image/png\r\n\r\nPNGDATA\r\n--B--\r\n"
+	ref, err := f.store.Blobs().Put(context.Background(), strings.NewReader(raw))
+	if err != nil {
+		t.Fatalf("blob put: %v", err)
+	}
+	accountID := protojmap.AccountIDForPrincipal(f.pid)
+	blobID := ref.Hash + "/p2"
+	url := fmt.Sprintf("/jmap/download/%s/%s/image%%2Fpng/a.png?disposition=inline",
+		accountID, ref.Hash+"%2Fp2")
+	res, body := f.doRequest("GET", url, f.apiKey, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d body = %q", res.StatusCode, body)
+	}
+	if cc := res.Header.Get("Cache-Control"); !strings.Contains(cc, "immutable") {
+		t.Fatalf("Cache-Control = %q", cc)
+	}
+	if got := res.Header.Get("ETag"); got != `"`+blobID+`"` {
+		t.Fatalf("ETag = %q", got)
+	}
+}
+
+// TestDownload_NotFound_NotCacheable asserts error responses carry no
+// immutable cache policy.
+func TestDownload_NotFound_NotCacheable(t *testing.T) {
+	f := newFixture(t)
+	accountID := protojmap.AccountIDForPrincipal(f.pid)
+	url := fmt.Sprintf("/jmap/download/%s/missingblobhash/text%%2Fplain/file.txt", accountID)
+	res, _ := f.doRequest("GET", url, f.apiKey, nil)
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d", res.StatusCode)
+	}
+	if cc := res.Header.Get("Cache-Control"); strings.Contains(cc, "immutable") {
+		t.Fatalf("404 Cache-Control = %q", cc)
+	}
+}
+
 // TestDownload_ContentDispositionBlobFilename_AppendsExtensionWhenMissing
 // asserts issue #409: a download URL whose name segment carries no
 // extension (the Suite's default name for an unnamed inline part) gets
