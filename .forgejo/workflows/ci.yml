@@ -19,17 +19,18 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Aligned with go.mod's `go 1.26.9` directive. Several direct deps
+  # Aligned with go.mod's `go 1.26.10` directive. Several direct deps
   # (golang.org/x/sync, golang.org/x/crypto, golang.org/x/oauth2,
   # coreos/go-oidc/v3, jackc/pgx/v5, the otel/otlptrace exporters)
   # already require Go 1.26 at module level, so the CI floor must match.
   # Per STANDARDS the floor moves with the current stable.
-  # 1.26.9 fixes GO-2026-6617 (HPACK encoder race in net/http) along with
+  # 1.26.10 fixes GO-2026-6809 (crypto/x509 distrusted intermediates) along
+  # with GO-2026-6617 (HPACK encoder race in net/http) and
   # the earlier GO-2026-6218, GO-2026-6091, GO-2026-6090, GO-2026-6089,
   # GO-2026-6088, GO-2026-5972 and GO-2026-5026 (govulncheck-reachable
   # stdlib CVEs across net/url, html/template, crypto/tls, net/http,
   # encoding/xml and encoding/asn1).
-  GO_VERSION: "1.26.9"
+  GO_VERSION: "1.26.10"
   # Node + pnpm versions for the web/ workspace. Node 20 LTS is the floor.
   NODE_VERSION: "20"
   PNPM_VERSION: "10"

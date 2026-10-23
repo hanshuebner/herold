@@ -8,7 +8,7 @@
 # The binary is built from the repo root (context: ../..) via the Go toolchain
 # image, then installed into the debian runtime.
 
-ARG GO_VERSION=1.26.9
+ARG GO_VERSION=1.26.10
 
 FROM golang:${GO_VERSION}-bookworm AS build
 WORKDIR /src
