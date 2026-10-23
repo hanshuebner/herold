@@ -395,6 +395,62 @@ func extensionFromContentType(contentType string) string {
 	return parts[1]
 }
 
+// Download cache policy. A download URL names a content hash (or a hash
+// plus a part index), so the bytes for it are fixed whenever the
+// response is a pure function of that hash. "private" keeps shared
+// caches out because the response is authenticated.
+//
+// The max-age bounds how long a browser keeps serving the bytes after
+// the server would refuse them (a logout, an expunged message, a lost
+// chat membership):
+//   - owner URLs (the account in the URL is the requester) use 15
+//     minutes and "immutable": the only party that can read them is the
+//     owner, so the window only covers a logout on the same device;
+//   - chat-blob URLs read through another principal's account use 5
+//     minutes without "immutable": a revoked chat membership stops
+//     serving from the browser cache after that window, and a reload
+//     revalidates against the server immediately.
+const (
+	downloadCacheOwner = "private, max-age=900, immutable"
+	downloadCacheChat  = "private, max-age=300"
+)
+
+// downloadETag is the strong validator for a blob id.
+func downloadETag(blobID string) string {
+	return `"` + strings.ReplaceAll(blobID, `"`, "") + `"`
+}
+
+// ifNoneMatchHits reports whether the request's If-None-Match names etag.
+func ifNoneMatchHits(r *http.Request, etag string) bool {
+	for _, cand := range strings.Split(r.Header.Get("If-None-Match"), ",") {
+		cand = strings.TrimPrefix(strings.TrimSpace(cand), "W/")
+		if cand == etag || cand == "*" {
+			return true
+		}
+	}
+	return false
+}
+
+// setDownloadCacheHeaders sets the validator and cache policy on a
+// cacheable response.
+func setDownloadCacheHeaders(w http.ResponseWriter, blobID, policy string) {
+	w.Header().Set("ETag", downloadETag(blobID))
+	w.Header().Set("Cache-Control", policy)
+}
+
+// answerNotModified writes 304 with the cache headers when the request
+// carries a matching If-None-Match. Callers invoke it after the
+// principal is authorised for the blob and before the rate limit is
+// charged or the blob opened.
+func answerNotModified(w http.ResponseWriter, r *http.Request, blobID, policy string) bool {
+	if !ifNoneMatchHits(r, downloadETag(blobID)) {
+		return false
+	}
+	setDownloadCacheHeaders(w, blobID, policy)
+	w.WriteHeader(http.StatusNotModified)
+	return true
+}
+
 // handleDownload streams a blob back to the client. The path bears the
 // accountId, blobId, content type, and human-friendly filename per the
 // JMAP downloadUrl template.
@@ -420,7 +476,9 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	// referencing this blob hash. Mail / contact / calendar blobs keep
 	// the strict same-account check — there is no cross-account fan-out
 	// path for those.
+	cachePolicy := downloadCacheOwner
 	if ownerPID != p.ID {
+		cachePolicy = downloadCacheChat
 		hashCandidate := blobID
 		if msgHash, _, isPartBlob := partBlobID(blobID); isPartBlob {
 			hashCandidate = msgHash
@@ -462,6 +520,22 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	// The blob store holds only full message blobs; resolve these by
 	// re-parsing the message and extracting the indicated MIME part.
 	if msgHash, partIdx, isPartBlob := partBlobID(blobID); isPartBlob {
+		// Part bytes are decoded from the content-addressed message
+		// blob and carry no per-recipient header, so they are cacheable.
+		// A matching validator is answered once the message blob is
+		// known to exist, before parsing it or charging the budget.
+		if ifNoneMatchHits(r, downloadETag(blobID)) {
+			if _, _, serr := s.store.Blobs().Stat(r.Context(), msgHash); serr == nil {
+				if answerNotModified(w, r, blobID, cachePolicy) {
+					return
+				}
+			} else if !errors.Is(serr, store.ErrNotFound) {
+				s.log.Warn("download.stat_failed", "err", serr, "blob", blobID)
+				WriteJMAPError(w, http.StatusInternalServerError,
+					"serverFail", "stat failed")
+				return
+			}
+		}
 		part, err := resolvePartBlob(r.Context(), s.store.Meta(), s.store.Blobs(), msgHash, partIdx)
 		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
@@ -503,6 +577,7 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 			"size_bytes", size,
 			"content_type", contentType,
 		)
+		setDownloadCacheHeaders(w, blobID, cachePolicy)
 		w.Header().Set("Content-Type", contentType)
 		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
 		if name != "" {
@@ -516,6 +591,43 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// REQ-FLOW-34: when the blob is a full message blob owned by the
+	// principal, prepend the synthetic X-Herold-Recipient header
+	// derived from the per-recipient received_to. The receipt of the
+	// principal's own mailbox row gates this; non-owner downloads
+	// (chat fanout above) do NOT receive the header. FirstReceivedToForBlob
+	// returns "" when the blob is not a message blob or no inbound-origin
+	// membership exists, in which case Inject is a no-op.
+	//
+	// The same lookups decide cacheability. A principal's own whole blob
+	// is cacheable only when its message row exists and carries no
+	// received_to: then the bytes are the stored bytes. A blob with no
+	// message row yet may still gain the header when the row lands, a
+	// blob that receives the header differs per principal, and a failed
+	// lookup leaves the injection state unknown; none of those are cached.
+	var injectHeader string
+	cacheable := ownerPID != p.ID
+	if ownerPID == p.ID && isLikelyBlobHash(blobID) {
+		rt, lerr := s.store.Meta().FirstReceivedToForBlob(r.Context(), p.ID, blobID)
+		if lerr != nil {
+			s.log.Warn("download.received_to_lookup_failed", "err", lerr, "blob", blobID)
+		} else {
+			injectHeader = rt
+			if rt == "" {
+				_, merr := s.store.Meta().GetMessageByBlobHash(r.Context(), p.ID, blobID)
+				switch {
+				case merr == nil:
+					cacheable = true
+				case errors.Is(merr, store.ErrNotFound):
+				default:
+					s.log.Warn("download.message_lookup_failed", "err", merr, "blob", blobID)
+				}
+			}
+		}
+	}
+	if cacheable && answerNotModified(w, r, blobID, cachePolicy) {
+		return
+	}
 	size, _, err := s.store.Blobs().Stat(r.Context(), blobID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -555,24 +667,6 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rc.Close()
-	// REQ-FLOW-34: when the blob is a full message blob owned by the
-	// principal, prepend the synthetic X-Herold-Recipient header
-	// derived from the per-recipient received_to. The receipt of the
-	// principal's own mailbox row gates this; non-owner downloads
-	// (chat fanout above) do NOT receive the header. The lookup is a
-	// single indexed query against messages.blob_hash for the
-	// principal; FirstReceivedToForBlob returns "" when the blob is
-	// not a message blob or no inbound-origin membership exists, in
-	// which case Inject is a no-op and the stream stays unchanged.
-	var injectHeader string
-	if ownerPID == p.ID && isLikelyBlobHash(blobID) {
-		rt, lerr := s.store.Meta().FirstReceivedToForBlob(r.Context(), p.ID, blobID)
-		if lerr != nil {
-			s.log.Warn("download.received_to_lookup_failed", "err", lerr, "blob", blobID)
-		} else {
-			injectHeader = rt
-		}
-	}
 	log := loggerFromContext(r.Context(), s.log)
 	log.Info("download",
 		"activity", "user",
@@ -594,6 +688,9 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 			totalSize = size + int64(len(prefix))
 			bodyReader = io.MultiReader(bytes.NewReader(prefix), rc)
 		}
+	}
+	if cacheable {
+		setDownloadCacheHeaders(w, blobID, cachePolicy)
 	}
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Content-Length", strconv.FormatInt(totalSize, 10))
