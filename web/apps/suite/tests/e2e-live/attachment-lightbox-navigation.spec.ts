@@ -216,4 +216,67 @@ test.describe('attachment lightbox navigation across a message (issue #518)', ()
     await page.keyboard.press('Escape');
     await expect(page.getByRole('dialog')).toHaveCount(0);
   });
+
+  test('stepping shows a spinner at once instead of the stale image, and neighbours are prefetched', async ({
+    page,
+    request,
+  }) => {
+    test.setTimeout(60_000);
+
+    const attachmentNames = ['PC1.jpg', 'PC2.jpg', 'PC3.jpg', 'PC4.jpg'];
+    const subject = `attachment lightbox loading e2e ${Date.now()}`;
+    const raw = buildMultiAttachmentMime({
+      from: 'sender@example.com',
+      to: ALICE,
+      subject,
+      attachmentNames,
+    });
+
+    await login(page);
+    await clearMailbox(page, request);
+    await sendSmtpRaw(SMTP_ADDR!, 'sender@example.com', ALICE, raw);
+    await page.reload();
+    await page.locator('button.compose').first().waitFor({ timeout: 15_000 });
+    await expect(page.locator('.thread-list .thread-row')).toHaveCount(1, { timeout: 15_000 });
+    await page.locator('.thread-list .thread-row .row-activate').first().click();
+    await expect(page.locator('.thread-frame h1')).toHaveText(subject);
+    const cards = page.locator('.attachments .card');
+    await expect(cards).toHaveCount(4, { timeout: 15_000 });
+
+    // Simulate slow downloads: every inline blob download is held for
+    // 1.5 s. The request log shows which URLs were requested.
+    const requested: string[] = [];
+    await page.route('**/*disposition=inline*', async (route) => {
+      requested.push(route.request().url());
+      await new Promise((r) => setTimeout(r, 1500));
+      await route.continue();
+    });
+
+    await cards.filter({ hasText: 'PC1.jpg' }).click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.locator('.lightbox-name')).toHaveText('PC1.jpg');
+    await expect(dialog.locator('.lightbox-spinner')).toBeVisible();
+
+    // Once the first image has arrived, the spinner is gone and the
+    // neighbour has been requested ahead of any stepping.
+    await expect(dialog.locator('.lightbox-spinner')).toHaveCount(0, { timeout: 10_000 });
+    await expect.poll(() => requested.length, { timeout: 10_000 }).toBeGreaterThan(1);
+
+    // Step to the last (not yet prefetched) attachment by jumping:
+    // the position indicator and name update immediately and the
+    // stale image is replaced by the spinner.
+    await page.keyboard.press('ArrowRight');
+    await page.keyboard.press('ArrowRight');
+    await page.keyboard.press('ArrowRight');
+    await expect(dialog.locator('.lightbox-position')).toHaveText('4 of 4');
+    await expect(dialog.locator('.lightbox-name')).toHaveText('PC4.jpg');
+    await expect(dialog.locator('.lightbox-spinner')).toBeVisible();
+    await expect(dialog.locator('img.lightbox-img:not(.pending)')).toHaveCount(0);
+
+    await expect(dialog.locator('.lightbox-spinner')).toHaveCount(0, { timeout: 10_000 });
+    await expect(dialog.locator('img.lightbox-img:not(.pending)')).toHaveCount(1);
+
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+  });
 });

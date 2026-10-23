@@ -31,6 +31,14 @@
    * there is more than one item, so the single-item chat / inline-image
    * callers are visually unaffected.
    *
+   * Loading feedback (issue #518): the visible image is keyed on its
+   * URL, so stepping replaces the previous <img> at once and a spinner
+   * shows in its place until the new resource's `load` fires (a failed
+   * load shows an error message). The neighbouring image items are
+   * prefetched into held `Image` objects as soon as the current item
+   * is shown, so stepping to a prefetched neighbour finds the bytes
+   * already in the browser's image cache.
+   *
    * Behaviour:
    *   - Backdrop click closes; image / pdf click does not (so the user
    *     can interact with the content).
@@ -65,11 +73,67 @@
   let hasNext = $derived(index < items.length - 1);
 
   function goPrev(): void {
-    if (hasPrev) index -= 1;
+    if (hasPrev) {
+      pdfLoaded = false;
+      index -= 1;
+    }
   }
 
   function goNext(): void {
-    if (hasNext) index += 1;
+    if (hasNext) {
+      pdfLoaded = false;
+      index += 1;
+    }
+  }
+
+  // URLs whose bytes have finished loading (current or prefetched), and
+  // URLs that failed. Both drive the loading / error placeholder.
+  let loadedUrls = $state<Set<string>>(new Set());
+  let failedUrls = $state<Set<string>>(new Set());
+  // Prefetch handles are held so the decoded images stay referenced
+  // while the lightbox is open.
+  const prefetched = new Map<string, HTMLImageElement>();
+
+  function markLoaded(url: string): void {
+    if (loadedUrls.has(url)) return;
+    loadedUrls = new Set(loadedUrls).add(url);
+  }
+
+  function markFailed(url: string): void {
+    if (failedUrls.has(url)) return;
+    failedUrls = new Set(failedUrls).add(url);
+  }
+
+  function prefetch(item: LightboxItem | undefined): void {
+    if (!item || (item.kind ?? 'image') !== 'image') return;
+    if (prefetched.has(item.url)) return;
+    const img = new Image();
+    img.onload = () => markLoaded(item.url);
+    img.onerror = () => {
+      // A failed prefetch is dropped so a later view retries; the
+      // visible <img> reports its own failure.
+      prefetched.delete(item.url);
+    };
+    prefetched.set(item.url, img);
+    img.src = item.url;
+  }
+
+  $effect(() => {
+    // Current item first (the visible <img> loads it), then the
+    // neighbours in the direction the user is most likely to step.
+    const i = index;
+    prefetch(items[i + 1]);
+    prefetch(items[i - 1]);
+    prefetch(items[i + 2]);
+  });
+
+  let currentLoaded = $derived(loadedUrls.has(current.url));
+  let currentFailed = $derived(failedUrls.has(current.url));
+  let pdfLoaded = $state(false);
+
+  /** Marks an already-complete (cached) image as loaded when it mounts. */
+  function watchImage(node: HTMLImageElement): void {
+    if (node.complete && node.naturalWidth > 0) markLoaded(node.currentSrc || node.src);
   }
 
   let closeBtn = $state<HTMLButtonElement | null>(null);
@@ -159,9 +223,41 @@
     </button>
   {/if}
   {#if (current.kind ?? 'image') === 'image'}
-    <img class="lightbox-img" src={current.url} {alt} />
+    {#key current.url}
+      <div class="lightbox-stage" aria-busy={!currentLoaded && !currentFailed}>
+        {#if !currentLoaded && !currentFailed}
+          <div class="lightbox-spinner" role="status" aria-label={t('att.lightbox.loading')}></div>
+        {/if}
+        {#if currentFailed}
+          <div class="lightbox-error" role="alert">{t('att.lightbox.error')}</div>
+        {:else}
+          <img
+            class="lightbox-img"
+            class:pending={!currentLoaded}
+            src={current.url}
+            {alt}
+            use:watchImage
+            onload={() => markLoaded(current.url)}
+            onerror={() => markFailed(current.url)}
+          />
+        {/if}
+      </div>
+    {/key}
   {:else if current.kind === 'pdf'}
-    <iframe class="lightbox-pdf" src={current.url} title={alt}></iframe>
+    {#key current.url}
+      <div class="lightbox-stage" aria-busy={!pdfLoaded}>
+        {#if !pdfLoaded}
+          <div class="lightbox-spinner" role="status" aria-label={t('att.lightbox.loading')}></div>
+        {/if}
+        <iframe
+          class="lightbox-pdf"
+          class:pending={!pdfLoaded}
+          src={current.url}
+          title={alt}
+          onload={() => (pdfLoaded = true)}
+        ></iframe>
+      </div>
+    {/key}
   {/if}
   {#if current.name || items.length > 1}
     <div class="lightbox-toolbar">
@@ -195,6 +291,44 @@
     align-items: center;
     justify-content: center;
     padding: var(--spacing-04);
+  }
+
+  .lightbox-stage {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 120px;
+    min-height: 120px;
+  }
+
+  /* The pending element stays in flow (so it keeps loading) but is
+     invisible; the spinner is centred over the stage. */
+  .pending {
+    opacity: 0;
+    position: absolute;
+    pointer-events: none;
+  }
+
+  .lightbox-spinner {
+    width: 48px;
+    height: 48px;
+    border: 4px solid rgba(255, 255, 255, 0.25);
+    border-top-color: #fff;
+    border-radius: 50%;
+    animation: lightbox-spin 0.8s linear infinite;
+  }
+
+  .lightbox-error {
+    color: #fff;
+    font-size: var(--type-body-compact-01-size);
+    padding: var(--spacing-05);
+  }
+
+  @keyframes lightbox-spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
 
   .lightbox-img {

@@ -511,6 +511,8 @@ export const de = {
   'att.lightbox.position': '{current} von {total}',
   'att.lightbox.prev': 'Vorheriger Anhang',
   'att.lightbox.next': 'Nächster Anhang',
+  'att.lightbox.loading': 'Anhang wird geladen...',
+  'att.lightbox.error': 'Dieser Anhang konnte nicht geladen werden.',
   'mail.trimmed.hide': 'Zitat ausblenden',
 
   // ── Pickers (move / label / etc.) ────────────────────────────────────

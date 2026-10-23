@@ -511,6 +511,8 @@ export const en = {
   'att.lightbox.position': '{current} of {total}',
   'att.lightbox.prev': 'Previous attachment',
   'att.lightbox.next': 'Next attachment',
+  'att.lightbox.loading': 'Loading attachment...',
+  'att.lightbox.error': 'Could not load this attachment.',
   'mail.trimmed.hide': 'Hide trimmed content',
 
   // ── Pickers (move / label / etc.) ────────────────────────────────────

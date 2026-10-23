@@ -107,3 +107,85 @@ describe('Lightbox: multi-item navigation (REQ-MAIL-23, issue #518)', () => {
     expect(onClose).toHaveBeenCalled();
   });
 });
+
+describe('Lightbox: loading feedback and prefetch (issue #518, field report)', () => {
+  const items = [
+    { url: 'blob:a.jpg', name: 'PC1.jpg', kind: 'image' as const },
+    { url: 'blob:b.jpg', name: 'PC2.jpg', kind: 'image' as const },
+    { url: 'blob:c.jpg', name: 'PC3.jpg', kind: 'image' as const },
+    { url: 'blob:d.jpg', name: 'PC4.jpg', kind: 'image' as const },
+  ];
+
+  it('shows a spinner until the image loads, then hides it', async () => {
+    render(Lightbox, { props: { items, index: 0, onClose: vi.fn() } });
+    await screen.findByRole('dialog');
+    expect(screen.getByRole('status')).toBeInTheDocument();
+    expect(screen.getByRole('img')).toHaveClass('pending');
+    await fireEvent.load(screen.getByRole('img'));
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(screen.getByRole('img')).not.toHaveClass('pending');
+  });
+
+  it('stepping replaces the stale image with a spinner and updates the indicator at once', async () => {
+    render(Lightbox, { props: { items, index: 0, onClose: vi.fn() } });
+    const dialog = await screen.findByRole('dialog');
+    await fireEvent.load(screen.getByRole('img'));
+    expect(screen.queryByRole('status')).toBeNull();
+
+    await fireEvent.keyDown(dialog, { key: 'ArrowRight' });
+    expect(screen.getByText('2 of 4')).toBeInTheDocument();
+    expect(screen.getByRole('status')).toBeInTheDocument();
+    const img = screen.getByRole('img');
+    expect(img).toHaveAttribute('src', 'blob:b.jpg');
+    expect(img).toHaveClass('pending');
+
+    await fireEvent.load(img);
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(screen.getByRole('img')).not.toHaveClass('pending');
+  });
+
+  it('shows an error placeholder when the image fails to load', async () => {
+    render(Lightbox, { props: { items, index: 0, onClose: vi.fn() } });
+    await screen.findByRole('dialog');
+    await fireEvent.error(screen.getByRole('img'));
+    expect(screen.getByRole('alert')).toBeInTheDocument();
+    expect(screen.queryByRole('status')).toBeNull();
+  });
+
+  it('prefetches the adjacent images and shows a loaded neighbour without a spinner', async () => {
+    const created: { src: string; onload: (() => void) | null }[] = [];
+    const RealImage = globalThis.Image;
+    class FakeImage {
+      src = '';
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      constructor() {
+        created.push(this);
+      }
+    }
+    // @ts-expect-error test double
+    globalThis.Image = FakeImage;
+    try {
+      render(Lightbox, { props: { items, index: 1, onClose: vi.fn() } });
+      const dialog = await screen.findByRole('dialog');
+      await Promise.resolve();
+      expect(created.map((c) => c.src)).toEqual(
+        expect.arrayContaining(['blob:c.jpg', 'blob:a.jpg', 'blob:d.jpg']),
+      );
+      created.find((c) => c.src === 'blob:c.jpg')!.onload!();
+      await fireEvent.keyDown(dialog, { key: 'ArrowRight' });
+      expect(screen.queryByRole('status')).toBeNull();
+      expect(screen.getByRole('img')).not.toHaveClass('pending');
+    } finally {
+      globalThis.Image = RealImage;
+    }
+  });
+
+  it('Escape still closes while an image is loading', async () => {
+    const onClose = vi.fn();
+    render(Lightbox, { props: { items, index: 0, onClose } });
+    const dialog = await screen.findByRole('dialog');
+    await fireEvent.keyDown(dialog, { key: 'Escape' });
+    expect(onClose).toHaveBeenCalled();
+  });
+});
