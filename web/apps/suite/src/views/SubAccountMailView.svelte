@@ -21,7 +21,7 @@
   import { compose } from '../lib/compose/compose.svelte';
   import { toast } from '../lib/toast/toast.svelte';
   import { t, localeTag } from '../lib/i18n/i18n.svelte';
-  import { formatRowDate } from '../lib/mail/row-date';
+  import { formatRowDate, formatRowDateTime } from '../lib/mail/row-date';
   import { jmap } from '../lib/jmap/client';
   import HtmlBody from '../lib/mail/HtmlBody.svelte';
   import { sanitizeHtml } from '../lib/mail/sanitize';
@@ -322,7 +322,7 @@
             <h2 class="reading-subject">{email.subject || t('msg.noSubject')}</h2>
             <div class="reading-meta">
               <span class="reading-from">{senderLabel(email)}</span>
-              <span class="reading-date">{formatDate(email.receivedAt)}</span>
+              <span class="reading-date">{formatRowDateTime(email.receivedAt, localeTag())}</span>
             </div>
           </div>
           <div class="reading-body">

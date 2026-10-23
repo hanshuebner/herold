@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { formatRowDate } from './row-date';
+import { formatRowDate, formatRowDateTime } from './row-date';
 
 // Local-time constructors so the cases hold in any runner timezone.
 const now = new Date(2026, 9, 23, 13, 42, 0);
@@ -24,5 +24,18 @@ describe('formatRowDate (re #529)', () => {
   });
   it('honours the locale for the time', () => {
     expect(formatRowDate(iso(2026, 9, 23, 13, 5), 'en-US', now)).toMatch(/1:05\sPM/);
+  });
+});
+
+describe('formatRowDateTime reading-pane header (re #529)', () => {
+  it('carries the date and the time for a message received today', () => {
+    const out = formatRowDateTime(iso(2026, 9, 23, 7, 28), 'en-GB');
+    expect(out).toContain('23');
+    expect(out).toContain('Oct');
+    expect(out).toContain('2026');
+    expect(out).toContain('07:28');
+  });
+  it('carries the year for an earlier-year message', () => {
+    expect(formatRowDateTime(iso(2025, 0, 5, 9, 0), 'en-GB')).toContain('2025');
   });
 });

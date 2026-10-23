@@ -22,3 +22,19 @@ export function formatRowDate(iso: string, tag: string, now: Date = new Date()):
       : { month: 'short', day: 'numeric', year: 'numeric' };
   return d.toLocaleDateString(tag, opts);
 }
+
+/**
+ * Reading-pane header timestamp: always carries the date, with the
+ * weekday and the time of day, in the same shape the thread reader's
+ * message header uses (re #529).
+ */
+export function formatRowDateTime(iso: string, tag: string): string {
+  return new Date(iso).toLocaleString(tag, {
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
