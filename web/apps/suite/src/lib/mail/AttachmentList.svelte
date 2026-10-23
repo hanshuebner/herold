@@ -138,7 +138,7 @@
       if ((p.partId ?? p.blobId) === (part.partId ?? part.blobId)) {
         clickedIndex = items.length;
       }
-      items.push({ url, name: p.name ?? 'attachment', kind });
+      items.push({ url, name: p.name ?? 'attachment', kind, size: p.size });
     }
     if (items.length === 0 || clickedIndex === -1) return;
     lightboxItems = items;

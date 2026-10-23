@@ -8,7 +8,16 @@
     downloadUrl?: string;
     /** Lightbox kind. 'image' renders <img>; 'pdf' renders <iframe>. */
     kind?: 'image' | 'pdf';
+    /** Resource size in bytes; scales the time an image may take to load. */
+    size?: number;
   }
+
+  /** Time every image load is allowed regardless of size. */
+  export const LOAD_BASE_MS = 30_000;
+  /** Slowest link (bytes per second) a load is expected to survive. */
+  export const LOAD_MIN_BYTES_PER_SEC = 50_000;
+  /** Load budget for an item whose size is unknown. */
+  export const LOAD_UNKNOWN_SIZE_MS = 120_000;
 </script>
 
 <script lang="ts">
@@ -127,6 +136,34 @@
     prefetch(items[i + 2]);
   });
 
+  // Bumped by Retry; part of the keyed block so the <img> is recreated
+  // and requests the resource afresh.
+  let retryNonce = $state(0);
+
+  function retry(): void {
+    const url = current.url;
+    const next = new Set(failedUrls);
+    next.delete(url);
+    failedUrls = next;
+    retryNonce += 1;
+  }
+
+  // A load that neither completes nor errors (a stalled connection)
+  // ends in the error state once its size-scaled budget is spent, so
+  // the spinner never runs forever.
+  $effect(() => {
+    if ((current.kind ?? 'image') !== 'image') return;
+    void retryNonce;
+    const url = current.url;
+    if (loadedUrls.has(url) || failedUrls.has(url)) return;
+    const ms =
+      current.size && current.size > 0
+        ? LOAD_BASE_MS + (current.size / LOAD_MIN_BYTES_PER_SEC) * 1000
+        : LOAD_UNKNOWN_SIZE_MS;
+    const h = setTimeout(() => markFailed(url), ms);
+    return () => clearTimeout(h);
+  });
+
   let currentLoaded = $derived(loadedUrls.has(current.url));
   let currentFailed = $derived(failedUrls.has(current.url));
   let pdfLoaded = $state(false);
@@ -223,13 +260,18 @@
     </button>
   {/if}
   {#if (current.kind ?? 'image') === 'image'}
-    {#key current.url}
+    {#key `${current.url}#${retryNonce}`}
       <div class="lightbox-stage" aria-busy={!currentLoaded && !currentFailed}>
         {#if !currentLoaded && !currentFailed}
           <div class="lightbox-spinner" role="status" aria-label={t('att.lightbox.loading')}></div>
         {/if}
         {#if currentFailed}
-          <div class="lightbox-error" role="alert">{t('att.lightbox.error')}</div>
+          <div class="lightbox-error" role="alert">
+            {t('att.lightbox.error')}
+            <button class="lightbox-retry" type="button" onclick={retry}>
+              {t('common.retry')}
+            </button>
+          </div>
         {:else}
           <img
             class="lightbox-img"
@@ -323,6 +365,20 @@
     color: #fff;
     font-size: var(--type-body-compact-01-size);
     padding: var(--spacing-05);
+  }
+
+  .lightbox-retry {
+    margin-left: var(--spacing-04);
+    color: #fff;
+    background: rgba(255, 255, 255, 0.15);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    border-radius: var(--radius-pill);
+    padding: var(--spacing-02) var(--spacing-04);
+    cursor: pointer;
+  }
+
+  .lightbox-retry:hover {
+    background: rgba(255, 255, 255, 0.28);
   }
 
   @keyframes lightbox-spin {
