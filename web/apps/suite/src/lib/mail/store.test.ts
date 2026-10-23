@@ -322,12 +322,12 @@ describe('IdentitySetError', () => {
 // content is always returned. These helpers must pass through whatever value
 // the server sends, including bodies well over the former 256 KB ceiling.
 
-function makeBodyPart(partId: string): EmailBodyPart {
+function makeBodyPart(partId: string, type = 'text/html'): EmailBodyPart {
   return {
     partId,
     blobId: 'blob-1',
     size: 0,
-    type: 'text/html',
+    type,
     charset: 'utf-8',
     disposition: null,
     name: null,
@@ -352,7 +352,7 @@ describe('emailHtmlBody / emailTextBody (re #44)', () => {
   it('returns the full text body value regardless of size', () => {
     const longBody = 'B'.repeat(300 * 1024);
     const email: Partial<Email> = {
-      textBody: [makeBodyPart('p2')],
+      textBody: [makeBodyPart('p2', 'text/plain')],
       bodyValues: { p2: makeBodyValue(longBody) },
     };
     expect(emailTextBody(email as Email)).toBe(longBody);

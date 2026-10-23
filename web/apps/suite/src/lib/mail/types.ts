@@ -495,9 +495,13 @@ function textPartSeparator(): string {
  * separator between elements, so a single resolved value (the overwhelming
  * common case) is returned unchanged with no separator.
  *
- * Returns null when no text part is present (rare; HTML-only emails happen
- * but are usually accompanied by a plain-text alternative) or when none of
- * the listed parts have a resolved bodyValue.
+ * `textBody` also lists a `text/html` part when the message has no
+ * text/plain alternative (an HTML-only message). Such a part is markup,
+ * not plain text, so it is skipped here; callers that need readable text
+ * for an HTML-only message convert the HTML body themselves.
+ *
+ * Returns null when no text/plain part is present (HTML-only emails) or
+ * when none of the listed parts have a resolved bodyValue.
  */
 export function emailTextBody(email: Email): string | null {
   const parts = email.textBody;
@@ -505,12 +509,18 @@ export function emailTextBody(email: Email): string | null {
   const values: string[] = [];
   for (const part of parts) {
     if (!part.partId) continue;
+    if (isHtmlType(part.type)) continue;
     const value = email.bodyValues?.[part.partId]?.value;
     if (value === undefined) continue;
     values.push(value);
   }
   if (values.length === 0) return null;
   return values.join(textPartSeparator());
+}
+
+/** True for a `text/html` media type (parameters and case ignored). */
+export function isHtmlType(type: string | null | undefined): boolean {
+  return (type ?? '').split(';')[0]?.trim().toLowerCase() === 'text/html';
 }
 
 /**

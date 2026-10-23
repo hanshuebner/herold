@@ -39,6 +39,7 @@ import { hasExternalSubmission } from '../auth/capabilities';
 import {
   emailHtmlBody,
   emailTextBody,
+  isHtmlType,
   type Address,
   type Email,
   type EmailBodyPart,
@@ -2113,6 +2114,21 @@ function mergeReferences(parent: Email): string[] {
  * if present; falls back to a tag-stripped version of htmlBody.
  */
 function parentBodyText(parent: Email): string {
+  // textBody lists a text/html part when the message has no text/plain
+  // alternative (RFC 8621 4.1.4). Such a part is converted to text in
+  // place so a mixed list keeps its order and an HTML-only message
+  // quotes readable text rather than markup.
+  const parts = parent.textBody ?? [];
+  if (parts.some((p) => isHtmlType(p.type))) {
+    const pieces: string[] = [];
+    for (const p of parts) {
+      const value = p.partId ? parent.bodyValues?.[p.partId]?.value : undefined;
+      if (value === undefined) continue;
+      pieces.push(isHtmlType(p.type) ? htmlToText(value) : value);
+    }
+    const joined = pieces.filter((s) => s !== '').join('\n\n');
+    if (joined) return joined;
+  }
   const text = emailTextBody(parent);
   if (text) return text;
   const html = emailHtmlBody(parent);
