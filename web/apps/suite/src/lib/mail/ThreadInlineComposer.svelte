@@ -28,14 +28,13 @@
   import { confirm } from '../dialog/confirm.svelte';
   import { t } from '../i18n/i18n.svelte';
   import RichEditor from '../compose/RichEditor.svelte';
+  import { insertInlineImages } from '../compose/inline-images';
   import ComposeToolbar from '../compose/ComposeToolbar.svelte';
   import RecipientField from '../compose/RecipientField.svelte';
   import FromPicker from '../compose/FromPicker.svelte';
   import {
     EMPTY_ACTIVE,
     type ActiveState,
-    applyImage,
-    removeImageBySrc,
     replaceImageSrc,
     insertHtmlBlockAtEnd,
     removeHtmlBlockByShareUrl,
@@ -419,26 +418,8 @@
     void handleInlineDrop(images);
   }
 
-  async function handleInlineDrop(files: File[]): Promise<void> {
-    const pending: Array<{ key: string; objectURL: string; file: File }> = [];
-    for (const file of files) {
-      const started = compose.startInlineImage(file);
-      if (!started) continue;
-      applyImage(editorView, started.objectURL, file.name);
-      pending.push({ key: started.key, objectURL: started.objectURL, file });
-    }
-    await Promise.all(
-      pending.map(async ({ key, objectURL, file }) => {
-        const errMsg = await compose.uploadInlineImage(key, file);
-        if (errMsg) {
-          // Re-read the current src rather than the captured `objectURL`
-          // -- a downscaled proxy (issue #243) may have swapped it in
-          // while the upload was in flight.
-          const current = compose.attachments.find((a) => a.key === key);
-          removeImageBySrc(editorView, current?.objectURL ?? objectURL);
-        }
-      }),
-    );
+  function handleInlineDrop(files: File[]): Promise<void> {
+    return insertInlineImages(compose, editorView, files);
   }
 
   // Attach zone handlers — do NOT stopPropagation in dragenter (same reason).
@@ -617,6 +598,7 @@
             onActiveChange={(a) => (active = a)}
             onView={(v) => (editorView = v)}
             {onImageRemoved}
+            onImagePaste={(files) => void handleInlineDrop(files)}
             {uploadingSrcs}
           />
         {/key}
