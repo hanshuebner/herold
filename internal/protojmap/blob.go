@@ -395,33 +395,6 @@ func extensionFromContentType(contentType string) string {
 	return parts[1]
 }
 
-// downloadCacheControl is the cache policy for downloads addressed by
-// blob id. The id is the content hash of a message blob (or that hash
-// plus a part index), so the bytes behind a given URL never change;
-// "private" keeps shared caches out because the response is
-// authenticated. One day bounds how long an expunged message stays
-// viewable from a browser's own cache.
-const downloadCacheControl = "private, max-age=86400, immutable"
-
-// applyImmutableCache sets Cache-Control and a strong ETag derived from
-// the blob id, and answers a matching If-None-Match with 304. It returns
-// true when the response is complete (304 written) and the caller must
-// not write a body. Call it only after the principal has been
-// authorised for the blob.
-func applyImmutableCache(w http.ResponseWriter, r *http.Request, blobID string) bool {
-	etag := `"` + strings.ReplaceAll(blobID, `"`, "") + `"`
-	w.Header().Set("ETag", etag)
-	w.Header().Set("Cache-Control", downloadCacheControl)
-	for _, cand := range strings.Split(r.Header.Get("If-None-Match"), ",") {
-		cand = strings.TrimPrefix(strings.TrimSpace(cand), "W/")
-		if cand == etag || cand == "*" {
-			w.WriteHeader(http.StatusNotModified)
-			return true
-		}
-	}
-	return false
-}
-
 // handleDownload streams a blob back to the client. The path bears the
 // accountId, blobId, content type, and human-friendly filename per the
 // JMAP downloadUrl template.
@@ -498,9 +471,6 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 			s.log.Warn("download.part_resolve_failed", "err", err, "blob", blobID)
 			WriteJMAPError(w, http.StatusInternalServerError,
 				"serverFail", "part blob resolve failed")
-			return
-		}
-		if applyImmutableCache(w, r, blobID) {
 			return
 		}
 		// Rate-limit by decoded part size (REQ-STORE-20..25).
@@ -602,13 +572,6 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		} else {
 			injectHeader = rt
 		}
-	}
-	// A whole message blob owned by the principal carries a per-recipient
-	// X-Herold-Recipient header when one is derived, so those bytes can
-	// differ per principal and stay uncached. Every other response is a
-	// pure function of the content hash.
-	if injectHeader == "" && applyImmutableCache(w, r, blobID) {
-		return
 	}
 	log := loggerFromContext(r.Context(), s.log)
 	log.Info("download",
