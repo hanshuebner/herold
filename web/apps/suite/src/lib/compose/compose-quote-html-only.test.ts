@@ -129,6 +129,25 @@ describe('quoting (re #533)', () => {
       expect(body).not.toContain('color:red');
     });
 
+    it(`${name}: newsletter-shaped HTML-only original quotes no CSS and keeps lines`, async () => {
+      const html =
+        '<!DOCTYPE html><html><head><style>.h{x:y}</style></head><body>' +
+        '<style>@media (max-width:600px){.w{width:100%}}</style><!-- c1 -->' +
+        '<table class="w"><tr><td><style>.in{a:b}</style><h2>Schlagzeile</h2></td></tr>' +
+        '<tr><td>Erster Absatz</td></tr></table><script>track()</script></body></html>';
+      const body = await open(
+        makeParent({
+          textBody: [part('1', 'text/html')],
+          htmlBody: [part('1', 'text/html')],
+          bodyValues: { '1': bv(html) },
+        }),
+      );
+      expect(body).toContain('Schlagzeile');
+      expect(body).toContain('Erster Absatz');
+      expect(body).not.toMatch(/color|width:100|\.in\{|track\(|c1/);
+      expect(body).not.toContain('SchlagzeileErster');
+    });
+
     it(`${name}: multipart/alternative quotes the text/plain part`, async () => {
       const body = await open(alternative());
       expect(body).toContain('Plain alternative text');

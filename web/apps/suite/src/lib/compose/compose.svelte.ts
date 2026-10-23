@@ -35,6 +35,7 @@ import {
   showExternalSubmissionFailure,
   parseExternalSubmissionFailure,
 } from '../mail/compose-failure';
+import { htmlToQuoteText } from '../translate/html-to-quote-text';
 import { hasExternalSubmission } from '../auth/capabilities';
 import {
   emailHtmlBody,
@@ -2124,7 +2125,7 @@ function parentBodyText(parent: Email): string {
     for (const p of parts) {
       const value = p.partId ? parent.bodyValues?.[p.partId]?.value : undefined;
       if (value === undefined) continue;
-      pieces.push(isHtmlType(p.type) ? htmlToText(value) : value);
+      pieces.push(isHtmlType(p.type) ? htmlToQuoteText(value) : value);
     }
     const joined = pieces.filter((s) => s !== '').join('\n\n');
     if (joined) return joined;
@@ -2133,14 +2134,7 @@ function parentBodyText(parent: Email): string {
   if (text) return text;
   const html = emailHtmlBody(parent);
   if (!html) return '';
-  return htmlToText(html);
-}
-
-function htmlToText(html: string): string {
-  const doc = new DOMParser().parseFromString(html, 'text/html');
-  const out = doc.body?.textContent ?? '';
-  // Collapse runs of >2 blank lines that result from block elements.
-  return out.replace(/\n{3,}/g, '\n\n').trim();
+  return htmlToQuoteText(html);
 }
 
 /**
