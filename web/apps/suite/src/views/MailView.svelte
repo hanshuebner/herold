@@ -26,6 +26,7 @@
   import { labelPicker } from '../lib/mail/label-picker.svelte';
   import { formatWakeTime } from '../lib/mail/snooze-format';
   import { t, localeTag } from '../lib/i18n/i18n.svelte';
+  import { formatRowDate } from '../lib/mail/row-date';
   import type { Email } from '../lib/mail/types';
   import { labelForeground } from '../lib/mail/label-color';
   import { threadSubject } from '../lib/mail/thread-subject';
@@ -907,13 +908,7 @@
   }
 
   function formatDate(iso: string): string {
-    const d = new Date(iso);
-    const now = new Date();
-    const sameYear = d.getFullYear() === now.getFullYear();
-    const opts: Intl.DateTimeFormatOptions = sameYear
-      ? { month: 'short', day: 'numeric' }
-      : { month: 'short', day: 'numeric', year: 'numeric' };
-    return d.toLocaleDateString(localeTag(), opts);
+    return formatRowDate(iso, localeTag());
   }
 
   /**

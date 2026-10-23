@@ -21,6 +21,7 @@
   import { compose } from '../lib/compose/compose.svelte';
   import { toast } from '../lib/toast/toast.svelte';
   import { t, localeTag } from '../lib/i18n/i18n.svelte';
+  import { formatRowDate } from '../lib/mail/row-date';
   import { jmap } from '../lib/jmap/client';
   import HtmlBody from '../lib/mail/HtmlBody.svelte';
   import { sanitizeHtml } from '../lib/mail/sanitize';
@@ -210,13 +211,7 @@
   }
 
   function formatDate(iso: string): string {
-    const d = new Date(iso);
-    const now = new Date();
-    const sameYear = d.getFullYear() === now.getFullYear();
-    const opts: Intl.DateTimeFormatOptions = sameYear
-      ? { month: 'short', day: 'numeric' }
-      : { month: 'short', day: 'numeric', year: 'numeric' };
-    return d.toLocaleDateString(localeTag(), opts);
+    return formatRowDate(iso, localeTag());
   }
 
   function isUnread(email: Email): boolean {
