@@ -210,17 +210,75 @@ with `herold principal show <email> --json | jq .id`.
 herold principal delete 42
 ```
 
-### Reset password
+### Change or reset a password
 
-Not yet wired; tracked under the protoadmin admin REST surface. Until
-then, recover via `herold principal disable` followed by
-`herold principal enable` (the re-enable flow resets the lockout), or
-use the REST equivalent when available.
+#### Another principal's password (admin)
+
+An admin sets another principal's password without knowing the current
+one and without a step-up:
 
 ```bash
 herold principal set-password user@example.com --password 'newpw'
 herold principal set-password user@example.com         # interactive prompt.
 ```
+
+#### Your own password
+
+When the target is the principal the CLI's API key authenticates as,
+the server requires the current password and, if you have TOTP
+enrolled, a live step-up elevation. `set-password` handles both:
+
+- the current password is prompted for without echo, or taken from
+  `--current-password`;
+- if the server answers `403 step_up_required`, the command prompts for
+  a TOTP code (or takes `--totp-code`), POSTs it to
+  `/api/v1/auth/step-up` with the same API key, and retries once. A
+  rejected code fails the command with the server's step-up error.
+
+```bash
+herold principal set-password admin@example.com
+# new password:
+# current password:
+# TOTP code:
+# password updated
+
+herold principal set-password admin@example.com \
+     --password 'newpw-with-12+chars' --current-password 'oldpw' --totp-code 123456
+```
+
+Passwords and codes passed as flags are visible in the process list;
+prefer the prompts on a shared host.
+
+#### Offline reset for a locked-out admin
+
+If the sole admin has forgotten the password, no API key can change it.
+`herold principal reset-password <email> --offline` writes a new
+Argon2id hash straight into the store named by `--system-config`, the
+same way `herold recover` does. Run it on the server host as the
+`herold` user (the same trust level as the database itself). It works
+with both the SQLite and the Postgres backend and appends a
+`principal.password.reset` entry to the audit log.
+
+```bash
+sudo -u herold herold --system-config /etc/herold/system.toml \
+     principal reset-password admin@example.com --offline
+# new password:
+# repeat new password:
+# password reset for admin@example.com
+```
+
+- `--offline` is mandatory; without it the command refuses, so it is
+  never run by accident.
+- `--password` supplies the new password non-interactively (minimum 12
+  characters, like every other password path).
+- The server may stay up. The command warns when the admin listener
+  accepts connections and proceeds: SQLite writers take the write lock
+  at transaction start and wait up to the 30 s busy timeout, and
+  Postgres is multi-writer. Existing sessions and API keys of the
+  principal are not revoked; revoke them separately if the password
+  was compromised.
+- TOTP is untouched. If the authenticator is lost as well, use
+  `herold recover --reset-totp` (below).
 
 ### Set quota
 

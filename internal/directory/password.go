@@ -24,10 +24,11 @@ const (
 	argonSaltLen int    = 16
 )
 
-// hashPassword produces an Argon2id-encoded hash in the standard
+// HashPassword produces an Argon2id-encoded hash in the standard
 // "$argon2id$v=19$m=...,t=...,p=...$salt$hash" format. It reads saltLen
-// bytes from rnd.
-func hashPassword(rnd io.Reader, password string) (string, error) {
+// bytes from rnd. It is the single hashing helper for every writer of
+// principals.password_hash (directory, admin REST, offline CLI reset).
+func HashPassword(rnd io.Reader, password string) (string, error) {
 	if password == "" {
 		return "", errors.New("password empty")
 	}

@@ -409,13 +409,8 @@ func (s *Server) handleSetPassword(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// adminSetPassword bypasses the current-password check. Argon2id
-// parameters match the directory package's internal defaults
-// (STANDARDS.md §9): time=2, memory=64 MiB, threads=4, keyLen=32,
-// saltLen=16. Keeping a local hasher here avoids widening the
-// directory surface for a single caller in scope of this ticket; when
-// a third caller arrives the two should converge on an exported
-// helper in directory.
+// adminSetPassword bypasses the current-password check. The hash comes
+// from directory.HashPassword (Argon2id, STANDARDS.md §9).
 func (s *Server) adminSetPassword(r *http.Request, pid store.PrincipalID, newPassword string) error {
 	if len(newPassword) < directory.MinPasswordLength {
 		return directory.ErrWeakPassword
@@ -424,7 +419,7 @@ func (s *Server) adminSetPassword(r *http.Request, pid store.PrincipalID, newPas
 	if err != nil {
 		return err
 	}
-	hash, err := hashPasswordArgon2id(newPassword)
+	hash, err := directory.HashPassword(rand.Reader, newPassword)
 	if err != nil {
 		return fmt.Errorf("hash password: %w", err)
 	}

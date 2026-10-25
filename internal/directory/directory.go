@@ -179,7 +179,7 @@ func (d *Directory) CreatePrincipal(ctx context.Context, email, password string)
 	if len(password) < MinPasswordLength {
 		return 0, ErrWeakPassword
 	}
-	hash, err := hashPassword(d.rand, password)
+	hash, err := HashPassword(d.rand, password)
 	if err != nil {
 		return 0, fmt.Errorf("directory: hash password: %w", err)
 	}
@@ -404,7 +404,7 @@ func (d *Directory) UpdatePassword(ctx context.Context, pid PrincipalID, oldPass
 	if !verifyPassword(p.PasswordHash, oldPassword) {
 		return ErrUnauthorized
 	}
-	hash, err := hashPassword(d.rand, newPassword)
+	hash, err := HashPassword(d.rand, newPassword)
 	if err != nil {
 		return fmt.Errorf("directory: hash password: %w", err)
 	}

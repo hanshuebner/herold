@@ -132,6 +132,9 @@ type ProblemDetails struct {
 	Status int    `json:"status,omitempty"`
 	Detail string `json:"detail,omitempty"`
 	Code   string `json:"code,omitempty"`
+	// StepUpRequired is true on the 403 the server answers when a
+	// TOTP-enrolled caller has no live step-up elevation (REQ-AUTH-78).
+	StepUpRequired bool `json:"step_up_required,omitempty"`
 }
 
 // Error reports the problem as a plain Go error.

@@ -237,41 +237,45 @@ func newPrincipalCmd() *cobra.Command {
 	setPwCmd := &cobra.Command{
 		Use:   "set-password <email-or-id>",
 		Short: "change a principal's password (prompts unless --password is given)",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			g := globals(cmd.Context())
-			client, err := clientFromGlobals(g)
-			if err != nil {
-				return err
-			}
-			password, _ := cmd.Flags().GetString("password")
-			if password == "" {
-				fmt.Fprint(cmd.OutOrStdout(), "new password: ")
-				pw, err := readPassword(cmd.InOrStdin())
-				if err != nil {
-					return fmt.Errorf("read password: %w", err)
-				}
-				fmt.Fprintln(cmd.OutOrStdout())
-				password = pw
-				if password == "" {
-					return errors.New("empty password rejected")
-				}
-			}
-			pid, err := resolvePrincipalID(cmd.Context(), client, args[0])
-			if err != nil {
-				return err
-			}
-			err = client.do(cmd.Context(), "PUT", "/api/v1/principals/"+pid+"/password",
-				map[string]string{"new_password": password}, nil)
-			if err != nil {
-				return wrapPendingRESTError(err)
-			}
-			writeLine(cmd.OutOrStdout(), g, "password updated")
-			return nil
-		},
+		Long: `Change a principal's password through the admin REST API.
+
+When the target is another principal, the caller must be an admin and no
+current password is needed. When the target is the caller's own principal,
+the server requires the current password and, if the caller has TOTP
+enrolled, a live step-up elevation: the command prompts for the current
+password (or takes --current-password), and on a step_up_required answer
+prompts for a TOTP code (or takes --totp-code), performs the step-up with
+the same API key, and retries once.
+
+If the sole admin has lost the password, use
+"herold principal reset-password <email> --offline" on the server host.`,
+		Args: cobra.ExactArgs(1),
+		RunE: runPrincipalSetPassword,
 	}
 	setPwCmd.Flags().String("password", "", "new password (omit to be prompted)")
+	setPwCmd.Flags().String("current-password", "", "current password, for the caller's own principal (omit to be prompted)")
+	setPwCmd.Flags().String("totp-code", "", "TOTP code for the step-up the server may require (omit to be prompted)")
 	c.AddCommand(setPwCmd)
+
+	resetPwCmd := &cobra.Command{
+		Use:   "reset-password <email>",
+		Short: "reset a principal's password directly in the store (requires --offline)",
+		Long: `Write a new Argon2id password hash for a principal directly into the
+store named by the system config, without the admin REST API or an API key.
+This is the recovery path for a locked-out sole admin. It needs host access
+(run it as the herold user: the same trust level as the database itself),
+works with the SQLite and Postgres backends, and records an audit-log entry.
+
+The server may keep running: SQLite writers wait on the busy timeout and
+Postgres is multi-writer. The command warns when it finds the server's admin
+listener accepting connections. The --offline flag is mandatory so the command
+is never run by accident.`,
+		Args: cobra.ExactArgs(1),
+		RunE: runPrincipalResetPassword,
+	}
+	resetPwCmd.Flags().Bool("offline", false, "required: operate on the store directly instead of through the REST API")
+	resetPwCmd.Flags().String("password", "", "new password (omit to be prompted twice)")
+	c.AddCommand(resetPwCmd)
 
 	// totp subcommand group — enroll / disable. Confirm is a self-service
 	// flow and not exposed as an operator verb (the operator cannot read
