@@ -262,6 +262,8 @@ export const en = {
   'mail.toast.archived': '{count} message archived',
   'mail.toast.archived.other': '{count} messages archived',
   'mail.toast.archivedPartial': '{ok} archived, {failed} failed',
+  'mail.toast.archiveNotInInbox': '{count} selected message is no longer in the Inbox; the list was updated',
+  'mail.toast.archiveNotInInbox.other': '{count} selected messages are no longer in the Inbox; the list was updated',
   'mail.toast.deleted': '{count} message deleted',
   'mail.toast.deleted.other': '{count} messages deleted',
   'mail.toast.deletedPartial': '{ok} deleted, {failed} failed',

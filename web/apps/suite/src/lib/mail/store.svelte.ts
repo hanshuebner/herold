@@ -528,7 +528,13 @@ class MailStore {
   }
 
   async #onEmailStateChange(newState: string): Promise<void> {
-    if (newState === this.emailState) return;
+    if (newState === this.emailState) {
+      // A fetch already advanced the baseline to this state, so no delta
+      // is computed; still drop list rows the cache shows have left the
+      // Inbox (re #542).
+      this.#reconcileInboxRows();
+      return;
+    }
     // Compute the delta via Email/changes so we can scope the refetch
     // to views actually affected. Without this scoping, every backend
     // mutation (extimg internalize, fts indexer, etc.) fans out into
@@ -1326,6 +1332,46 @@ class MailStore {
     this.#listSelectAnchorBaseSelection = new Set();
     this.listWholeMailboxSelected = false;
     this.#wholeSelectionFilterOverride = undefined;
+  }
+
+  /**
+   * Drop Inbox list rows whose cached Email no longer belongs in the Inbox
+   * view and re-query the list (re #542, re #543). The Inbox query is
+   * `inMailbox: <inbox>` minus junk-role members, so a row whose cached
+   * `mailboxIds` lacks the Inbox, or names a junk-role mailbox, is stale:
+   * the message was moved (for instance filed to Junk by the server's
+   * junk-wins rule) after the list was fetched, and the list was not
+   * refreshed because an `Email/get` had already advanced `emailState`
+   * past the push that would have triggered the refresh. Returns the ids
+   * dropped. Combined-inbox rows carry another account's mailbox ids and
+   * are left to that view's own reconciliation.
+   */
+  #reconcileInboxRows(): string[] {
+    if (this.listFolder !== 'inbox' || this.listLoadStatus !== 'ready') return [];
+    if (this.#combinedInboxSources) return [];
+    const inbox = this.inbox;
+    if (!inbox) return [];
+    const stale: string[] = [];
+    for (const id of this.listEmailIds) {
+      const e = this.emails.get(id);
+      if (!e) continue;
+      if (this.emailAccountId.has(id)) continue;
+      if (!e.mailboxIds[inbox.id] || isInAnyJunkMailbox(e.mailboxIds, this.mailboxes)) {
+        stale.push(id);
+      }
+    }
+    if (stale.length === 0) return stale;
+    const drop = new Set(stale);
+    this.listEmailIds = this.listEmailIds.filter((id) => !drop.has(id));
+    if (this.listFocusedIndex >= this.listEmailIds.length) {
+      this.listFocusedIndex = this.listEmailIds.length - 1;
+    }
+    if (this.listSelectedIds.size > 0) {
+      const keep = new Set([...this.listSelectedIds].filter((id) => !drop.has(id)));
+      if (keep.size !== this.listSelectedIds.size) this.listSelectedIds = keep;
+    }
+    this.#refreshFolderSoon();
+    return stale;
   }
 
   /** The id of the JMAP Mail account this principal uses. */
@@ -3011,6 +3057,7 @@ class MailStore {
       const nextEmails = new Map(this.emails);
       for (const e of emailResult.list) nextEmails.set(e.id, e);
       this.emails = nextEmails;
+      this.#reconcileInboxRows();
 
       // Initialise the committed snapshot with ALL email IDs from the
       // Thread/get response. Deduplication to one-per-logical-message
@@ -3192,6 +3239,7 @@ class MailStore {
     const nextEmails = new Map(this.emails);
     for (const e of emailResult.list) nextEmails.set(e.id, e);
     this.emails = nextEmails;
+    this.#reconcileInboxRows();
   }
 
   /**
@@ -4182,11 +4230,35 @@ class MailStore {
         [`mailboxIds/${archive.id}`]: true,
       };
     }
-    if (Object.keys(updates).length === 0) return;
+    if (Object.keys(updates).length === 0) {
+      // Every requested row lacks the Inbox membership: the list is
+      // showing rows the server no longer files there (re #543). Say so,
+      // release the selection and let the list re-query rather than
+      // returning silently.
+      const notInInbox = ids.filter((id) => this.emails.has(id));
+      if (notInInbox.length > 0) {
+        for (const id of notInInbox) this.#removeFromList(id);
+        this.clearSelection();
+        this.#refreshFolderSoon();
+        toast.show({
+          message: i18n.t(
+            notInInbox.length === 1
+              ? 'mail.toast.archiveNotInInbox'
+              : 'mail.toast.archiveNotInInbox.other',
+            { count: notInInbox.length },
+          ),
+          kind: 'info',
+          timeoutMs: 6000,
+        });
+      }
+      return;
+    }
     const prevListIds = [...this.listEmailIds];
     const prevFocused = this.listFocusedIndex;
     if (this.listFolder === 'inbox') {
       for (const id of Object.keys(updates)) this.#removeFromList(id);
+      // Rows skipped above for lacking the Inbox membership are stale (re #543).
+      for (const id of ids) if (!(id in updates) && this.emails.has(id)) this.#removeFromList(id);
     }
     this.clearSelection();
     try {

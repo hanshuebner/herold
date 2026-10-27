@@ -263,6 +263,8 @@ export const de = {
   'mail.toast.archived': '{count} Nachricht archiviert',
   'mail.toast.archived.other': '{count} Nachrichten archiviert',
   'mail.toast.archivedPartial': '{ok} archiviert, {failed} fehlgeschlagen',
+  'mail.toast.archiveNotInInbox': '{count} ausgewählte Nachricht ist nicht mehr im Posteingang; die Liste wurde aktualisiert',
+  'mail.toast.archiveNotInInbox.other': '{count} ausgewählte Nachrichten sind nicht mehr im Posteingang; die Liste wurde aktualisiert',
   'mail.toast.deleted': '{count} Nachricht gelöscht',
   'mail.toast.deleted.other': '{count} Nachrichten gelöscht',
   'mail.toast.deletedPartial': '{ok} gelöscht, {failed} fehlgeschlagen',
