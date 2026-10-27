@@ -9,6 +9,7 @@
     type ActiveState,
   } from './editor';
   import type { EditorView } from 'prosemirror-view';
+  import { promptLink } from './link-flow';
 
   interface Props {
     initialHtml?: string;
@@ -67,6 +68,7 @@
       onImageRemoved,
       onImagePaste,
       collapseQuote,
+      onLinkShortcut: (v) => void promptLink(v),
     });
     currentView = view;
     onView?.(view);

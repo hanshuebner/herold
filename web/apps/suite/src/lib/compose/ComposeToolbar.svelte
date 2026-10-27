@@ -6,17 +6,16 @@
     applyBulletList,
     applyImage,
     applyItalic,
-    applyLink,
     applyOrderedList,
     applyUnderline,
-    removeLink,
     type ActiveState,
   } from './editor';
-  import { prompt } from '../dialog/prompt.svelte';
+  import { promptLink } from './link-flow';
   import { compose } from './compose.svelte';
   import { toast } from '../toast/toast.svelte';
   import { t } from '../i18n/i18n.svelte';
   import ImageIcon from '../icons/ImageIcon.svelte';
+  import LinkIcon from '../icons/LinkIcon.svelte';
 
   interface Props {
     view: EditorView | null;
@@ -25,25 +24,6 @@
   let { view, active }: Props = $props();
 
   let imageInput = $state<HTMLInputElement | null>(null);
-
-  async function promptLink(): Promise<void> {
-    if (!view) return;
-    if (active.link) {
-      removeLink(view);
-      return;
-    }
-    const url = await prompt.ask({
-      title: t('composeToolbar.linkPrompt.title'),
-      label: 'URL',
-      placeholder: 'https://example.com',
-      confirmLabel: t('composeToolbar.linkPrompt.confirm'),
-    });
-    if (!url) {
-      view.focus();
-      return;
-    }
-    applyLink(view, url);
-  }
 
   function pickImage(): void {
     imageInput?.click();
@@ -186,9 +166,9 @@
     aria-pressed={active.link}
     aria-label={active.link ? t('composeToolbar.linkRemove') : t('composeToolbar.linkAdd')}
     title={`${t('composeToolbar.linkAdd')} (Mod+K)`}
-    onclick={promptLink}
+    onclick={() => promptLink(view)}
   >
-    <span class="glyph">⎘</span>
+    <LinkIcon size={18} />
   </button>
 
   <button

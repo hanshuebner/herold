@@ -160,7 +160,7 @@ function insertHardBreak(
  * In both modes splitListItem takes priority when the caret is inside a
  * list item (re #33).
  */
-function composeKeymap(mode: ComposerEnterMode) {
+function composeKeymap(mode: ComposerEnterMode, onLink?: (view: EditorView) => void) {
   const m = composeSchema.marks;
   const n = composeSchema.nodes;
 
@@ -184,6 +184,11 @@ function composeKeymap(mode: ComposerEnterMode) {
     'Mod-i': toggleMark(m.em!),
     'Mod-u': toggleMark(m.underline!),
     'Mod-`': toggleMark(m.code!),
+    'Mod-k': (_state, _dispatch, view) => {
+      if (!onLink || !view) return false;
+      onLink(view);
+      return true;
+    },
     Enter: enterCmd,
     'Shift-Enter': shiftEnterCmd,
     'Mod-[': liftListItem(n.list_item!),
@@ -679,6 +684,11 @@ export function createComposeEditor(
      * expanded, still with a toggle to fold it.
      */
     collapseQuote?: boolean;
+    /**
+     * Run the composer's link flow (Mod-k). The toolbar button invokes the
+     * same function, so the shortcut and the button are one behaviour.
+     */
+    onLinkShortcut?: (view: EditorView) => void;
   },
 ): EditorView {
   const doc = htmlToDoc(options.initialHtml);
@@ -690,7 +700,7 @@ export function createComposeEditor(
     doc,
     plugins: [
       history(),
-      composeKeymap(settings.composerEnterMode),
+      composeKeymap(settings.composerEnterMode, options.onLinkShortcut),
       keymap(baseKeymap),
       quoteFoldPlugin(Boolean(options.collapseQuote)),
     ],
