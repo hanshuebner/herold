@@ -232,6 +232,32 @@ describe('bulkArchive / bulkDelete undo (issue #515)', () => {
     expect(mail.listEmailIds).toEqual(['e1', 'e2']);
   });
 
+  it('bulkArchive silent (re #507): archives without replacing the send Undo toast', async () => {
+    const { mail } = mailMod;
+    mail.emails.set('e1', makeEmail('e1', { [INBOX_ID]: true }));
+    mail.listEmailIds = ['e1'];
+    batch.mockResolvedValueOnce({
+      responses: [invocation('Email/set', { updated: { e1: {} }, notUpdated: null, newState: 's2' })],
+    });
+    await mail.bulkArchive(['e1'], { silent: true });
+    expect(mail.emails.get('e1')?.mailboxIds).toEqual({ [ARCHIVE_ID]: true });
+    expect(toastShow).not.toHaveBeenCalled();
+  });
+
+  it('bulkArchive silent (re #507): a failure is still reported', async () => {
+    const { mail } = mailMod;
+    mail.emails.set('e2', makeEmail('e2', { [INBOX_ID]: true }));
+    mail.listEmailIds = ['e2'];
+    batch.mockResolvedValueOnce({
+      responses: [
+        invocation('Email/set', { updated: {}, notUpdated: { e2: { type: 'notFound' } }, newState: 's3' }),
+      ],
+    });
+    await mail.bulkArchive(['e2'], { silent: true });
+    expect(toastShow).toHaveBeenCalledTimes(1);
+    expect(toastShow.mock.calls[0]![0].kind).toBe('error');
+  });
+
   it('bulkArchive: a mixed success/failure bulk undoes only the ids that succeeded', async () => {
     const { mail } = mailMod;
     mail.emails.set('e1', makeEmail('e1', { [INBOX_ID]: true, [LABEL_ID]: true }));

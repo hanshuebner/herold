@@ -174,6 +174,41 @@ describe('compose undo callback restores the Sent copy to Drafts (re #507)', () 
     expect(compose.subject).toBe('undo me');
   });
 
+  it('Send + Archive: the revert also removes the Archive membership the send added', async () => {
+    const { compose } = await import('./compose.svelte');
+    compose.close();
+    compose.openWith({ to: 'dest@remote.test', subject: 'undo me', body: 'body text' });
+
+    batchMock.mockImplementationOnce(() =>
+      Promise.resolve({
+        responses: [
+          ['Email/set', { created: { draft1: { id: 'email-42' } } }, 'c0'],
+          ['EmailSubmission/set', { created: { sub1: { id: 'sub-99' } } }, 'c1'],
+        ],
+      }),
+    );
+    // The fire-and-forget archive Email/set.
+    batchMock.mockImplementationOnce(() =>
+      Promise.resolve({ responses: [['Email/set', { updated: { 'email-42': null } }, 'c0']] }),
+    );
+    await compose.send({ archiveOnSend: true });
+    const toastArgs = toastShow.mock.calls[0]![0] as { undo?: () => Promise<void> };
+
+    batchMock.mockImplementationOnce(() =>
+      Promise.resolve({ responses: [['EmailSubmission/set', { destroyed: ['sub-99'] }, 'c0']] }),
+    );
+    let revertUpdate: Record<string, unknown> | undefined;
+    batchMock.mockImplementationOnce((builder) => {
+      const call = captureCalls(builder)[0]!;
+      revertUpdate = (call.args.update as Record<string, Record<string, unknown>>)['email-42'];
+      return Promise.resolve({ responses: [['Email/set', { updated: { 'email-42': null } }, 'c0']] });
+    });
+    await toastArgs.undo!();
+
+    expect(revertUpdate?.['mailboxIds/archive1']).toBeNull();
+    expect(revertUpdate?.['mailboxIds/drafts1']).toBe(true);
+  });
+
   it('still re-opens the composer (without pinning a draft id) when the Drafts-restore Email/set fails', async () => {
     const { compose } = await import('./compose.svelte');
     compose.close();

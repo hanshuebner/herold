@@ -1679,6 +1679,9 @@ class ComposeStore {
         });
       }
 
+      // Archive membership added by Send + Archive; Undo removes it again.
+      let archiveMailboxIdOnSend: string | null = null;
+
       // Send + Archive (re #376): file the just-sent copy into Archive
       // alongside Sent with a follow-up Email/set update that adds the
       // Archive membership. Fire-and-forget: a failure here leaves the
@@ -1687,6 +1690,7 @@ class ComposeStore {
       if (opts?.archiveOnSend && sentEmailId) {
         const archiveMailboxId = this.#archiveMailboxId();
         if (archiveMailboxId) {
+          archiveMailboxIdOnSend = archiveMailboxId;
           void jmap
             .batch((b) => {
               b.call(
@@ -1752,6 +1756,9 @@ class ComposeStore {
                   const revertPatch: Record<string, true | null> = {};
                   if (sentMailboxId) revertPatch[`mailboxIds/${sentMailboxId}`] = null;
                   revertPatch[`mailboxIds/${draftsId}`] = true;
+                  if (archiveMailboxIdOnSend) {
+                    revertPatch[`mailboxIds/${archiveMailboxIdOnSend}`] = null;
+                  }
                   revertPatch['keywords/$draft'] = true;
                   const revert = await jmap.batch((b) => {
                     b.call(

@@ -208,7 +208,7 @@ describe('ThreadInlineComposer Send + Archive (re #376)', () => {
 
     // The pre-existing Inbox member is still archived via bulkArchive,
     // exactly as before -- the non-Inbox thread email is excluded.
-    expect(mailMock.bulkArchive).toHaveBeenCalledWith(['e-inbox']);
+    expect(mailMock.bulkArchive).toHaveBeenCalledWith(['e-inbox'], { silent: true });
     expect(mailMock.bulkArchive).not.toHaveBeenCalledWith(
       expect.arrayContaining(['e-other']),
     );

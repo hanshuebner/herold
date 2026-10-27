@@ -4135,7 +4135,7 @@ class MailStore {
    * at least one mailbox. We therefore add the Archive mailbox in the
    * same patch -- atomic from the JMAP /set perspective.
    */
-  async bulkArchive(ids: string[]): Promise<void> {
+  async bulkArchive(ids: string[], opts?: { silent?: boolean }): Promise<void> {
     const inbox = this.inbox;
     const archive = this.archive;
     if (!inbox) return;
@@ -4192,6 +4192,13 @@ class MailStore {
     try {
       const { failed } = await this.#emailSetUpdateBulk(updates);
       const okIds = Object.keys(updates).filter((id) => !(id in failed));
+      // `silent` suppresses the success toast for callers that already own
+      // the single toast slot (Send + Archive keeps the send's Undo toast
+      // up, re #507); a partial failure is still reported.
+      if (opts?.silent && Object.keys(failed).length === 0) {
+        this.#refreshFolderIfEmptied();
+        return;
+      }
       this.#summarizeBulk(
         'archived',
         Object.keys(updates).length,

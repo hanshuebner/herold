@@ -183,7 +183,7 @@
     const ids = untrack(() => inboxEmailIds);
     await compose.send({ archiveOnSend: true });
     if (!compose.isOpen) {
-      if (ids.length > 0) void mail.bulkArchive(ids);
+      if (ids.length > 0) void mail.bulkArchive(ids, { silent: true });
       navigateBackFromThread();
     }
   }
