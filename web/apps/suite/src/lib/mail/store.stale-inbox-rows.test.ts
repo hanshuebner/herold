@@ -39,8 +39,16 @@ vi.mock('../auth/auth.svelte', () => ({
   registerAccountResetCallback: vi.fn(),
 }));
 
+const syncHandlers = new Map<string, (state: string) => void>();
 vi.mock('../jmap/sync.svelte', () => ({
-  sync: { on: vi.fn(() => vi.fn()), start: vi.fn(), stop: vi.fn() },
+  sync: {
+    on: vi.fn((type: string, handler: (state: string) => void) => {
+      syncHandlers.set(type, handler);
+      return vi.fn();
+    }),
+    start: vi.fn(),
+    stop: vi.fn(),
+  },
 }));
 
 const toastShow = vi.fn();
@@ -159,7 +167,7 @@ describe('Inbox rows that no longer belong in the Inbox (issues #542, #543)', ()
   beforeEach(async () => {
     vi.resetModules();
     vi.clearAllMocks();
-
+    syncHandlers.clear();
     mailMod = await import('./store.svelte');
     const { mail } = mailMod;
 
@@ -266,5 +274,32 @@ describe('Inbox rows that no longer belong in the Inbox (issues #542, #543)', ()
     await mail.refreshThread('thread-e1');
 
     expect(mail.listEmailIds).toEqual(['e1']);
+  });
+
+  it('bulkArchive in the search view leaves non-Inbox hits alone: no toast, selection kept, list untouched', async () => {
+    const { mail } = mailMod;
+    mail.emails.set('e1', makeEmail('e1', { [ARCHIVE_ID]: true }));
+    mail.listEmailIds = ['e1'];
+    mail.searchQuery = 'invoice';
+    mail.listSelectedIds = new Set(['e1']);
+
+    const callsBefore = batch.mock.calls.length;
+    await mail.bulkArchive(['e1']);
+
+    expect(emailSetUpdateSince(callsBefore)).toBeUndefined();
+    expect(toastShow).not.toHaveBeenCalled();
+    expect(mail.listSelectedIds.has('e1')).toBe(true);
+    expect(mail.listEmailIds).toEqual(['e1']);
+  });
+
+  it('a push whose state a fetch already consumed still drops rows that left the Inbox (#542)', async () => {
+    const { mail } = mailMod;
+    mail.emails.set('e1', makeEmail('e1', { [JUNK_ID]: true, [LABEL_ID]: true }));
+    mail.listEmailIds = ['e1'];
+    mail.emailState = 's5';
+
+    syncHandlers.get('Email')!('s5');
+
+    expect(mail.listEmailIds).toEqual([]);
   });
 });

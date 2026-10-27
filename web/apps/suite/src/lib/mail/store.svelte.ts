@@ -1366,7 +1366,7 @@ class MailStore {
     if (this.listFocusedIndex >= this.listEmailIds.length) {
       this.listFocusedIndex = this.listEmailIds.length - 1;
     }
-    if (this.listSelectedIds.size > 0) {
+    if (this.listSelectedIds.size > 0 && !this.searchQuery) {
       const keep = new Set([...this.listSelectedIds].filter((id) => !drop.has(id)));
       if (keep.size !== this.listSelectedIds.size) this.listSelectedIds = keep;
     }
@@ -4235,8 +4235,10 @@ class MailStore {
       // showing rows the server no longer files there (re #543). Say so,
       // release the selection and let the list re-query rather than
       // returning silently.
+      // Only the Inbox folder list can be stale; search hits outside the
+      // Inbox are legitimate and keep their selection.
       const notInInbox = ids.filter((id) => this.emails.has(id));
-      if (notInInbox.length > 0) {
+      if (notInInbox.length > 0 && this.listFolder === 'inbox' && !this.searchQuery) {
         for (const id of notInInbox) this.#removeFromList(id);
         this.clearSelection();
         this.#refreshFolderSoon();
@@ -4258,7 +4260,9 @@ class MailStore {
     if (this.listFolder === 'inbox') {
       for (const id of Object.keys(updates)) this.#removeFromList(id);
       // Rows skipped above for lacking the Inbox membership are stale (re #543).
-      for (const id of ids) if (!(id in updates) && this.emails.has(id)) this.#removeFromList(id);
+      if (!this.searchQuery) {
+        for (const id of ids) if (!(id in updates) && this.emails.has(id)) this.#removeFromList(id);
+      }
     }
     this.clearSelection();
     try {
