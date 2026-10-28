@@ -42,7 +42,8 @@
   import type { EditorView } from 'prosemirror-view';
   import { recipientToString } from '../compose/recipient-parse';
   import { attachmentBadge } from './attachment-icon';
-  import { composeFromGating, shouldShowFromPicker } from '../compose/from-picker';
+  import { composeFromGating, fromGatingMessageKey, shouldShowFromPicker } from '../compose/from-picker';
+  import FromGatingBanner from '../compose/FromGatingBanner.svelte';
   import { submissionStore } from '../identities/identity-submission.svelte';
   import { hasExternalSubmission } from '../auth/capabilities';
   import { formatRetention } from '../jmap/file-shares';
@@ -89,18 +90,11 @@
   );
 
   let fromGatingMessage = $derived(
-    fromGating.allowed
+    fromGating.allowed || !fromGating.reason
       ? null
-      : fromGating.reason === 'no-identity'
-        ? t('compose.from.sendDisabled.noIdentity')
-        : fromGating.reason === 'unverified'
-          ? t('compose.from.sendDisabled.unverified')
-          : fromGating.reason === 'verifying'
-            ? t('compose.from.sendDisabled.verifying')
-            : fromGating.reason === 'external-broken'
-              ? t('compose.from.sendDisabled.broken')
-              : t('compose.from.sendDisabled.external'),
+      : t(fromGatingMessageKey(fromGating.reason)),
   );
+
 
   function onPickIdentity(picked: Identity): void {
     compose.selectedIdentity = picked;
@@ -514,8 +508,12 @@
           </span>
         {/if}
       </div>
-      {#if fromGatingMessage}
-        <p class="field-warning from-gating-banner" role="status" data-testid="from-gating-banner">{fromGatingMessage}</p>
+      {#if fromGating.reason}
+        <FromGatingBanner
+          class="field-warning"
+          identityId={identity?.id ?? null}
+          reason={fromGating.reason}
+        />
       {/if}
 
       <div class="field-row recipient-row">
@@ -822,12 +820,6 @@
     color: var(--support-warning);
     font-size: var(--type-body-compact-01-size);
     margin: 0;
-  }
-  .from-gating-banner {
-    background: color-mix(in srgb, var(--support-warning) 10%, transparent);
-    border-left: 3px solid var(--support-warning);
-    color: color-mix(in srgb, var(--support-warning) 90%, var(--text-primary));
-    padding: var(--spacing-02) var(--spacing-04);
   }
   .cc-bcc-toggle {
     flex-shrink: 0;

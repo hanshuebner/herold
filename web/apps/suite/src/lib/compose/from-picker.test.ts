@@ -74,25 +74,36 @@ describe('composeFromGating', () => {
     });
   });
 
-  it('blocks a verified identity with auth-failed external submission (external-broken)', () => {
+  it('blocks a verified identity with auth-failed external submission (external-auth-failed)', () => {
     const id = makeIdentity('1', 'a@x.test', {
       verifiedAt: '2026-01-01T00:00:00Z',
     });
     const sub: SubmissionSummary = { configured: true, state: 'auth-failed' };
     expect(composeFromGating(id, sub)).toEqual({
       allowed: false,
-      reason: 'external-broken',
+      reason: 'external-auth-failed',
     });
   });
 
-  it('blocks a verified identity with unreachable external submission (external-broken)', () => {
+  it('blocks a verified identity whose submission was never probed (external-unverified)', () => {
+    const id = makeIdentity('1', 'a@x.test', {
+      verifiedAt: '2026-01-01T00:00:00Z',
+    });
+    const sub: SubmissionSummary = { configured: true, state: null };
+    expect(composeFromGating(id, sub)).toEqual({
+      allowed: false,
+      reason: 'external-unverified',
+    });
+  });
+
+  it('blocks a verified identity with unreachable external submission (external-unreachable)', () => {
     const id = makeIdentity('1', 'a@x.test', {
       verifiedAt: '2026-01-01T00:00:00Z',
     });
     const sub: SubmissionSummary = { configured: true, state: 'unreachable' };
     expect(composeFromGating(id, sub)).toEqual({
       allowed: false,
-      reason: 'external-broken',
+      reason: 'external-unreachable',
     });
   });
 

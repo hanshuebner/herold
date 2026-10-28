@@ -43,9 +43,12 @@ import {
  *   - 'external-setup-needed'    — identity is verified external but
  *                                  submission has not been configured yet
  *                                  (configured: false).
- *   - 'external-broken'          — identity is verified external with
- *                                  submission configured but probe failed
- *                                  (auth-failed / unreachable).
+ *   - 'external-auth-failed'     — submission configured; the relay
+ *                                  rejected the stored credentials.
+ *   - 'external-unreachable'     — submission configured; the relay could
+ *                                  not be reached.
+ *   - 'external-unverified'      — submission configured but never probed
+ *                                  (state null); the connection is unproven.
  *   - 'no-identity'              — no identity is selected at all
  *                                  (rare; would be a store-warmup race).
  */
@@ -53,7 +56,9 @@ export type FromGatingReason =
   | 'unverified'
   | 'verifying'
   | 'external-setup-needed'
-  | 'external-broken'
+  | 'external-auth-failed'
+  | 'external-unreachable'
+  | 'external-unverified'
   | 'no-identity';
 
 export interface FromGating {
@@ -99,7 +104,13 @@ export function composeFromGating(
     return { allowed: true, reason: null };
   }
   if (extState === 'broken') {
-    return { allowed: false, reason: 'external-broken' };
+    if (submission?.state === 'auth-failed') {
+      return { allowed: false, reason: 'external-auth-failed' };
+    }
+    if (submission?.state === 'unreachable') {
+      return { allowed: false, reason: 'external-unreachable' };
+    }
+    return { allowed: false, reason: 'external-unverified' };
   }
   return { allowed: false, reason: 'external-setup-needed' };
 }
@@ -186,4 +197,37 @@ export function shouldShowFromPicker(
   // static-text fallback in ComposeWindow only appears when there
   // are no identities at all (loading / warmup race).
   return identities.length >= 1;
+}
+
+/**
+ * i18n key for the inline explanation shown when Send is blocked for
+ * `reason`. Each external-submission condition has its own wording.
+ */
+export function fromGatingMessageKey(reason: FromGatingReason): string {
+  switch (reason) {
+    case 'no-identity':
+      return 'compose.from.sendDisabled.noIdentity';
+    case 'unverified':
+      return 'compose.from.sendDisabled.unverified';
+    case 'verifying':
+      return 'compose.from.sendDisabled.verifying';
+    case 'external-auth-failed':
+      return 'compose.from.sendDisabled.authFailed';
+    case 'external-unreachable':
+      return 'compose.from.sendDisabled.unreachable';
+    case 'external-unverified':
+      return 'compose.from.sendDisabled.notProbed';
+    default:
+      return 'compose.from.sendDisabled.external';
+  }
+}
+
+/** True for the reasons the identity's submission settings can resolve. */
+export function isExternalSubmissionReason(reason: FromGatingReason | null): boolean {
+  return (
+    reason === 'external-auth-failed' ||
+    reason === 'external-unreachable' ||
+    reason === 'external-unverified' ||
+    reason === 'external-setup-needed'
+  );
 }

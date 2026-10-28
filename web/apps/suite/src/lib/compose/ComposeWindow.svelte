@@ -27,7 +27,8 @@
   import { submissionStore } from '../identities/identity-submission.svelte';
   import type { Identity } from '../mail/types';
   import type { SubmissionSummary } from '../identities/identity-status';
-  import { composeFromGating, shouldShowFromPicker } from './from-picker';
+  import { composeFromGating, fromGatingMessageKey, shouldShowFromPicker } from './from-picker';
+  import FromGatingBanner from './FromGatingBanner.svelte';
 
   // Per-compose keyboard layer: Mod+Enter sends, Escape closes.
   // Both pass through input-focus carve-outs (see keyboard engine
@@ -193,18 +194,11 @@
     composeFromGating(identity, identity ? submissionResolver(identity.id) : null),
   );
   let fromGatingMessage = $derived(
-    fromGating.allowed
+    fromGating.allowed || !fromGating.reason
       ? null
-      : fromGating.reason === 'no-identity'
-        ? t('compose.from.sendDisabled.noIdentity')
-        : fromGating.reason === 'unverified'
-          ? t('compose.from.sendDisabled.unverified')
-          : fromGating.reason === 'verifying'
-            ? t('compose.from.sendDisabled.verifying')
-            : fromGating.reason === 'external-broken'
-              ? t('compose.from.sendDisabled.broken')
-              : t('compose.from.sendDisabled.external'),
+      : t(fromGatingMessageKey(fromGating.reason)),
   );
+
 
   // Whether to render the dropdown or fall back to static text. The
   // picker renders whenever at least one identity is present; the
@@ -829,10 +823,8 @@
           </span>
         {/if}
       </div>
-      {#if fromGatingMessage}
-        <p class="from-gating-banner" role="status" data-testid="from-gating-banner">
-          {fromGatingMessage}
-        </p>
+      {#if fromGating.reason}
+        <FromGatingBanner identityId={identity?.id ?? null} reason={fromGating.reason} />
       {/if}
 
       <div class="row recipient-row">
@@ -1399,14 +1391,6 @@
      identity is not allowed to send (REQ-MAIL-12). Distinct from
      .error so it does not steal the alert role; this is a hint, not a
      blocking error. */
-  .from-gating-banner {
-    margin: 0;
-    padding: var(--spacing-02) var(--spacing-05);
-    background: color-mix(in srgb, var(--support-warning) 10%, transparent);
-    border-left: 3px solid var(--support-warning);
-    color: color-mix(in srgb, var(--support-warning) 90%, var(--text-primary));
-    font-size: var(--type-body-compact-01-size);
-  }
 
   /* The From row needs the picker (which is flex:1) to share the row
      baseline with the label. Override the .row gap so the picker can
