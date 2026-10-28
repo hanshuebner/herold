@@ -1387,11 +1387,6 @@
     font-size: var(--type-body-compact-01-size);
   }
 
-  /* Inline explanation banner under the From row when the selected
-     identity is not allowed to send (REQ-MAIL-12). Distinct from
-     .error so it does not steal the alert role; this is a hint, not a
-     blocking error. */
-
   /* The From row needs the picker (which is flex:1) to share the row
      baseline with the label. Override the .row gap so the picker can
      stretch but the label stays compact. */

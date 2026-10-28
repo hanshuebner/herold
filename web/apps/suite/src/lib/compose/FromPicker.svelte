@@ -69,6 +69,13 @@
     return id.name?.trim() ? `${id.name} <${id.email}>` : id.email;
   }
 
+  /** Suffix of the chip / disabled-title key for a broken external identity. */
+  function brokenVariant(sub: SubmissionSummary | null): 'broken' | 'unreachable' | 'notProbed' {
+    if (sub?.state === 'auth-failed') return 'broken';
+    if (sub?.state === 'unreachable') return 'unreachable';
+    return 'notProbed';
+  }
+
   function chipKey(
     id: Identity,
     sub: SubmissionSummary | null,
@@ -87,13 +94,13 @@
   function disabledKey(
     id: Identity,
     sub: SubmissionSummary | null,
-  ): 'unverified' | 'verifying' | 'setupNeeded' | 'broken' | null {
+  ): 'unverified' | 'verifying' | 'setupNeeded' | 'broken' | 'unreachable' | 'notProbed' | null {
     if (isFromSelectable(id, sub)) return null;
     const status = identityStatus(id);
     if (status === 'unverified') return 'unverified';
     if (status === 'verifying') return 'verifying';
     const extState = externalIdentityState(id, sub);
-    if (extState === 'broken') return 'broken';
+    if (extState === 'broken') return brokenVariant(sub);
     return 'setupNeeded';
   }
 
@@ -235,7 +242,7 @@
                 </span>
               {:else if cKey === 'broken'}
                 <span class="chip chip-broken" data-testid="from-chip" data-chip-state="broken">
-                  {t('compose.from.chip.broken')}
+                  {t(`compose.from.chip.${brokenVariant(sub)}`)}
                 </span>
               {:else if externalConfigured?.(id.id)}
                 <span class="ext-indicator" title="Mail sent via external SMTP">[ext]</span>

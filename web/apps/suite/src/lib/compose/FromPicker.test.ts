@@ -34,6 +34,10 @@ vi.mock('../i18n/i18n.svelte', () => ({
       'compose.from.chip.external': 'External SMTP missing',
       'compose.from.chip.setupNeeded': 'Setup needed',
       'compose.from.chip.broken': 'Auth failed',
+      'compose.from.chip.unreachable': 'Unreachable',
+      'compose.from.chip.notProbed': 'Not verified',
+      'compose.from.disabled.unreachable': 'Relay unreachable.',
+      'compose.from.disabled.notProbed': 'Connection not verified.',
       'compose.from.disabled.unverified':
         'Verify this address before you can send from it.',
       'compose.from.disabled.verifying':
@@ -99,6 +103,11 @@ const noSub = (_id: string): SubmissionSummary | null => null;
 
 const brokenResolver = (id: string): SubmissionSummary | null =>
   id === EXTERNAL_BROKEN.id ? { configured: true, state: 'auth-failed' } : null;
+
+const stateResolver =
+  (state: SubmissionSummary['state']) =>
+  (id: string): SubmissionSummary | null =>
+    id === EXTERNAL_BROKEN.id ? { configured: true, state } : null;
 
 // ── Tests ────────────────────────────────────────────────────────────────
 
@@ -387,4 +396,31 @@ describe('FromPicker', () => {
     expect(rows[0]!.textContent).toMatch(/\[ext\]/);
     expect(rows[1]!.textContent).not.toMatch(/\[ext\]/);
   });
+
+  it.each([
+    ['auth-failed', 'Auth failed', /authentication failed/],
+    ['unreachable', 'Unreachable', /unreachable/],
+    [null, 'Not verified', /not verified/],
+  ] as const)(
+    'names the %s condition in the chip and disabled title (re #545)',
+    async (state, chip, title) => {
+      const { container } = render(FromPicker, {
+        props: {
+          identities: [DEFAULT, EXTERNAL_BROKEN],
+          selected: DEFAULT,
+          submissionResolver: stateResolver(state),
+          onSelect: vi.fn(),
+        },
+      });
+      await fireEvent.click(
+        container.querySelector('[data-testid="from-picker-trigger"]')!,
+      );
+      await tick();
+      const row = container.querySelectorAll<HTMLButtonElement>(
+        '[data-testid="from-picker-row"]',
+      )[1]!;
+      expect(row.querySelector('[data-testid="from-chip"]')?.textContent?.trim()).toBe(chip);
+      expect(row.title).toMatch(title);
+    },
+  );
 });
