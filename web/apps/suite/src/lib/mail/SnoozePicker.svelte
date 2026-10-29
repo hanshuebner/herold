@@ -12,7 +12,12 @@
   import { formatWakeTime } from './snooze-format';
   import type { Mailbox } from './types';
 
-  let options = $derived(snoozeQuickOptions());
+  // Recomputed on every open: the wake times are relative to the
+  // current time, and the Suite tab can stay loaded for days (#548).
+  let options = $derived.by(() => {
+    if (!snoozePicker.isOpen) return [];
+    return snoozeQuickOptions();
+  });
   let custom = $state('');
 
   // Wake-destination affordance (issue #274): defaults to the account's
