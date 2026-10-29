@@ -319,6 +319,10 @@ func (i *importHandler) importOne(
 	}
 	env := buildEnvelopeFromParsed(parsed)
 	flags, customKW := flagsAndKeywordsFromJMAP(in.Keywords)
+	// "$snoozed" is paired with a snoozedUntil deadline that an import
+	// cannot carry; storing the keyword alone would leave a reminder the
+	// wake worker never releases (re #550). The other keywords are kept.
+	customKW = removeString(customKW, "$snoozed")
 
 	// Dedup against a live message the principal already holds (re #496):
 	// the IMAP mirror already folds a re-imported Message-ID onto the
