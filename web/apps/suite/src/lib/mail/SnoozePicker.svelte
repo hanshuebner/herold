@@ -14,7 +14,9 @@
 
   // Recomputed on every open: the wake times are relative to the
   // current time, and the Suite tab can stay loaded for days (#548).
+  let optionsEpoch = $state(0);
   let options = $derived.by(() => {
+    void optionsEpoch;
     if (!snoozePicker.isOpen) return [];
     return snoozeQuickOptions();
   });
@@ -58,6 +60,18 @@
     void mail.snoozeEmail(eid, at, wake);
   }
 
+  // A picker left open across a boundary (e.g. "Later today" at 17:59
+  // opened, clicked at 18:01) holds a wake time that has since passed.
+  // Such a click recomputes the options and keeps the picker open
+  // instead of committing the stale time.
+  function commitQuick(at: Date): void {
+    if (at.getTime() <= Date.now()) {
+      optionsEpoch += 1;
+      return;
+    }
+    commit(at);
+  }
+
   function commitCustom(): void {
     if (!custom) return;
     const d = new Date(custom);
@@ -91,7 +105,7 @@
     <ul class="quick-list" role="listbox" aria-label={t('mail.snooze.quickOptions')}>
       {#each options as o (o.label)}
         <li>
-          <button type="button" onclick={() => commit(o.at)}>
+          <button type="button" onclick={() => commitQuick(o.at)}>
             <span class="label">{t(o.key)}</span>
             <span class="when">{formatWakeTime(o.at)}</span>
           </button>

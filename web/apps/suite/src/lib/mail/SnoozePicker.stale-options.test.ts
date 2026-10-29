@@ -69,4 +69,29 @@ describe('SnoozePicker quick options track the current time', () => {
     const at = snoozeEmail.mock.calls[0]![1] as Date;
     expect(at.getTime()).toBe(new Date(2026, 9, 31, 8, 0, 0, 0).getTime());
   });
+
+  it('refuses a quick option whose time passed while the picker stayed open', async () => {
+    vi.setSystemTime(new Date(2026, 9, 29, 10, 0, 0)); // Later today = 13:00
+    render(SnoozePicker);
+    snoozePicker.open('e1');
+    flushSync();
+    const laterToday = () =>
+      screen
+        .getAllByRole('button')
+        .filter((b) => b.closest('.quick-list'))
+        .find((b) => b.textContent?.includes('Later today'))!;
+
+    // Picker left open past 13:00; the stale click must not commit.
+    vi.setSystemTime(new Date(2026, 9, 29, 13, 1, 0));
+    laterToday().click();
+    flushSync();
+    expect(snoozeEmail).not.toHaveBeenCalled();
+    expect(snoozePicker.isOpen).toBe(true);
+
+    // The options were recomputed: Later today is now 16:00 and commits.
+    laterToday().click();
+    expect(snoozeEmail).toHaveBeenCalledTimes(1);
+    const at = snoozeEmail.mock.calls[0]![1] as Date;
+    expect(at.getTime()).toBe(new Date(2026, 9, 29, 16, 0, 0, 0).getTime());
+  });
 });
