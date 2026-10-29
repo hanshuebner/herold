@@ -855,7 +855,8 @@ func (ses *session) handleAPPEND(ctx context.Context, c *Command) error {
 		c.AppendItems[0].Spill = nil
 	}
 	flags := flagMaskFromNames(c.AppendFlags)
-	kw := keywordsFromNames(c.AppendFlags)
+	// APPEND cannot supply a snooze deadline, so "$snoozed" is not stored.
+	kw := withoutSnoozedKeyword(keywordsFromNames(c.AppendFlags))
 	now := ses.s.clk.Now()
 	internal := c.AppendInternal
 	if internal.IsZero() {

@@ -88,9 +88,12 @@ func (ses *session) handleMOVE(ctx context.Context, c *Command) error {
 		// reference is preserved so the underlying bytes are not
 		// duplicated; only the metadata row is new.
 		copyMsg := store.Message{
-			PrincipalID:  ses.pid,
-			Flags:        m.Flags,
-			Keywords:     m.Keywords,
+			PrincipalID: ses.pid,
+			Flags:       m.Flags,
+			// InsertMessage falls back to these when the membership names
+			// none, so the reminder keyword stays out of them; MOVE sets
+			// it on the membership together with its deadline.
+			Keywords:     withoutSnoozedKeyword(m.Keywords),
 			InternalDate: m.InternalDate,
 			ReceivedAt:   m.ReceivedAt,
 			Size:         m.Size,
@@ -107,7 +110,7 @@ func (ses *session) handleMOVE(ctx context.Context, c *Command) error {
 			// replaces the source's Blob reference, not the copy's.
 			InternalizePending: m.InternalizePending,
 		}
-		uid, _, err := ses.s.store.Meta().InsertMessage(ctx, copyMsg, []store.MessageMailbox{{MailboxID: dest.ID, Flags: m.Flags, Keywords: m.Keywords}})
+		uid, _, err := ses.s.store.Meta().InsertMessage(ctx, copyMsg, []store.MessageMailbox{ses.copyTarget(ctx, m, srcMailboxID, dest, true)})
 		if err != nil {
 			return ses.resp.taggedNO(c.Tag, "", "move failed")
 		}
@@ -172,9 +175,12 @@ func (ses *session) handleCOPY(ctx context.Context, c *Command) error {
 		}
 		m := srcMsgs[seq-1]
 		copyMsg := store.Message{
-			PrincipalID:  ses.pid,
-			Flags:        m.Flags,
-			Keywords:     m.Keywords,
+			PrincipalID: ses.pid,
+			Flags:       m.Flags,
+			// InsertMessage falls back to these when the membership names
+			// none, so the reminder keyword stays out of them; MOVE sets
+			// it on the membership together with its deadline.
+			Keywords:     withoutSnoozedKeyword(m.Keywords),
 			InternalDate: m.InternalDate,
 			ReceivedAt:   m.ReceivedAt,
 			Size:         m.Size,
@@ -191,7 +197,7 @@ func (ses *session) handleCOPY(ctx context.Context, c *Command) error {
 			// replaces the source's Blob reference, not the copy's.
 			InternalizePending: m.InternalizePending,
 		}
-		uid, _, err := ses.s.store.Meta().InsertMessage(ctx, copyMsg, []store.MessageMailbox{{MailboxID: dest.ID, Flags: m.Flags, Keywords: m.Keywords}})
+		uid, _, err := ses.s.store.Meta().InsertMessage(ctx, copyMsg, []store.MessageMailbox{ses.copyTarget(ctx, m, m.MailboxID, dest, false)})
 		if err != nil {
 			return ses.resp.taggedNO(c.Tag, "", "copy failed")
 		}
@@ -324,6 +330,7 @@ func (ses *session) applyMultiAppend(ctx context.Context, c *Command, mb store.M
 		if internal.IsZero() {
 			internal = now
 		}
+		kw = withoutSnoozedKeyword(kw)
 		msg := store.Message{
 			PrincipalID:  ses.pid,
 			Flags:        flags,
