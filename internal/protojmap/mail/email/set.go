@@ -451,6 +451,9 @@ func (h *handlerSet) createEmail(
 				Description: "snoozedUntil: " + perr.Error(),
 			}, nil
 		}
+		if serr := h.snoozeTimeInFuture(t); serr != nil {
+			return 0, jmapEmail{}, serr, nil
+		}
 		tu := t.UTC()
 		snoozedUntil = &tu
 	}
@@ -1077,6 +1080,26 @@ func (h *handlerSet) resolveInboxMailbox(ctx context.Context, pid store.Principa
 	return &id, nil
 }
 
+// snoozeClockSkewTolerance is how far in the past a snoozedUntil may lie
+// relative to the server clock and still be accepted, so a value a
+// correct client computed "just now" survives clock skew and transit.
+const snoozeClockSkewTolerance = 10 * time.Second
+
+// snoozeTimeInFuture returns an invalidProperties setError when t is not
+// in the future (beyond the skew tolerance). A reminder with a past wake
+// time would be released by the wake worker within a minute, silently
+// turning the snooze into a no-op (issue #548).
+func (h *handlerSet) snoozeTimeInFuture(t time.Time) *setError {
+	if t.After(h.clk.Now().Add(-snoozeClockSkewTolerance)) {
+		return nil
+	}
+	return &setError{
+		Type:        "invalidProperties",
+		Properties:  []string{"snoozedUntil"},
+		Description: "snoozedUntil must be in the future",
+	}
+}
+
 // decodeSnoozeIntent inspects the raw patch object for snoozedUntil and
 // snoozeWakeMailboxId (issue #274). Returns a setError for a malformed
 // date, an unparseable/foreign snoozeWakeMailboxId, or a
@@ -1115,6 +1138,9 @@ func (h *handlerSet) decodeSnoozeIntent(
 				Properties:  []string{"snoozedUntil"},
 				Description: "snoozedUntil: " + err.Error(),
 			}, nil
+		}
+		if serr := h.snoozeTimeInFuture(t); serr != nil {
+			return snoozeAction{}, serr, nil
 		}
 		act = snoozeAction{kind: snoozeSet, when: t.UTC()}
 	}
@@ -1336,6 +1362,64 @@ func (h *handlerSet) applyMailboxDiff(
 	m store.Message,
 	currentIDs, desiredIDs map[store.MailboxID]struct{},
 ) (*setError, error) {
+	serr, err := h.applyMailboxMemberships(ctx, callerPID, ownerPID, m, currentIDs, desiredIDs)
+	if serr != nil || err != nil {
+		return serr, err
+	}
+	if err := h.consolidateSnooze(ctx, m.ID); err != nil {
+		return nil, fmt.Errorf("email: consolidate snooze: %w", err)
+	}
+	return nil, nil
+}
+
+// consolidateSnooze keeps an active reminder on the message's canonical
+// (lowest mailbox_id) membership, the row Email/get and the unscoped
+// Email/query read keywords from. A move into a mailbox whose id is
+// above another membership's, or a membership added with a lower id,
+// would otherwise leave the reminder on a row those reads never see, and
+// the message would vanish from the Snoozed view (issue #548).
+func (h *handlerSet) consolidateSnooze(ctx context.Context, id store.MessageID) error {
+	m, err := h.store.Meta().GetMessage(ctx, id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	if len(m.Mailboxes) < 2 {
+		return nil
+	}
+	canonical := m.Mailboxes[0]
+	for _, mm := range m.Mailboxes {
+		if mm.MailboxID < canonical.MailboxID {
+			canonical = mm
+		}
+	}
+	if canonical.SnoozedUntil != nil {
+		return nil
+	}
+	for _, mm := range m.Mailboxes {
+		if mm.MailboxID == canonical.MailboxID || mm.SnoozedUntil == nil {
+			continue
+		}
+		until := *mm.SnoozedUntil
+		if _, err := h.store.Meta().SetSnooze(ctx, id, canonical.MailboxID, &until, mm.WakeMailboxID); err != nil {
+			return err
+		}
+		if _, err := h.store.Meta().SetSnooze(ctx, id, mm.MailboxID, nil, nil); err != nil {
+			return err
+		}
+		return nil
+	}
+	return nil
+}
+
+func (h *handlerSet) applyMailboxMemberships(
+	ctx context.Context,
+	callerPID, ownerPID store.PrincipalID,
+	m store.Message,
+	currentIDs, desiredIDs map[store.MailboxID]struct{},
+) (*setError, error) {
 	// Compute the diff sets up front so we can pick the right primitive
 	// for the common move-to case versus partial-overlap edits.
 	var addIDs []store.MailboxID
@@ -1425,7 +1509,10 @@ func (h *handlerSet) applyMailboxDiff(
 			src = m.Mailboxes[0]
 		}
 		sourceFlags = src.Flags
-		sourceKW = append(sourceKW, src.Keywords...)
+		// "$snoozed" belongs to the membership that holds the deadline;
+		// a copy carrying the keyword without snoozedUntil would break
+		// the pair (issue #548).
+		sourceKW = removeString(append(sourceKW, src.Keywords...), "$snoozed")
 	}
 
 	// Add memberships first so a transient "no membership" state never
