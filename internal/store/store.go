@@ -255,7 +255,10 @@ type Metadata interface {
 	// and blob refcount are cleaned up in the same transaction. Returns
 	// ErrNotFound if the row is absent. Does NOT return ErrNotFound when
 	// the message row itself still exists in other mailboxes — only the
-	// membership is gone.
+	// membership is gone. When the removed membership held a snooze
+	// reminder and other memberships remain, the keyword, deadline and
+	// wake destination pass to the new canonical (lowest mailbox_id)
+	// membership in the same transaction.
 	RemoveMessageFromMailbox(ctx context.Context, msgID MessageID, mailboxID MailboxID) error
 
 	// UpdateMessageFlags applies flagAdd and flagClear (bitfield deltas)
@@ -2174,6 +2177,18 @@ type Metadata interface {
 	// ModSeq. Returns ErrNotFound when the (msgID, mailboxID)
 	// membership is gone.
 	SetSnooze(ctx context.Context, msgID MessageID, mailboxID MailboxID, when *time.Time, wake *MailboxID) (ModSeq, error)
+
+	// ConsolidateSnooze keeps an active reminder on the message's
+	// canonical (lowest mailbox_id) membership, in one transaction: when
+	// the canonical membership holds no reminder and another membership
+	// does, the "$snoozed" keyword, deadline and wake destination move
+	// to the canonical one and clear on the other, so a concurrent wake
+	// sweep sees exactly one holder. A message with fewer than two
+	// memberships, no reminder, or a reminder already on the canonical
+	// membership is left untouched; an absent message is a no-op.
+	// RemoveMessageFromMailbox applies the same hand-over when it
+	// removes the membership that holds the reminder.
+	ConsolidateSnooze(ctx context.Context, msgID MessageID) error
 
 	// ReleaseSnooze clears a due snooze on the (msgID, mailboxID)
 	// membership exactly like SetSnooze(msgID, mailboxID, nil, nil) --

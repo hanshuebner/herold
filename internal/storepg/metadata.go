@@ -2458,6 +2458,14 @@ func (m *metadata) RemoveMessageFromMailbox(ctx context.Context, msgID store.Mes
 			`SELECT principal_id FROM messages WHERE id = $1`, int64(msgID)).Scan(&pid); err != nil {
 			return mapErr(err)
 		}
+		// A reminder held by the departing membership passes to a
+		// remaining one below (issue #553).
+		var heldUs, heldWake *int64
+		if err := tx.QueryRow(ctx,
+			`SELECT snoozed_until_us, wake_mailbox_id FROM message_mailboxes WHERE message_id = $1 AND mailbox_id = $2`,
+			int64(msgID), int64(mailboxID)).Scan(&heldUs, &heldWake); err != nil {
+			return mapErr(err)
+		}
 		// Check if we're removing from Trash — if so, replay pre-trash mailboxes.
 		var attrs int64
 		if err := tx.QueryRow(ctx, `SELECT attributes FROM mailboxes WHERE id = $1`,
@@ -2484,6 +2492,17 @@ func (m *metadata) RemoveMessageFromMailbox(ctx context.Context, msgID store.Mes
 		if err := tx.QueryRow(ctx,
 			`SELECT COUNT(*) FROM message_mailboxes WHERE message_id = $1`, int64(msgID)).Scan(&remaining); err != nil {
 			return mapErr(err)
+		}
+		if remaining > 0 && heldUs != nil {
+			until := fromMicros(*heldUs)
+			var wake *store.MailboxID
+			if heldWake != nil {
+				w := store.MailboxID(*heldWake)
+				wake = &w
+			}
+			if err := transferSnoozeTx(ctx, tx, now, msgID, &until, wake); err != nil {
+				return err
+			}
 		}
 		if remaining == 0 {
 			var size int64
@@ -4624,6 +4643,22 @@ func (m *metadata) SetSnooze(ctx context.Context, msgID store.MessageID, mailbox
 	now := m.s.clock.Now().UTC()
 	var modseq store.ModSeq
 	err := m.runTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		modseq, err = setSnoozeTx(ctx, tx, now, msgID, mailboxID, when, wake)
+		return err
+	})
+	if err != nil {
+		return 0, err
+	}
+	return modseq, nil
+}
+
+// setSnoozeTx is SetSnooze inside a caller-owned transaction, so
+// RemoveMessageFromMailbox and ConsolidateSnooze move a reminder in the
+// same transaction as the membership change (issue #553).
+func setSnoozeTx(ctx context.Context, tx pgx.Tx, now time.Time, msgID store.MessageID, mailboxID store.MailboxID, when *time.Time, wake *store.MailboxID) (store.ModSeq, error) {
+	var modseq store.ModSeq
+	err := func() error {
 		var curKeywords string
 		err := tx.QueryRow(ctx, `
 			SELECT keywords_csv
@@ -4692,11 +4727,87 @@ func (m *metadata) SetSnooze(ctx context.Context, msgID store.MessageID, mailbox
 		}
 		return appendStateChange(ctx, tx, store.PrincipalID(pid),
 			store.EntityKindEmail, uint64(msgID), uint64(mailboxID), store.ChangeOpUpdated, now)
-	})
+	}()
 	if err != nil {
 		return 0, err
 	}
 	return modseq, nil
+}
+
+// transferSnoozeTx moves the reminder of msgID onto its canonical
+// (lowest mailbox_id) membership inside tx. until/wake describe the
+// reminder to place when no remaining membership holds one (a removed
+// holder's pair); when a membership other than the canonical one holds
+// the pair, that pair is moved instead. A canonical membership that
+// already holds a reminder, or a message without one, is left alone.
+func transferSnoozeTx(ctx context.Context, tx pgx.Tx, now time.Time, msgID store.MessageID, until *time.Time, wake *store.MailboxID) error {
+	rows, err := tx.Query(ctx, `
+		SELECT mailbox_id, snoozed_until_us, wake_mailbox_id
+		  FROM message_mailboxes WHERE message_id = $1 ORDER BY mailbox_id`, int64(msgID))
+	if err != nil {
+		return mapErr(err)
+	}
+	type row struct {
+		mb    store.MailboxID
+		until *time.Time
+		wake  *store.MailboxID
+	}
+	var mms []row
+	for rows.Next() {
+		var mb int64
+		var u, w *int64
+		if err := rows.Scan(&mb, &u, &w); err != nil {
+			rows.Close()
+			return mapErr(err)
+		}
+		r := row{mb: store.MailboxID(mb)}
+		if u != nil {
+			t := fromMicros(*u)
+			r.until = &t
+		}
+		if w != nil {
+			id := store.MailboxID(*w)
+			r.wake = &id
+		}
+		mms = append(mms, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return mapErr(err)
+	}
+	if len(mms) == 0 || mms[0].until != nil {
+		return nil
+	}
+	var holder *row
+	for i := 1; i < len(mms); i++ {
+		if mms[i].until != nil {
+			holder = &mms[i]
+			break
+		}
+	}
+	if holder != nil {
+		until, wake = holder.until, holder.wake
+	}
+	if until == nil {
+		return nil
+	}
+	if _, err := setSnoozeTx(ctx, tx, now, msgID, mms[0].mb, until, wake); err != nil {
+		return err
+	}
+	if holder != nil {
+		if _, err := setSnoozeTx(ctx, tx, now, msgID, holder.mb, nil, nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ConsolidateSnooze implements store.Metadata.ConsolidateSnooze.
+func (m *metadata) ConsolidateSnooze(ctx context.Context, msgID store.MessageID) error {
+	now := m.s.clock.Now().UTC()
+	return m.runTx(ctx, func(tx pgx.Tx) error {
+		return transferSnoozeTx(ctx, tx, now, msgID, nil, nil)
+	})
 }
 
 // ReleaseSnooze clears a due snooze and records the wake marker. See

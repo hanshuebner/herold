@@ -1379,39 +1379,7 @@ func (h *handlerSet) applyMailboxDiff(
 // would otherwise leave the reminder on a row those reads never see, and
 // the message would vanish from the Snoozed view (issue #548).
 func (h *handlerSet) consolidateSnooze(ctx context.Context, id store.MessageID) error {
-	m, err := h.store.Meta().GetMessage(ctx, id)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return nil
-		}
-		return err
-	}
-	if len(m.Mailboxes) < 2 {
-		return nil
-	}
-	canonical := m.Mailboxes[0]
-	for _, mm := range m.Mailboxes {
-		if mm.MailboxID < canonical.MailboxID {
-			canonical = mm
-		}
-	}
-	if canonical.SnoozedUntil != nil {
-		return nil
-	}
-	for _, mm := range m.Mailboxes {
-		if mm.MailboxID == canonical.MailboxID || mm.SnoozedUntil == nil {
-			continue
-		}
-		until := *mm.SnoozedUntil
-		if _, err := h.store.Meta().SetSnooze(ctx, id, canonical.MailboxID, &until, mm.WakeMailboxID); err != nil {
-			return err
-		}
-		if _, err := h.store.Meta().SetSnooze(ctx, id, mm.MailboxID, nil, nil); err != nil {
-			return err
-		}
-		return nil
-	}
-	return nil
+	return h.store.Meta().ConsolidateSnooze(ctx, id)
 }
 
 func (h *handlerSet) applyMailboxMemberships(
