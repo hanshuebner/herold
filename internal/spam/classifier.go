@@ -8,6 +8,8 @@ import (
 	"html"
 	"log/slog"
 	"net/mail"
+	"net/url"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -1400,6 +1402,7 @@ func truncateUTF8(s string, n int) string {
 // classifier prompt tolerates noise; a pure-Go dependency-free stripper
 // is preferable to pulling in an HTML parser here.
 func stripHTMLTags(in string) string {
+	in = annotateAnchorHosts(in)
 	var b strings.Builder
 	b.Grow(len(in))
 	skip := 0
@@ -1420,4 +1423,31 @@ func stripHTMLTags(in string) string {
 		}
 	}
 	return b.String()
+}
+
+// anchorRE matches an HTML anchor with an href and captures the href
+// value (double-quoted, single-quoted or bare) and the closing tag.
+var anchorRE = regexp.MustCompile(`(?is)<a\s[^>]*?href\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>"']+))[^>]*>(.*?)</a\s*>`)
+
+// annotateAnchorHosts rewrites each web anchor so that, once the tags
+// are stripped, the anchor text is followed by " [link: host]". The
+// destination of a call-to-action button is evidence the classifier
+// needs (a "download the file" button that leads somewhere unrelated to
+// the sender is the signature of a document lure) and the tag stripper
+// would otherwise discard it with the href attribute. Only the host is
+// kept so tracking-heavy URLs do not consume the excerpt budget; anchors
+// that are not http(s) (mailto:, fragments) are left untouched.
+func annotateAnchorHosts(in string) string {
+	if !strings.Contains(in, "<") {
+		return in
+	}
+	return anchorRE.ReplaceAllStringFunc(in, func(m string) string {
+		sub := anchorRE.FindStringSubmatch(m)
+		href := sub[1] + sub[2] + sub[3]
+		u, err := url.Parse(strings.TrimSpace(html.UnescapeString(href)))
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+			return m
+		}
+		return m + " [link: " + strings.ToLower(u.Hostname()) + "] "
+	})
 }
