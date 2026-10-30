@@ -1,6 +1,7 @@
 package spam
 
 import (
+	"math"
 	"net"
 	"net/url"
 	"regexp"
@@ -20,13 +21,10 @@ import (
 // sentinel removed, so only stripHTMLTags can produce one.
 const linkSentinel = "\x01"
 
-// maxLinkMarkers bounds how many "[link: host]" markers one HTML body
-// contributes, so a message made of thousands of anchors cannot expand
+// maxLinkMarkers bounds how many distinct hosts get a "[link: host]"
+// marker in one HTML body (each host is marked once), so a message made of thousands of anchors cannot expand
 // the text beyond what the excerpt cap then truncates.
 const maxLinkMarkers = 20
-
-// maxMismatchLinks bounds how many anchors LinkHostMismatch inspects.
-const maxMismatchLinks = 500
 
 // maxLinkHostLen is the longest host a marker names (the DNS limit);
 // longer values are cut so one anchor cannot spend the excerpt budget.
@@ -88,50 +86,95 @@ func stripHTMLTags(in string) string {
 	var b strings.Builder
 	b.Grow(len(in))
 	base := documentBase(in)
-	markers := 0
-	z := xhtml.NewTokenizer(strings.NewReader(in))
+	seenHosts := map[string]bool{}
+	sc := linkScanner{z: xhtml.NewTokenizer(strings.NewReader(in))}
 	for {
-		switch z.Next() {
+		tt := sc.z.Next()
+		switch tt {
 		case xhtml.ErrorToken:
 			return b.String()
 		case xhtml.TextToken:
-			b.WriteString(stripLinkSentinel(string(z.Raw())))
-		case xhtml.StartTagToken, xhtml.SelfClosingTagToken:
-			if markers >= maxLinkMarkers {
+			b.WriteString(stripLinkSentinel(string(sc.z.Raw())))
+		case xhtml.StartTagToken, xhtml.SelfClosingTagToken, xhtml.EndTagToken:
+			href, ok := sc.href(tt)
+			if !ok || len(seenHosts) >= maxLinkMarkers {
 				continue
 			}
-			if href, ok := anchorHref(z); ok {
-				if host := resolveLinkHost(href, base); host != "" {
-					b.WriteString(" " + linkSentinel + host + linkSentinel + " ")
-					markers++
-				}
+			if host := resolveLinkHost(href, base); host != "" && !seenHosts[host] {
+				seenHosts[host] = true
+				b.WriteString(" " + linkSentinel + host + linkSentinel + " ")
 			}
 		}
 	}
 }
 
-// anchorHref returns the first href attribute of the start tag the
-// tokenizer is positioned on when that tag is <a>.
-func anchorHref(z *xhtml.Tokenizer) (string, bool) {
-	name, hasAttr := z.TagName()
-	if string(name) != "a" || !hasAttr {
-		return "", false
-	}
-	return tagAttr(z, "href")
+// linkScanner walks an HTML token stream and reports the href of each
+// element a browser follows as a link: <a href> and <area href> in HTML,
+// and <a href> or <a xlink:href> inside <svg>. <noscript> content is
+// parsed as markup, as a mail client without scripting renders it.
+type linkScanner struct {
+	z   *xhtml.Tokenizer
+	svg int
 }
 
-// tagAttr returns the first attribute named key (browsers ignore later
-// duplicates) of the tag the tokenizer is positioned on.
-func tagAttr(z *xhtml.Tokenizer, key string) (string, bool) {
-	for {
-		k, v, more := z.TagAttr()
-		if string(k) == key {
-			return string(v), true
+// href inspects the tag token just returned by z.Next and returns its
+// link target, if it has one.
+func (s *linkScanner) href(tt xhtml.TokenType) (string, bool) {
+	name, hasAttr := s.z.TagName()
+	switch tt {
+	case xhtml.EndTagToken:
+		if string(name) == "svg" && s.svg > 0 {
+			s.svg--
 		}
-		if !more {
-			return "", false
+		return "", false
+	case xhtml.StartTagToken:
+		switch string(name) {
+		case "noscript":
+			s.z.NextIsNotRawText()
+		case "svg":
+			s.svg++
 		}
 	}
+	if !hasAttr {
+		return "", false
+	}
+	switch string(name) {
+	case "a":
+		if s.svg > 0 {
+			return tagAttr(s.z, "href", "xlink:href")
+		}
+		return tagAttr(s.z, "href")
+	case "area":
+		if s.svg == 0 {
+			return tagAttr(s.z, "href")
+		}
+	}
+	return "", false
+}
+
+// tagAttr returns the value of the first of keys (in the order given)
+// present on the tag the tokenizer is positioned on; browsers ignore
+// later duplicates of an attribute.
+func tagAttr(z *xhtml.Tokenizer, keys ...string) (string, bool) {
+	found := make([]string, len(keys))
+	have := make([]bool, len(keys))
+	for {
+		k, v, more := z.TagAttr()
+		for i, key := range keys {
+			if string(k) == key && !have[i] {
+				found[i], have[i] = string(v), true
+			}
+		}
+		if !more {
+			break
+		}
+	}
+	for i := range keys {
+		if have[i] {
+			return found[i], true
+		}
+	}
+	return "", false
 }
 
 // linkBase is the document base URL a <base href> establishes. web is
@@ -157,6 +200,9 @@ func documentBase(in string) *linkBase {
 			return nil
 		case xhtml.StartTagToken, xhtml.SelfClosingTagToken:
 			name, hasAttr := z.TagName()
+			if string(name) == "noscript" {
+				z.NextIsNotRawText()
+			}
 			if string(name) != "base" || !hasAttr {
 				continue
 			}
@@ -190,19 +236,20 @@ func parseBase(val string) *linkBase {
 	return nil
 }
 
-// anchorLinkHosts calls visit with the destination host of every <a>
-// whose href resolves to an http(s) host, until visit returns false or
-// limit anchors have been seen.
+// anchorLinkHosts calls visit with the destination host of every link
+// element whose href resolves to an http(s) host, until visit returns
+// false or limit links have been seen.
 func anchorLinkHosts(in string, limit int, visit func(host string) bool) {
 	base := documentBase(in)
-	z := xhtml.NewTokenizer(strings.NewReader(in))
+	sc := linkScanner{z: xhtml.NewTokenizer(strings.NewReader(in))}
 	seen := 0
 	for seen < limit {
-		switch z.Next() {
+		tt := sc.z.Next()
+		switch tt {
 		case xhtml.ErrorToken:
 			return
-		case xhtml.StartTagToken, xhtml.SelfClosingTagToken:
-			href, ok := anchorHref(z)
+		case xhtml.StartTagToken, xhtml.SelfClosingTagToken, xhtml.EndTagToken:
+			href, ok := sc.href(tt)
 			if !ok {
 				continue
 			}
@@ -358,15 +405,13 @@ func LinkHostMismatch(root mailparse.Part, fromDomain string) bool {
 		return false
 	}
 	mismatch := false
-	budget := maxMismatchLinks
 	var walk func(p mailparse.Part)
 	walk = func(p mailparse.Part) {
-		if mismatch || budget <= 0 {
+		if mismatch {
 			return
 		}
 		if strings.HasPrefix(strings.ToLower(p.ContentType), "text/html") {
-			anchorLinkHosts(p.Text, budget, func(host string) bool {
-				budget--
+			anchorLinkHosts(p.Text, math.MaxInt, func(host string) bool {
 				if !domainsRelated(host, from) {
 					mismatch = true
 					return false

@@ -1,6 +1,7 @@
 package spam
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -84,10 +85,14 @@ func TestStripHTMLTags_LinkMarker(t *testing.T) {
 	}
 }
 
-// TestStripHTMLTags_LinkMarkerCap: thousands of anchors contribute at
-// most maxLinkMarkers markers.
+// TestStripHTMLTags_LinkMarkerCap: thousands of anchors on distinct hosts
+// contribute at most maxLinkMarkers markers.
 func TestStripHTMLTags_LinkMarkerCap(t *testing.T) {
-	in := strings.Repeat(`<a href="https://h.example/">x</a>`, 5000)
+	var sb strings.Builder
+	for i := 0; i < 5000; i++ {
+		fmt.Fprintf(&sb, `<a href="https://h%d.example/">x</a>`, i)
+	}
+	in := sb.String()
 	got := normalizeExcerpt(stripHTMLTags(in))
 	if n := strings.Count(got, "[link:"); n != maxLinkMarkers {
 		t.Fatalf("markers = %d, want %d", n, maxLinkMarkers)
