@@ -1035,6 +1035,16 @@ type Request struct {
 	// rather than relying on the model to notice an address missing from
 	// own_addresses on its own.
 	RecipientNotOwn bool `json:"recipient_not_own,omitempty"`
+	// LinkHostMismatch is true when at least one web link in the
+	// message's HTML (resolved the way a browser resolves the href,
+	// including a <base href>) leads to a host whose registrable domain
+	// differs from the From domain (re #552). Set by BuildRequest. It is
+	// a fact herold has determined, sent the way RecipientNotOwn is, and
+	// an input to the classifier's judgement: legitimate mail often links
+	// to other organisations, so it is not a decisive signal. Omitted
+	// when false, when the message has no web links, or when the From
+	// domain is unknown.
+	LinkHostMismatch bool `json:"link_host_mismatch,omitempty"`
 	// OwnAddressesComplete records whether OwnAddresses is known complete
 	// for this message (re #396, third round, OwnAddressInfo.Complete):
 	// true for every SMTP-delivery and spam-reclassify/apply-verdicts
@@ -1139,7 +1149,22 @@ func BuildRequest(msg mailparse.Message, auth *mailauth.AuthResults) Request {
 		req.AuthResults = stripHeroldSpamToken(auth.Raw)
 	}
 	req.AuthSummary = authSummary(req.DMARC, req.FromDomain)
+	fromDomain := req.FromDomain
+	if fromDomain == "" && len(msg.Envelope.From) > 0 {
+		fromDomain = addressDomain(msg.Envelope.From[0].Address)
+	}
+	req.LinkHostMismatch = LinkHostMismatch(msg.Body, fromDomain)
 	return req
+}
+
+// addressDomain returns the lower-cased domain part of an addr-spec, or
+// "" when it has none.
+func addressDomain(addr string) string {
+	at := strings.LastIndexByte(addr, '@')
+	if at < 0 {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(addr[at+1:]))
 }
 
 // authSummary renders the DMARC outcome as a sentence a classifier
@@ -1160,10 +1185,10 @@ func authSummary(dmarc, fromDomain string) string {
 	switch dmarc {
 	case "pass":
 		return fmt.Sprintf(
-			"Sender identity is verified: DMARC-aligned pass for %s. "+
-				"This is herold's own confirmed authentication result, not a claim to re-derive from the message content -- "+
-				"judge this message by its content, not by re-litigating its identity.",
-			domain)
+			"DMARC-aligned pass for %s: herold verified that this message was sent by the %s domain. "+
+				"This is herold's own confirmed authentication result. It says nothing about whether that sender is legitimate "+
+				"or known to the recipient, so a pass on its own is not a ham signal; judge the message by its content and its links.",
+			domain, domain)
 	case "fail":
 		return fmt.Sprintf(
 			"Sender identity failed authentication: DMARC fail for %s. "+

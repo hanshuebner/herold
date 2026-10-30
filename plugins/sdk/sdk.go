@@ -273,6 +273,13 @@ type SpamClassifyParams struct {
 	// -- the server's decisive-signal resolution then does not depend on
 	// the model noticing the fact itself.
 	RecipientNotOwn bool `json:"recipient_not_own,omitempty"`
+	// LinkHostMismatch is true when at least one web link in the
+	// message's HTML leads to a host whose registrable domain differs
+	// from the From domain (re #552): mirrors internal/spam.Request
+	// field-for-field. A fact herold has determined, forwarded to the
+	// model as an input to its judgement; it is not a decisive signal and
+	// a plugin must not turn it into a verdict by itself.
+	LinkHostMismatch bool `json:"link_host_mismatch,omitempty"`
 	// DeliveryStatus carries the facts the server extracted when the
 	// message is a multipart/report; report-type=delivery-status report
 	// (RFC 3464, re #513): the enclosed original's curated headers and
