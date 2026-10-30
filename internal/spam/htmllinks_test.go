@@ -88,7 +88,7 @@ func TestStripHTMLTags_LinkMarker(t *testing.T) {
 // most maxLinkMarkers markers.
 func TestStripHTMLTags_LinkMarkerCap(t *testing.T) {
 	in := strings.Repeat(`<a href="https://h.example/">x</a>`, 5000)
-	got := stripHTMLTags(in)
+	got := normalizeExcerpt(stripHTMLTags(in))
 	if n := strings.Count(got, "[link:"); n != maxLinkMarkers {
 		t.Fatalf("markers = %d, want %d", n, maxLinkMarkers)
 	}

@@ -8,12 +8,9 @@ import (
 	"html"
 	"log/slog"
 	"net/mail"
-	"net/url"
 	"strings"
 	"time"
 	"unicode/utf8"
-
-	xhtml "golang.org/x/net/html"
 
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/mailauth"
@@ -1289,18 +1286,20 @@ const accumulateMultiplier = 4
 // boundary.
 func collectTextBody(p mailparse.Part, capBytes int) string {
 	var b strings.Builder
-	collectTextBodyInto(p, &b, capBytes*accumulateMultiplier)
-	s := normalizeExcerpt(b.String())
+	sawHTML := false
+	collectTextBodyInto(p, &b, capBytes*accumulateMultiplier, &sawHTML)
+	s := renderExcerpt(b.String(), sawHTML)
 	return truncateUTF8(s, capBytes)
 }
 
-func collectTextBodyInto(p mailparse.Part, b *strings.Builder, limit int) {
+func collectTextBodyInto(p mailparse.Part, b *strings.Builder, limit int, sawHTML *bool) {
 	if b.Len() >= limit {
 		return
 	}
 	ct := strings.ToLower(p.ContentType)
 	if strings.HasPrefix(ct, "multipart/alternative") {
-		if t := alternativeText(p); t != "" {
+		if t, isHTML := alternativeText(p); t != "" {
+			*sawHTML = *sawHTML || isHTML
 			b.WriteString(t)
 			b.WriteByte('\n')
 		}
@@ -1308,17 +1307,18 @@ func collectTextBodyInto(p mailparse.Part, b *strings.Builder, limit int) {
 	}
 	switch {
 	case strings.HasPrefix(ct, "text/html"):
+		*sawHTML = true
 		b.WriteString(stripHTMLTags(p.Text))
 		b.WriteByte('\n')
 	case strings.HasPrefix(ct, "text/"):
-		b.WriteString(p.Text)
+		b.WriteString(stripLinkSentinel(p.Text))
 		b.WriteByte('\n')
 	}
 	for _, c := range p.Children {
 		if b.Len() >= limit {
 			return
 		}
-		collectTextBodyInto(c, b, limit)
+		collectTextBodyInto(c, b, limit, sawHTML)
 	}
 }
 
@@ -1327,14 +1327,14 @@ func collectTextBodyInto(p mailparse.Part, b *strings.Builder, limit int) {
 // found anywhere under it, or -- when there is none -- the tag-stripped
 // first text/html leaf. Mirrors how a mail client picks one alternative
 // to render rather than showing both.
-func alternativeText(p mailparse.Part) string {
+func alternativeText(p mailparse.Part) (text string, isHTML bool) {
 	if t := firstLeafText(p, "text/plain"); t != "" {
-		return t
+		return stripLinkSentinel(t), false
 	}
 	if t := firstLeafText(p, "text/html"); t != "" {
-		return stripHTMLTags(t)
+		return stripHTMLTags(t), true
 	}
-	return ""
+	return "", false
 }
 
 // firstLeafText walks the part tree depth-first and returns the Text of
@@ -1355,15 +1355,40 @@ func firstLeafText(p mailparse.Part, ctPrefix string) string {
 	return ""
 }
 
-// normalizeExcerpt decodes HTML entities left over from stripHTMLTags and
-// collapses whitespace: each line is trimmed and its internal whitespace
-// runs collapsed to single spaces, leading/trailing blank lines are
-// dropped, and runs of blank lines collapse to at most one -- so the
-// excerpt's byte budget is spent on content, not layout whitespace
-// (re #299).
+// normalizeExcerpt renders text produced by stripHTMLTags into the
+// excerpt form; see renderExcerpt.
 func normalizeExcerpt(s string) string {
-	s = html.UnescapeString(s)
-	lines := strings.Split(s, "\n")
+	return renderExcerpt(s, true)
+}
+
+// renderExcerpt turns the accumulated body text into the classifier
+// excerpt. It decodes HTML entities and collapses whitespace: each line
+// is trimmed and its internal whitespace runs collapsed to single
+// spaces, leading/trailing blank lines are dropped, and runs of blank
+// lines collapse to at most one -- so the excerpt's byte budget is spent
+// on content, not layout whitespace (re #299).
+//
+// stripHTMLTags writes each anchor-host marker as linkSentinel host
+// linkSentinel. Only the segments between markers are message-derived
+// and entity-decoded; sentinels decoded out of them are dropped, so
+// content cannot produce a marker delimiter. When neutralise is set
+// (HTML contributed to the text), any "[link:" spelling left in the
+// decoded and joined text -- however it was split by entities, tags or
+// comments -- is rewritten to "(link:" before the markers are
+// rendered, so every "[link: host]" in the excerpt was written by
+// herold. Text without HTML is left as written.
+func renderExcerpt(s string, neutralise bool) string {
+	segs := strings.Split(s, linkSentinel)
+	var joined strings.Builder
+	joined.Grow(len(s))
+	for i, seg := range segs {
+		if i%2 == 1 && i < len(segs)-1 {
+			joined.WriteString(linkSentinel + seg + linkSentinel)
+			continue
+		}
+		joined.WriteString(stripLinkSentinel(html.UnescapeString(seg)))
+	}
+	lines := strings.Split(joined.String(), "\n")
 	out := make([]string, 0, len(lines))
 	blank := false
 	for _, line := range lines {
@@ -1382,7 +1407,11 @@ func normalizeExcerpt(s string) string {
 	for len(out) > 0 && out[len(out)-1] == "" {
 		out = out[:len(out)-1]
 	}
-	return strings.Join(out, "\n")
+	text := strings.Join(out, "\n")
+	if neutralise {
+		text = linkMarkerSpelling.ReplaceAllString(text, "(link:")
+	}
+	return renderLinkMarkers(text)
 }
 
 // truncateUTF8 returns the longest prefix of s that is at most n bytes
@@ -1397,98 +1426,4 @@ func truncateUTF8(s string, n int) string {
 		s = s[:len(s)-1]
 	}
 	return s
-}
-
-// maxLinkMarkers bounds how many "[link: host]" markers one HTML body
-// contributes, so a message made of thousands of anchors cannot expand
-// the text beyond what the excerpt cap then truncates.
-const maxLinkMarkers = 20
-
-// stripHTMLTags converts HTML to text for the classifier excerpt. It
-// tokenizes with golang.org/x/net/html, so quoted attribute values
-// (including a ">" inside one), upper-case tags, unclosed anchors and
-// comments are handled the way a browser handles them. Text tokens are
-// kept in their raw (entity-encoded) form; normalizeExcerpt decodes
-// entities once afterwards.
-//
-// The destination of a call-to-action button is evidence the classifier
-// needs (a "download the file" button leading somewhere unrelated to the
-// sender is the signature of a document lure), so each <a> start tag
-// whose href is a web link (http, https or protocol-relative, after
-// entity decoding) emits "[link: host] " ahead of the anchor text. Only
-// the host is kept so tracking-heavy URLs do not consume the excerpt
-// budget. Because the marker is written from the start tag it does not
-// depend on a closing </a>. Anchor text that itself contains "[link:"
-// has it rewritten to "(link:" so message content cannot forge a marker.
-func stripHTMLTags(in string) string {
-	var b strings.Builder
-	b.Grow(len(in))
-	z := xhtml.NewTokenizer(strings.NewReader(in))
-	markers := 0
-	for {
-		switch z.Next() {
-		case xhtml.ErrorToken:
-			return b.String()
-		case xhtml.TextToken:
-			b.WriteString(neutraliseLinkMarker(string(z.Raw())))
-		case xhtml.StartTagToken:
-			name, hasAttr := z.TagName()
-			if string(name) != "a" || !hasAttr || markers >= maxLinkMarkers {
-				continue
-			}
-			for {
-				key, val, more := z.TagAttr()
-				if string(key) == "href" {
-					if host := webLinkHost(string(val)); host != "" {
-						b.WriteString(" [link: " + host + "] ")
-						markers++
-					}
-					break
-				}
-				if !more {
-					break
-				}
-			}
-		}
-	}
-}
-
-// neutraliseLinkMarker rewrites any "[link:" in message-controlled text
-// (case-insensitively) so it cannot pass for a herold-written marker.
-func neutraliseLinkMarker(s string) string {
-	for {
-		i := strings.Index(strings.ToLower(s), "[link:")
-		if i < 0 {
-			return s
-		}
-		s = s[:i] + "(link:" + s[i+len("[link:"):]
-	}
-}
-
-// webLinkHost returns the lower-cased host of an http(s) or
-// protocol-relative href, or "" for anything else (mailto:, javascript:,
-// data:, fragments, relative paths, unparseable values). The tokenizer
-// has already decoded entities in val; surrounding whitespace and control
-// characters are ignored the way browsers do.
-func webLinkHost(val string) string {
-	val = strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f {
-			return -1
-		}
-		return r
-	}, strings.TrimSpace(val))
-	u, err := url.Parse(val)
-	if err != nil {
-		return ""
-	}
-	switch strings.ToLower(u.Scheme) {
-	case "http", "https":
-	case "":
-		if !strings.HasPrefix(val, "//") {
-			return ""
-		}
-	default:
-		return ""
-	}
-	return strings.ToLower(u.Hostname())
 }
