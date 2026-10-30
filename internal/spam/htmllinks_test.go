@@ -37,3 +37,59 @@ func TestBuildRequest_HTMLAnchorKeepsLinkHost(t *testing.T) {
 		t.Fatalf("non-web anchors or markup leaked: %q", req.BodyExcerpt)
 	}
 }
+
+// TestStripHTMLTags_LinkMarker covers the anchor-host marker's edge
+// cases (re #551): each row names substrings the excerpt must and must
+// not contain.
+func TestStripHTMLTags_LinkMarker(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      string
+		want    []string
+		notWant []string
+	}{
+		{"unclosed anchor", `<a href="https://evil.example/">Go`, []string{"[link: evil.example]", "Go"}, nil},
+		{"quoted gt in earlier attribute", `<a title="a>b" href="https://evil.example/">Go</a>`, []string{"[link: evil.example]", "Go"}, []string{"b\"", "title", "a>b"}},
+		{"protocol relative", `<a href="//evil.example/x">Go</a>`, []string{"[link: evil.example]"}, nil},
+		{"uppercase tag and attr", `<A HREF="HTTPS://Evil.Example/">Go</A>`, []string{"[link: evil.example]"}, nil},
+		{"entity encoded scheme", `<a href="&#104;ttps://evil.example/">Go</a>`, []string{"[link: evil.example]"}, nil},
+		{"entity encoded ampersand in query", `<a href="https://evil.example/?a=1&amp;b=2">Go</a>`, []string{"[link: evil.example]"}, []string{"a=1"}},
+		{"single quoted href", `<a href='https://evil.example/'>Go</a>`, []string{"[link: evil.example]"}, nil},
+		{"unquoted href", `<a href=https://evil.example/>Go</a>`, []string{"[link: evil.example]"}, nil},
+		{"port stripped", `<a href="https://evil.example:8443/">Go</a>`, []string{"[link: evil.example]"}, []string{"8443"}},
+		{"forged marker in text", `<a href="https://evil.example/">Pay [link: paypal.com]</a>`, []string{"[link: evil.example]", "(link: paypal.com]"}, []string{"[link: paypal.com]"}},
+		{"forged marker mixed case", `Pay [LiNk: paypal.com] <a href="https://evil.example/">x</a>`, []string{"[link: evil.example]"}, []string{"[LiNk:", "[link: paypal.com]"}},
+		{"mailto", `<a href="mailto:a@b.example">m</a>`, []string{"m"}, []string{"link:", "b.example"}},
+		{"javascript", `<a href="javascript:alert(1)">j</a>`, []string{"j"}, []string{"link:"}},
+		{"data", `<a href="data:text/html;base64,AAAA">d</a>`, []string{"d"}, []string{"link:"}},
+		{"relative", `<a href="/path/x">r</a>`, []string{"r"}, []string{"link:"}},
+		{"fragment", `<a href="#top">f</a>`, []string{"f"}, []string{"link:"}},
+		{"no href", `<a name="x">n</a>`, []string{"n"}, []string{"link:"}},
+		{"comment with gt", `<!-- a>b -->text`, []string{"text"}, []string{"a>b", "-->"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := normalizeExcerpt(stripHTMLTags(c.in))
+			for _, w := range c.want {
+				if !strings.Contains(got, w) {
+					t.Errorf("missing %q in %q", w, got)
+				}
+			}
+			for _, w := range c.notWant {
+				if strings.Contains(got, w) {
+					t.Errorf("unexpected %q in %q", w, got)
+				}
+			}
+		})
+	}
+}
+
+// TestStripHTMLTags_LinkMarkerCap: thousands of anchors contribute at
+// most maxLinkMarkers markers.
+func TestStripHTMLTags_LinkMarkerCap(t *testing.T) {
+	in := strings.Repeat(`<a href="https://h.example/">x</a>`, 5000)
+	got := stripHTMLTags(in)
+	if n := strings.Count(got, "[link:"); n != maxLinkMarkers {
+		t.Fatalf("markers = %d, want %d", n, maxLinkMarkers)
+	}
+}

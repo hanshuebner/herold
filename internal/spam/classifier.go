@@ -9,10 +9,11 @@ import (
 	"log/slog"
 	"net/mail"
 	"net/url"
-	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	xhtml "golang.org/x/net/html"
 
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/mailauth"
@@ -1398,56 +1399,96 @@ func truncateUTF8(s string, n int) string {
 	return s
 }
 
-// stripHTMLTags is a deliberately simple HTML-to-text converter. The
-// classifier prompt tolerates noise; a pure-Go dependency-free stripper
-// is preferable to pulling in an HTML parser here.
+// maxLinkMarkers bounds how many "[link: host]" markers one HTML body
+// contributes, so a message made of thousands of anchors cannot expand
+// the text beyond what the excerpt cap then truncates.
+const maxLinkMarkers = 20
+
+// stripHTMLTags converts HTML to text for the classifier excerpt. It
+// tokenizes with golang.org/x/net/html, so quoted attribute values
+// (including a ">" inside one), upper-case tags, unclosed anchors and
+// comments are handled the way a browser handles them. Text tokens are
+// kept in their raw (entity-encoded) form; normalizeExcerpt decodes
+// entities once afterwards.
+//
+// The destination of a call-to-action button is evidence the classifier
+// needs (a "download the file" button leading somewhere unrelated to the
+// sender is the signature of a document lure), so each <a> start tag
+// whose href is a web link (http, https or protocol-relative, after
+// entity decoding) emits "[link: host] " ahead of the anchor text. Only
+// the host is kept so tracking-heavy URLs do not consume the excerpt
+// budget. Because the marker is written from the start tag it does not
+// depend on a closing </a>. Anchor text that itself contains "[link:"
+// has it rewritten to "(link:" so message content cannot forge a marker.
 func stripHTMLTags(in string) string {
-	in = annotateAnchorHosts(in)
 	var b strings.Builder
 	b.Grow(len(in))
-	skip := 0
-	for i := 0; i < len(in); i++ {
-		c := in[i]
-		switch c {
-		case '<':
-			skip++
-			continue
-		case '>':
-			if skip > 0 {
-				skip--
+	z := xhtml.NewTokenizer(strings.NewReader(in))
+	markers := 0
+	for {
+		switch z.Next() {
+		case xhtml.ErrorToken:
+			return b.String()
+		case xhtml.TextToken:
+			b.WriteString(neutraliseLinkMarker(string(z.Raw())))
+		case xhtml.StartTagToken:
+			name, hasAttr := z.TagName()
+			if string(name) != "a" || !hasAttr || markers >= maxLinkMarkers {
+				continue
 			}
-			continue
-		}
-		if skip == 0 {
-			b.WriteByte(c)
+			for {
+				key, val, more := z.TagAttr()
+				if string(key) == "href" {
+					if host := webLinkHost(string(val)); host != "" {
+						b.WriteString(" [link: " + host + "] ")
+						markers++
+					}
+					break
+				}
+				if !more {
+					break
+				}
+			}
 		}
 	}
-	return b.String()
 }
 
-// anchorRE matches an HTML anchor with an href and captures the href
-// value (double-quoted, single-quoted or bare) and the closing tag.
-var anchorRE = regexp.MustCompile(`(?is)<a\s[^>]*?href\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>"']+))[^>]*>(.*?)</a\s*>`)
-
-// annotateAnchorHosts rewrites each web anchor so that, once the tags
-// are stripped, the anchor text is followed by " [link: host]". The
-// destination of a call-to-action button is evidence the classifier
-// needs (a "download the file" button that leads somewhere unrelated to
-// the sender is the signature of a document lure) and the tag stripper
-// would otherwise discard it with the href attribute. Only the host is
-// kept so tracking-heavy URLs do not consume the excerpt budget; anchors
-// that are not http(s) (mailto:, fragments) are left untouched.
-func annotateAnchorHosts(in string) string {
-	if !strings.Contains(in, "<") {
-		return in
-	}
-	return anchorRE.ReplaceAllStringFunc(in, func(m string) string {
-		sub := anchorRE.FindStringSubmatch(m)
-		href := sub[1] + sub[2] + sub[3]
-		u, err := url.Parse(strings.TrimSpace(html.UnescapeString(href)))
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
-			return m
+// neutraliseLinkMarker rewrites any "[link:" in message-controlled text
+// (case-insensitively) so it cannot pass for a herold-written marker.
+func neutraliseLinkMarker(s string) string {
+	for {
+		i := strings.Index(strings.ToLower(s), "[link:")
+		if i < 0 {
+			return s
 		}
-		return m + " [link: " + strings.ToLower(u.Hostname()) + "] "
-	})
+		s = s[:i] + "(link:" + s[i+len("[link:"):]
+	}
+}
+
+// webLinkHost returns the lower-cased host of an http(s) or
+// protocol-relative href, or "" for anything else (mailto:, javascript:,
+// data:, fragments, relative paths, unparseable values). The tokenizer
+// has already decoded entities in val; surrounding whitespace and control
+// characters are ignored the way browsers do.
+func webLinkHost(val string) string {
+	val = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, strings.TrimSpace(val))
+	u, err := url.Parse(val)
+	if err != nil {
+		return ""
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https":
+	case "":
+		if !strings.HasPrefix(val, "//") {
+			return ""
+		}
+	default:
+		return ""
+	}
+	return strings.ToLower(u.Hostname())
 }
