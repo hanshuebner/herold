@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
@@ -33,7 +34,10 @@ type Store struct {
 	meta       *metadata
 	fts        *ftsStub
 	randReader io.Reader
-	bulkImport bool // when true, Close runs PRAGMA wal_checkpoint(TRUNCATE) before closing the DB
+	// consolidateHook is the test seam ConsolidateSnooze calls between its
+	// two writes (SetConsolidateSnoozeHook).
+	consolidateHook atomic.Pointer[func(context.Context)]
+	bulkImport      bool // when true, Close runs PRAGMA wal_checkpoint(TRUNCATE) before closing the DB
 
 	// internalizeNotify is called (non-blocking, best-effort) after a
 	// row commits with internalize_pending = 1. The internalize-worker

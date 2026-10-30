@@ -1098,9 +1098,28 @@ func (m *metadata) DeleteMailbox(ctx context.Context, id store.MailboxID) error 
 		// For multi-membership messages: just remove the membership rows
 		// for this mailbox (ON DELETE CASCADE on the FK would handle it, but
 		// we want explicit control here for the used_bytes accounting above).
-		if _, err := tx.ExecContext(ctx,
-			`DELETE FROM message_mailboxes WHERE mailbox_id = ?`, int64(id)); err != nil {
+		memberRows, err := tx.QueryContext(ctx,
+			`SELECT message_id FROM message_mailboxes WHERE mailbox_id = ?`, int64(id))
+		if err != nil {
 			return mapErr(err)
+		}
+		var memberMsgs []int64
+		for memberRows.Next() {
+			var mid int64
+			if err := memberRows.Scan(&mid); err != nil {
+				memberRows.Close()
+				return mapErr(err)
+			}
+			memberMsgs = append(memberMsgs, mid)
+		}
+		memberRows.Close()
+		if err := memberRows.Err(); err != nil {
+			return mapErr(err)
+		}
+		for _, mid := range memberMsgs {
+			if err := deleteMembershipTx(ctx, tx, m.s, m.s.clock.Now().UTC(), mid, int64(id), true); err != nil {
+				return err
+			}
 		}
 		// Now delete the mailbox itself.
 		res, err := tx.ExecContext(ctx, `DELETE FROM mailboxes WHERE id = ?`, int64(id))
@@ -2459,11 +2478,10 @@ func (m *metadata) ExpungeMessages(ctx context.Context, mailboxID store.MailboxI
 			if memberCount == 0 {
 				continue // silently skip
 			}
-			// Delete this membership.
-			if _, err := tx.ExecContext(ctx,
-				`DELETE FROM message_mailboxes WHERE message_id = ? AND mailbox_id = ?`,
-				int64(id), int64(mailboxID)); err != nil {
-				return mapErr(err)
+			// Delete this membership; a reminder it holds passes to a
+			// remaining membership.
+			if err := deleteMembershipTx(ctx, tx, m.s, now, int64(id), int64(mailboxID), true); err != nil {
+				return err
 			}
 			// Check remaining memberships.
 			var remaining int64
@@ -2588,11 +2606,11 @@ func (m *metadata) MoveMessage(ctx context.Context, msgID store.MessageID, fromM
 			srcFlags, srcKeywords, snoozedArg, wakeArg, srcReceivedTo); err != nil {
 			return mapErr(err)
 		}
-		// Delete source membership.
-		if _, err := tx.ExecContext(ctx,
-			`DELETE FROM message_mailboxes WHERE message_id = ? AND mailbox_id = ?`,
-			int64(msgID), int64(fromMailboxID)); err != nil {
-			return mapErr(err)
+		// Delete source membership. The reminder (when it survives) was
+		// carried to the target row above, and a move into Trash ends
+		// it, so nothing is handed over.
+		if err := deleteMembershipTx(ctx, tx, m.s, now, int64(msgID), int64(fromMailboxID), false); err != nil {
+			return err
 		}
 
 		// Replay pre-trash mailboxes if the source is Trash (i.e. restoring).
@@ -2694,7 +2712,7 @@ func (m *metadata) AddMessageToMailbox(ctx context.Context, msgID store.MessageI
 		if isTargetTrash {
 			return nil
 		}
-		return removeTrashMembershipsAndReplay(ctx, tx, int64(msgID), int64(mailboxID), pid, now)
+		return removeTrashMembershipsAndReplay(ctx, tx, m.s, int64(msgID), int64(mailboxID), pid, now)
 	})
 	if err != nil {
 		return 0, 0, err
@@ -2710,7 +2728,7 @@ func (m *metadata) AddMessageToMailbox(ctx context.Context, msgID store.MessageI
 // regardless of which primitive removed the last Trash membership (re
 // #460).
 func removeTrashMembershipsAndReplay(
-	ctx context.Context, tx *sql.Tx, msgID, excludeMailboxID int64, pid int64, now time.Time,
+	ctx context.Context, tx *sql.Tx, st *Store, msgID, excludeMailboxID int64, pid int64, now time.Time,
 ) error {
 	rows, err := tx.QueryContext(ctx, `
 		SELECT mm.mailbox_id FROM message_mailboxes mm
@@ -2737,9 +2755,7 @@ func removeTrashMembershipsAndReplay(
 		return nil
 	}
 	for _, trashID := range trashIDs {
-		if _, err := tx.ExecContext(ctx,
-			`DELETE FROM message_mailboxes WHERE message_id = ? AND mailbox_id = ?`,
-			msgID, trashID); err != nil {
+		if err := deleteMembershipTx(ctx, tx, st, now, msgID, trashID, true); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `
@@ -2777,14 +2793,6 @@ func (m *metadata) RemoveMessageFromMailbox(ctx context.Context, msgID store.Mes
 			`SELECT principal_id FROM messages WHERE id = ?`, int64(msgID)).Scan(&pid); err != nil {
 			return mapErr(err)
 		}
-		// A reminder held by the departing membership passes to a
-		// remaining one below (issue #553).
-		var heldUs, heldWake sql.NullInt64
-		if err := tx.QueryRowContext(ctx,
-			`SELECT snoozed_until_us, wake_mailbox_id FROM message_mailboxes WHERE message_id = ? AND mailbox_id = ?`,
-			int64(msgID), int64(mailboxID)).Scan(&heldUs, &heldWake); err != nil {
-			return mapErr(err)
-		}
 		// Check if we're removing from Trash — if so, replay pre-trash mailboxes.
 		var attrs int64
 		if err := tx.QueryRowContext(ctx, `SELECT attributes FROM mailboxes WHERE id = ?`,
@@ -2792,10 +2800,8 @@ func (m *metadata) RemoveMessageFromMailbox(ctx context.Context, msgID store.Mes
 			return mapErr(err)
 		}
 		isTrash := store.MailboxAttributes(attrs)&store.MailboxAttrTrash != 0
-		if _, err := tx.ExecContext(ctx,
-			`DELETE FROM message_mailboxes WHERE message_id = ? AND mailbox_id = ?`,
-			int64(msgID), int64(mailboxID)); err != nil {
-			return mapErr(err)
+		if err := deleteMembershipTx(ctx, tx, m.s, now, int64(msgID), int64(mailboxID), true); err != nil {
+			return err
 		}
 		if isTrash {
 			if err := replayPretrashMailboxes(ctx, tx, int64(msgID), now); err != nil {
@@ -2813,17 +2819,6 @@ func (m *metadata) RemoveMessageFromMailbox(ctx context.Context, msgID store.Mes
 		if err := tx.QueryRowContext(ctx,
 			`SELECT COUNT(*) FROM message_mailboxes WHERE message_id = ?`, int64(msgID)).Scan(&remaining); err != nil {
 			return mapErr(err)
-		}
-		if remaining > 0 && heldUs.Valid {
-			until := fromMicros(heldUs.Int64)
-			var wake *store.MailboxID
-			if heldWake.Valid {
-				w := store.MailboxID(heldWake.Int64)
-				wake = &w
-			}
-			if err := transferSnoozeTx(ctx, tx, now, msgID, &until, wake); err != nil {
-				return err
-			}
 		}
 		if remaining == 0 {
 			var size int64
@@ -5088,13 +5083,46 @@ func setSnoozeTx(ctx context.Context, tx *sql.Tx, now time.Time, msgID store.Mes
 	return modseq, nil
 }
 
+// deleteMembershipTx deletes the (msgID, mailboxID) membership row and
+// is the only place the store removes a membership. When handOver is
+// set and the row held a snooze reminder, the "$snoozed" keyword,
+// deadline and wake destination pass to the lowest-id remaining
+// membership in the same transaction (issue #553); a message with no
+// remaining membership is gone and the reminder with it. Callers that
+// carry the pair to a target membership themselves (a move) or end it
+// on purpose (a move into Trash) pass handOver=false.
+func deleteMembershipTx(ctx context.Context, tx *sql.Tx, st *Store, now time.Time, msgID, mailboxID int64, handOver bool) error {
+	var heldUs, heldWake sql.NullInt64
+	err := tx.QueryRowContext(ctx,
+		`SELECT snoozed_until_us, wake_mailbox_id FROM message_mailboxes WHERE message_id = ? AND mailbox_id = ?`,
+		msgID, mailboxID).Scan(&heldUs, &heldWake)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return mapErr(err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM message_mailboxes WHERE message_id = ? AND mailbox_id = ?`,
+		msgID, mailboxID); err != nil {
+		return mapErr(err)
+	}
+	if !handOver || !heldUs.Valid {
+		return nil
+	}
+	until := fromMicros(heldUs.Int64)
+	var wake *store.MailboxID
+	if heldWake.Valid && heldWake.Int64 != mailboxID {
+		w := store.MailboxID(heldWake.Int64)
+		wake = &w
+	}
+	return transferSnoozeTx(ctx, tx, st, now, store.MessageID(msgID), &until, wake, true)
+}
+
 // transferSnoozeTx moves the reminder of msgID onto its canonical
 // (lowest mailbox_id) membership inside tx. until/wake describe the
 // reminder to place when no remaining membership holds one (a removed
 // holder's pair); when a membership other than the canonical one holds
 // the pair, that pair is moved instead. A canonical membership that
 // already holds a reminder, or a message without one, is left alone.
-func transferSnoozeTx(ctx context.Context, tx *sql.Tx, now time.Time, msgID store.MessageID, until *time.Time, wake *store.MailboxID) error {
+func transferSnoozeTx(ctx context.Context, tx *sql.Tx, st *Store, now time.Time, msgID store.MessageID, until *time.Time, wake *store.MailboxID, placeOnly bool) error {
 	rows, err := tx.QueryContext(ctx, `
 		SELECT mailbox_id, snoozed_until_us, wake_mailbox_id
 		  FROM message_mailboxes WHERE message_id = ? ORDER BY mailbox_id`, int64(msgID))
@@ -5140,6 +5168,10 @@ func transferSnoozeTx(ctx context.Context, tx *sql.Tx, now time.Time, msgID stor
 			break
 		}
 	}
+	if placeOnly && holder != nil {
+		// A remaining membership already holds the reminder.
+		return nil
+	}
 	if holder != nil {
 		until, wake = holder.until, holder.wake
 	}
@@ -5150,6 +5182,9 @@ func transferSnoozeTx(ctx context.Context, tx *sql.Tx, now time.Time, msgID stor
 		return err
 	}
 	if holder != nil {
+		if hk := st.consolidateHook.Load(); hk != nil {
+			(*hk)(ctx)
+		}
 		if _, err := setSnoozeTx(ctx, tx, now, msgID, holder.mb, nil, nil); err != nil {
 			return err
 		}
@@ -5161,7 +5196,7 @@ func transferSnoozeTx(ctx context.Context, tx *sql.Tx, now time.Time, msgID stor
 func (m *metadata) ConsolidateSnooze(ctx context.Context, msgID store.MessageID) error {
 	now := m.s.clock.Now().UTC()
 	return m.runTx(ctx, func(tx *sql.Tx) error {
-		return transferSnoozeTx(ctx, tx, now, msgID, nil, nil)
+		return transferSnoozeTx(ctx, tx, m.s, now, msgID, nil, nil, false)
 	})
 }
 

@@ -344,6 +344,15 @@ func Run(t *testing.T, f Factory) {
 		{"Snooze_WakeMarker_RecordedOnRelease", testReleaseSnoozeRecordsWakeMarker},
 		{"Snooze_WakeMarker_ClearedOnSeen", testSnoozeWakeMarkerClearedOnSeen},
 		{"Snooze_WakeMarker_ClearedOnResnooze", testSnoozeWakeMarkerClearedOnResnooze},
+		// -- issue #553: reminder hand-over on membership removal ---
+		{"SnoozeHandover_RemoveMessageFromMailbox", testSnoozeHandoverRemoveMessageFromMailbox},
+		{"SnoozeHandover_Expunge", testSnoozeHandoverExpunge},
+		{"SnoozeHandover_DeleteMailbox", testSnoozeHandoverDeleteMailbox},
+		{"SnoozeHandover_DeleteWakeMailbox", testSnoozeHandoverDeleteWakeMailbox},
+		{"SnoozeHandover_NonHolderRemoval", testSnoozeHandoverNonHolderRemoval},
+		{"SnoozeHandover_MoveToTrashEnds", testSnoozeHandoverMoveToTrashEnds},
+		{"SnoozeHandover_MoveCarriesPair", testSnoozeHandoverMoveCarriesPair},
+		{"SnoozeConsolidate_SweepSeesOneHolder", testSnoozeConsolidateSweepSeesOneHolder},
 		// -- REQ-FILT-200..221 LLM categorisation -----------------
 		{"CategorisationConfig_DefaultsSeededOnFirstRead", testCategorisationConfigDefaults},
 		{"CategorisationConfig_RoundTrip", testCategorisationConfigRoundtrip},

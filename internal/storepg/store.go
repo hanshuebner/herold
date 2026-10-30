@@ -1,9 +1,11 @@
 package storepg
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -29,6 +31,9 @@ type Store struct {
 	meta       *metadata
 	fts        *ftsStub
 	randReader io.Reader
+	// consolidateHook is the test seam ConsolidateSnooze calls between its
+	// two writes (SetConsolidateSnoozeHook).
+	consolidateHook atomic.Pointer[func(context.Context)]
 
 	// internalizeNotify mirrors the storesqlite hook for the
 	// extimg-internalize-worker (REQ-EXTIMG-BG-08). Mark / Insert paths

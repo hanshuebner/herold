@@ -266,10 +266,10 @@ func (m *metadata) ReparentMessage(ctx context.Context, msgID store.MessageID, n
 				int64(msgID), int64(toMB), newUID, newModSeq, flags, keywords, snoozedArg, wakeArg, receivedTo); err != nil {
 				return mapErr(err)
 			}
-			if _, err := tx.ExecContext(ctx,
-				`DELETE FROM message_mailboxes WHERE message_id = ? AND mailbox_id = ?`,
-				int64(msgID), int64(fromMB)); err != nil {
-				return mapErr(err)
+			// The pair was copied to the target membership above; nothing
+			// is handed over.
+			if err := deleteMembershipTx(ctx, tx, m.s, now, int64(msgID), int64(fromMB), false); err != nil {
+				return err
 			}
 			if _, err := tx.ExecContext(ctx,
 				`UPDATE mailboxes SET uidnext = uidnext + 1, highest_modseq = ?, updated_at_us = ? WHERE id = ?`,
