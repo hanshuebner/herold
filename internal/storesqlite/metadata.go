@@ -5124,8 +5124,9 @@ func deleteMembershipTx(ctx context.Context, tx *sql.Tx, st *Store, now time.Tim
 // already holds a reminder, or a message without one, is left alone.
 func transferSnoozeTx(ctx context.Context, tx *sql.Tx, st *Store, now time.Time, msgID store.MessageID, until *time.Time, wake *store.MailboxID, placeOnly bool) error {
 	rows, err := tx.QueryContext(ctx, `
-		SELECT mailbox_id, snoozed_until_us, wake_mailbox_id
-		  FROM message_mailboxes WHERE message_id = ? ORDER BY mailbox_id`, int64(msgID))
+		SELECT mm.mailbox_id, mm.snoozed_until_us, mm.wake_mailbox_id, (mb.attributes & ?) != 0
+		  FROM message_mailboxes mm JOIN mailboxes mb ON mb.id = mm.mailbox_id
+		 WHERE mm.message_id = ? ORDER BY mm.mailbox_id`, int64(store.MailboxAttrTrash), int64(msgID))
 	if err != nil {
 		return mapErr(err)
 	}
@@ -5133,16 +5134,18 @@ func transferSnoozeTx(ctx context.Context, tx *sql.Tx, st *Store, now time.Time,
 		mb    store.MailboxID
 		until *time.Time
 		wake  *store.MailboxID
+		trash bool
 	}
 	var mms []row
 	for rows.Next() {
 		var mb int64
 		var u, w sql.NullInt64
-		if err := rows.Scan(&mb, &u, &w); err != nil {
+		var isTrash bool
+		if err := rows.Scan(&mb, &u, &w, &isTrash); err != nil {
 			_ = rows.Close()
 			return mapErr(err)
 		}
-		r := row{mb: store.MailboxID(mb)}
+		r := row{mb: store.MailboxID(mb), trash: isTrash}
 		if u.Valid {
 			t := fromMicros(u.Int64)
 			r.until = &t
@@ -5158,7 +5161,20 @@ func transferSnoozeTx(ctx context.Context, tx *sql.Tx, st *Store, now time.Time,
 		return mapErr(err)
 	}
 	_ = rows.Close()
-	if len(mms) == 0 || mms[0].until != nil {
+	// A hand-over (placeOnly) never targets a Trash-attributed membership:
+	// with only Trash left the reminder ends with the removed row, the same
+	// outcome as moving the message into Trash (#549).
+	target := 0
+	if placeOnly {
+		target = -1
+		for i := range mms {
+			if !mms[i].trash {
+				target = i
+				break
+			}
+		}
+	}
+	if len(mms) == 0 || (placeOnly && target < 0) || mms[0].until != nil {
 		return nil
 	}
 	var holder *row
@@ -5178,7 +5194,7 @@ func transferSnoozeTx(ctx context.Context, tx *sql.Tx, st *Store, now time.Time,
 	if until == nil {
 		return nil
 	}
-	if _, err := setSnoozeTx(ctx, tx, now, msgID, mms[0].mb, until, wake); err != nil {
+	if _, err := setSnoozeTx(ctx, tx, now, msgID, mms[target].mb, until, wake); err != nil {
 		return err
 	}
 	if holder != nil {

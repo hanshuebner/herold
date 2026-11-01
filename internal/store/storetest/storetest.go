@@ -353,6 +353,9 @@ func Run(t *testing.T, f Factory) {
 		{"SnoozeHandover_MoveToTrashEnds", testSnoozeHandoverMoveToTrashEnds},
 		{"SnoozeHandover_MoveCarriesPair", testSnoozeHandoverMoveCarriesPair},
 		{"SnoozeConsolidate_SweepSeesOneHolder", testSnoozeConsolidateSweepSeesOneHolder},
+		{"SnoozeHandover_NeverToTrash", testSnoozeHandoverNeverToTrash},
+		{"SnoozeHandover_NeverToTrashOtherPaths", testSnoozeHandoverNeverToTrashOtherPaths},
+		{"SnoozeHandover_ReparentCarriesPair", testSnoozeHandoverReparentCarriesPair},
 		// -- REQ-FILT-200..221 LLM categorisation -----------------
 		{"CategorisationConfig_DefaultsSeededOnFirstRead", testCategorisationConfigDefaults},
 		{"CategorisationConfig_RoundTrip", testCategorisationConfigRoundtrip},
