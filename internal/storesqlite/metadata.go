@@ -5117,7 +5117,7 @@ func deleteMembershipTx(ctx context.Context, tx *sql.Tx, st *Store, now time.Tim
 }
 
 // transferSnoozeTx moves the reminder of msgID onto its canonical
-// (lowest mailbox_id) membership inside tx. until/wake describe the
+// (lowest mailbox_id non-Trash) membership inside tx. until/wake describe the
 // reminder to place when no remaining membership holds one (a removed
 // holder's pair); when a membership other than the canonical one holds
 // the pair, that pair is moved instead. A canonical membership that
@@ -5161,25 +5161,36 @@ func transferSnoozeTx(ctx context.Context, tx *sql.Tx, st *Store, now time.Time,
 		return mapErr(err)
 	}
 	_ = rows.Close()
-	// A hand-over (placeOnly) never targets a Trash-attributed membership:
-	// with only Trash left the reminder ends with the removed row, the same
-	// outcome as moving the message into Trash (#549).
-	target := 0
-	if placeOnly {
-		target = -1
-		for i := range mms {
-			if !mms[i].trash {
-				target = i
-				break
-			}
+	// The reminder only ever lives on a non-Trash membership: the target is
+	// the lowest-id non-Trash one. With only Trash left the reminder ends
+	// (keyword and deadline together), the same outcome as moving the
+	// message into Trash (#549).
+	if len(mms) == 0 {
+		return nil
+	}
+	target := -1
+	for i := range mms {
+		if !mms[i].trash {
+			target = i
+			break
 		}
 	}
-	if len(mms) == 0 || (placeOnly && target < 0) || mms[0].until != nil {
+	if target < 0 {
+		for i := range mms {
+			if mms[i].until != nil {
+				if _, err := setSnoozeTx(ctx, tx, now, msgID, mms[i].mb, nil, nil); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	if mms[target].until != nil {
 		return nil
 	}
 	var holder *row
-	for i := 1; i < len(mms); i++ {
-		if mms[i].until != nil {
+	for i := range mms {
+		if i != target && mms[i].until != nil {
 			holder = &mms[i]
 			break
 		}

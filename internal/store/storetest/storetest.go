@@ -353,6 +353,8 @@ func Run(t *testing.T, f Factory) {
 		{"SnoozeHandover_MoveToTrashEnds", testSnoozeHandoverMoveToTrashEnds},
 		{"SnoozeHandover_MoveCarriesPair", testSnoozeHandoverMoveCarriesPair},
 		{"SnoozeConsolidate_SweepSeesOneHolder", testSnoozeConsolidateSweepSeesOneHolder},
+		{"SnoozeConsolidate_SkipsLowIDTrash", testSnoozeConsolidateSkipsLowIDTrash},
+		{"SnoozeConsolidate_EndsReminderOnTrashOnly", testSnoozeConsolidateEndsReminderOnTrashOnly},
 		{"SnoozeHandover_NeverToTrash", testSnoozeHandoverNeverToTrash},
 		{"SnoozeHandover_NeverToTrashOtherPaths", testSnoozeHandoverNeverToTrashOtherPaths},
 		{"SnoozeHandover_ReparentCarriesPair", testSnoozeHandoverReparentCarriesPair},
