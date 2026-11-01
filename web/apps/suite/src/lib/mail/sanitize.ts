@@ -1749,7 +1749,144 @@ function splitLeadingFreshContent(candidate: Element): void {
   }
 }
 
+/** Outlook desktop's reply/forward separator: a paragraph border above the header block. */
+const OUTLOOK_RULE_STYLE_RE =
+  /border-top\s*:\s*solid\s+#(?:e1e1e1|b5c4df)\s+1(?:\.0+)?pt/i;
+/** A bold `Label:` element: the header paragraph's field names. */
+const BOLD_LABEL_RE = /^[^\s:][^:]{0,24}:$/;
+
+/** True when `el` is OWA's header container (`divRplyFwdMsg`, by id or class). */
+function isOwaHeaderMarker(el: Element): boolean {
+  if (el.id.toLowerCase() === 'divrplyfwdmsg') return true;
+  return Array.from(el.classList).some((c) => c.toLowerCase() === 'divrplyfwdmsg');
+}
+
+/**
+ * True when `el` is Outlook desktop's header block: a div drawn with the
+ * `border-top:solid #E1E1E1 1.0pt` rule (`#B5C4DF` in older versions) that
+ * holds the bold `Label:` header paragraph.
+ */
+function isDesktopHeaderMarker(el: Element): boolean {
+  if (el.tagName !== 'DIV') return false;
+  if (!OUTLOOK_RULE_STYLE_RE.test(el.getAttribute('style') ?? '')) return false;
+  return Array.from(el.querySelectorAll('b, strong')).some((b) =>
+    BOLD_LABEL_RE.test((b.textContent ?? '').replace(/[\s ]+/g, ' ').trim()),
+  );
+}
+
+/** True when `node` can be skipped when judging what comes first in an element. */
+function isIgnorableNode(node: Node): boolean {
+  if (node.nodeType === Node.TEXT_NODE) return !node.nodeValue?.trim();
+  if (node.nodeType !== Node.ELEMENT_NODE) return true;
+  const el = node as Element;
+  if (el.tagName === 'BR' || el.tagName === 'HR') return true;
+  return !el.textContent?.trim() && !el.querySelector('img');
+}
+
+/**
+ * The element that opens the quoted original in an Outlook reply, or null
+ * (re #547).
+ *
+ * Only Outlook's own markup counts: OWA's `divRplyFwdMsg` container, and
+ * Outlook desktop's bordered header-block div. HTML without those markers and
+ * plain text are never folded by this rule, so a sender's own "Von: / Datum:
+ * / Betreff:" list stays visible. A marker with no text of the sender's
+ * before it (a bare forward) is not folded either, so the message keeps
+ * something to read.
+ *
+ * The returned node is the outermost element that begins with the marker, so
+ * the fold takes the marker's wrappers with it.
+ */
+function findOutlookMarker(root: ParentNode): Element | null {
+  if (!root.querySelectorAll) return null;
+  let marker: Element | null = null;
+  for (const el of Array.from(root.querySelectorAll('div'))) {
+    if (isOwaHeaderMarker(el) || isDesktopHeaderMarker(el)) {
+      marker = el;
+      break;
+    }
+  }
+  if (marker === null) return null;
+  let top: Element = marker;
+  for (;;) {
+    const parent: Element | null = top.parentElement;
+    if (parent === null || parent === root) break;
+    let alone = true;
+    for (let b = top.previousSibling; b !== null; b = b.previousSibling) {
+      if (!isIgnorableNode(b)) {
+        alone = false;
+        break;
+      }
+    }
+    if (!alone) break;
+    top = parent;
+  }
+  const walker = document.createTreeWalker(root as Node, NodeFilter.SHOW_TEXT);
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    if (!(top.compareDocumentPosition(n) & Node.DOCUMENT_POSITION_PRECEDING)) continue;
+    if (n.nodeValue?.trim()) return top;
+  }
+  return null;
+}
+
+/**
+ * Fold the Outlook marker block `top` and everything after it, to the end of
+ * the message, behind the quoted-history chip (re #547). A rule directly
+ * above the block opens the quote with it.
+ */
+function foldFromMarker(top: Element, root: ParentNode): void {
+  const owner = top.ownerDocument!;
+  const details = owner.createElement('details');
+  details.setAttribute('class', 'herold-quoted');
+  const summary = owner.createElement('summary');
+  summary.setAttribute('aria-label', 'Show trimmed content');
+  details.appendChild(summary);
+
+  let start: Node = top;
+  for (let prev = top.previousSibling; prev !== null; prev = prev.previousSibling) {
+    if (prev.nodeType === Node.TEXT_NODE && !prev.nodeValue?.trim()) continue;
+    if (prev.nodeType === Node.ELEMENT_NODE && (prev as Element).tagName === 'HR') {
+      start = prev;
+      continue;
+    }
+    break;
+  }
+  top.parentNode!.insertBefore(details, start);
+  let n: Node | null = start;
+  while (n !== null && n !== details) {
+    const after: Node | null = n.nextSibling;
+    details.appendChild(n);
+    n = after;
+  }
+  // Everything after the block, at this level and at every wrapper above it.
+  let level: Node | null = details;
+  while (level !== null && level !== (root as Node)) {
+    let next: Node | null = level.nextSibling;
+    while (next !== null) {
+      const after: Node | null = next.nextSibling;
+      details.appendChild(next);
+      next = after;
+    }
+    level = level.parentNode;
+  }
+}
+
 function collapseQuotedRegions(root: ParentNode): void {
+  // Outlook's own reply markup opens the quoted original (re #547). It folds
+  // when no container-style quote region comes first; a region that holds or
+  // precedes the marker is handled by the container logic below.
+  const outlookMarker = findOutlookMarker(root);
+  if (outlookMarker !== null) {
+    const firstRegion = findFirstQuotedRegion(root);
+    const regionFirst =
+      firstRegion !== null &&
+      (firstRegion.contains(outlookMarker) ||
+        Boolean(firstRegion.compareDocumentPosition(outlookMarker) & Node.DOCUMENT_POSITION_FOLLOWING));
+    if (!regionFirst) {
+      foldFromMarker(outlookMarker, root);
+      return;
+    }
+  }
   // Find the first quoted region that itself starts at the citation (re
   // #448): a `moz-cite-prefix` div whose own leading content is the
   // sender's text names the attribution line rather than bounding a quote,
