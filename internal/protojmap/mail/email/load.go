@@ -79,6 +79,7 @@ func loadMessageForPrincipal(
 			return store.Message{}, fmt.Errorf("email: get mailbox: %w", err)
 		}
 		if protojmap.HasOwnerAccess(ctx, meta, pid, mb.PrincipalID) {
+			applySnoozeHolder(&m)
 			return m, nil
 		}
 		rows, err := meta.GetMailboxACL(ctx, mb.ID)
@@ -88,11 +89,13 @@ func loadMessageForPrincipal(
 		for _, r := range rows {
 			if r.PrincipalID == nil {
 				if r.Rights&store.ACLRightLookup != 0 {
+					applySnoozeHolder(&m)
 					return m, nil
 				}
 				continue
 			}
 			if *r.PrincipalID == pid && r.Rights&store.ACLRightLookup != 0 {
+				applySnoozeHolder(&m)
 				return m, nil
 			}
 		}
@@ -214,6 +217,7 @@ func listAccountMessages(
 	}
 	for i := range out {
 		applyCanonicalMembership(&out[i])
+		applySnoozeHolder(&out[i])
 	}
 	return out, nil
 }

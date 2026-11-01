@@ -122,6 +122,9 @@ func renderEmailMetadata(m store.Message) jmapEmail {
 // directly; a single-membership message (e.g. as returned by
 // ListDueSnoozedMessages's join) falls back to the first entry.
 func wakeMailboxIDForMessage(m store.Message) *store.MailboxID {
+	if holder, ok := snoozeHolderMembership(m); ok {
+		return holder.WakeMailboxID
+	}
 	for _, mm := range m.Mailboxes {
 		if mm.MailboxID == m.MailboxID {
 			return mm.WakeMailboxID

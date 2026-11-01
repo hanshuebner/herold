@@ -3879,7 +3879,15 @@ func (m *metadata) QueryEmailFast(
 	if opts.MaxSize != nil {
 		where = append(where, "m.size <= "+ph(*opts.MaxSize))
 	}
-	if opts.HasKeyword != "" {
+	// $snoozed is a message-level property: the reminder sits on exactly
+	// one membership, which need not be the canonical row the join picks
+	// (a lower-id Trash membership may be canonical), so it is probed
+	// across every membership.
+	const snoozedProbe = "EXISTS (SELECT 1 FROM message_mailboxes mm4 " +
+		"WHERE mm4.message_id = m.id AND mm4.snoozed_until_us IS NOT NULL)"
+	if strings.EqualFold(opts.HasKeyword, "$snoozed") {
+		where = append(where, snoozedProbe)
+	} else if opts.HasKeyword != "" {
 		if bit, ok := store.SystemKeywordFlag(opts.HasKeyword); ok {
 			where = append(where, "(mm.flags & "+ph(int64(bit))+") != 0")
 		} else {
@@ -3891,7 +3899,9 @@ func (m *metadata) QueryEmailFast(
 			where = append(where, "position("+ph(","+strings.ToLower(opts.HasKeyword)+",")+" in ',' || mm.keywords_csv || ',') > 0")
 		}
 	}
-	if opts.NotKeyword != "" {
+	if strings.EqualFold(opts.NotKeyword, "$snoozed") {
+		where = append(where, "NOT "+snoozedProbe)
+	} else if opts.NotKeyword != "" {
 		if bit, ok := store.SystemKeywordFlag(opts.NotKeyword); ok {
 			where = append(where, "(mm.flags & "+ph(int64(bit))+") = 0")
 		} else {

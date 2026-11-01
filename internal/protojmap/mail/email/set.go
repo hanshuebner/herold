@@ -855,6 +855,19 @@ func (h *handlerSet) updateEmail(
 
 	switch snoozeAct.kind {
 	case snoozeSet:
+		// The reminder lives on the lowest-id non-Trash membership; a
+		// message that sits only in Trash cannot carry one.
+		target, ok, terr := snoozeTargetMembership(ctx, h.store.Meta(), m)
+		if terr != nil {
+			return nil, terr
+		}
+		if !ok {
+			return &setError{
+				Type:        "invalidProperties",
+				Properties:  []string{"snoozedUntil"},
+				Description: "a message in Trash cannot be snoozed",
+			}, nil
+		}
 		wake := snoozeAct.wake
 		if wake == nil {
 			// No explicit snoozeWakeMailboxId (or an explicit null):
@@ -865,14 +878,25 @@ func (h *handlerSet) updateEmail(
 			}
 			wake = resolved
 		}
-		if _, err := h.store.Meta().SetSnooze(ctx, m.ID, m.MailboxID, &snoozeAct.when, wake); err != nil {
+		if _, err := h.store.Meta().SetSnooze(ctx, m.ID, target, &snoozeAct.when, wake); err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				return &setError{Type: "notFound"}, nil
 			}
 			return nil, fmt.Errorf("email: set snooze: %w", err)
 		}
+		// A reminder still standing on another membership would wake the
+		// message a second time.
+		if serr, err := h.clearSnoozeExcept(ctx, m, target); err != nil || serr != nil {
+			return serr, err
+		}
 	case snoozeClear:
-		if _, err := h.store.Meta().SetSnooze(ctx, m.ID, m.MailboxID, nil, nil); err != nil {
+		// The reminder is cleared on the membership that holds it; a
+		// message without one is cleared on its canonical row.
+		if _, held := snoozeHolderMembership(m); held {
+			if serr, err := h.clearSnoozeExcept(ctx, m, 0); err != nil || serr != nil {
+				return serr, err
+			}
+		} else if _, err := h.store.Meta().SetSnooze(ctx, m.ID, m.MailboxID, nil, nil); err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				return &setError{Type: "notFound"}, nil
 			}
@@ -905,6 +929,23 @@ func (h *handlerSet) updateEmail(
 	}
 	if _, err := h.store.Meta().IncrementJMAPState(ctx, ownerPID, store.JMAPStateKindEmail); err != nil {
 		return nil, fmt.Errorf("email: bump state: %w", err)
+	}
+	return nil, nil
+}
+
+// clearSnoozeExcept clears the reminder on every membership of m that
+// holds one, other than the membership keep (0 keeps none).
+func (h *handlerSet) clearSnoozeExcept(ctx context.Context, m store.Message, keep store.MailboxID) (*setError, error) {
+	for _, mm := range m.Mailboxes {
+		if mm.SnoozedUntil == nil || mm.MailboxID == keep {
+			continue
+		}
+		if _, err := h.store.Meta().SetSnooze(ctx, m.ID, mm.MailboxID, nil, nil); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return &setError{Type: "notFound"}, nil
+			}
+			return nil, fmt.Errorf("email: clear snooze: %w", err)
+		}
 	}
 	return nil, nil
 }
@@ -1346,7 +1387,12 @@ func applyPatch(
 // reported as issue #17. The keyword + mailbox patches arrive in the
 // same Email/set update; archive (mailbox-only) was unaffected.
 func refreshMessageAfterMailboxChange(ctx context.Context, meta store.Metadata, id store.MessageID) (store.Message, error) {
-	return meta.GetMessage(ctx, id)
+	m, err := meta.GetMessage(ctx, id)
+	if err != nil {
+		return m, err
+	}
+	applySnoozeHolder(&m)
+	return m, nil
 }
 
 // applyMailboxDiff reconciles a message's current mailbox membership set
