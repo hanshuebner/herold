@@ -121,6 +121,15 @@ Each name in `CategorySettings/get`'s `derivedCategories` is backed by a `Mailbo
 - Adoption never rewrites an existing mailbox's `disposition` or `priority`. A user who has since changed either property keeps their setting through every later recompute, including one that renames the category vocabulary or drops the category from the set entirely — the label and its disposition stay exactly as the user left them.
 - A category dropped from a later derived set is not deleted or reset; its label persists as an ordinary user-owned `Mailbox` until the user removes it via `Mailbox/set{destroy}`.
 
+### Per-sender category rules (issue #555)
+
+`CategorySettings` carries `senderRules`, a list of `{ "sender": "<address>", "category": "<name>" }` objects. It is always present in `CategorySettings/get` (an empty array when the account has no rules).
+
+- `sender` is an exact email address matched case-insensitively against the message's From address; the server stores and returns it lower-cased. `category` is a bare category name that must belong to the account's category set (`derivedCategories` plus the configured vocabulary). One rule per sender.
+- `CategorySettings/set` with `update: { "singleton": { "senderRules": [...] } }` replaces the whole list: a sender added to the list creates a rule, a sender whose category changed replaces it, a sender left out is deleted. A list that names an unknown category, a malformed or duplicated sender, or more than 1000 rules is refused with `invalidProperties` in `notUpdated` and changes nothing. Other properties in the same update (for example `prompt`) leave the rules alone.
+- A rule is applied at delivery before the classifier's category is used (SMTP delivery, IMAP import, and `CategorySettings/recategorise`); it sets `$category-<name>` and removes the other `$category-*` keywords. Spam-verdict mail stays uncategorised.
+- Creating or replacing a rule also recategorises the account's stored mail from that sender (every membership outside Trash and Junk) in the background, through the same keyword path as `CategorySettings/recategorise`, so clients learn of it through the normal `Email` state and push flow. Deleting a rule leaves stored mail as it is.
+
 ### Image proxy (resolved Q4)
 
 For inline `<img>` references in HTML mail, the suite renders the image via a server-side proxy URL of the shape `<origin>/proxy/image?url=<encoded-original>`. The proxy fetches the image, strips tracking-relevant request headers, enforces caps, and serves the result back. Same origin as the JMAP API so the CSP can `img-src 'self'` (`../requirements/13-nonfunctional.md` REQ-SEC-07).

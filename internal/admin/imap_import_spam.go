@@ -28,6 +28,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/hanshuebner/herold/internal/categorise"
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/mailparse"
 	"github.com/hanshuebner/herold/internal/observe"
@@ -70,7 +71,7 @@ func newIMAPImportSpamAdapter(cls *spam.Classifier, plugin string, st store.Stor
 // the fully-resolved value the import worker keywords the message with
 // (resolveImportSpamTarget).
 func (a *imapImportSpamAdapter) Classify(ctx context.Context, principalID store.PrincipalID, msg mailparse.Message, accountID string) spam.Classification {
-	clsCtx, categorisationEnabled := a.buildClassifyContext(ctx, principalID)
+	clsCtx, categorisationEnabled, senderRules := a.buildClassifyContext(ctx, principalID)
 	// cls starts as the "no plugin verdict" default and is overwritten by
 	// a successful classifier call below. A nil Classifier, a Classify
 	// error (no plugin configured, timeout, crash), and a real verdict
@@ -122,6 +123,9 @@ func (a *imapImportSpamAdapter) Classify(ctx context.Context, principalID store.
 		cls.Category = "" // ADR-0004
 	case !categorisationEnabled:
 		cls.Category = ""
+	case categorise.SenderRuleCategory(senderRules, msg.Envelope.From) != "":
+		// A per-sender rule overrides whatever the classifier picked.
+		cls.Category = categorise.SenderRuleCategory(senderRules, msg.Envelope.From)
 	case cls.Category == "":
 		cls.Category = spam.StructuralCategory(msg) // ADR-0002
 	}
@@ -180,17 +184,17 @@ func (a *imapImportSpamAdapter) logClassifyOutcome(ctx context.Context, principa
 // is disabled for this principal or the config could not be loaded.
 // RecipientDomain is left empty: the IMAP import path has no SMTP
 // envelope recipient to derive one from.
-func (a *imapImportSpamAdapter) buildClassifyContext(ctx context.Context, principalID store.PrincipalID) (spam.ClassifyContext, bool) {
+func (a *imapImportSpamAdapter) buildClassifyContext(ctx context.Context, principalID store.PrincipalID) (spam.ClassifyContext, bool, []store.SenderCategoryRule) {
 	base := spam.ClassifyContext{Principal: fmt.Sprint(principalID)}
 	cfg, err := a.st.Meta().GetCategorisationConfig(ctx, principalID)
 	if err != nil {
 		a.logger.WarnContext(ctx, "imap-import spam: load categorisation config",
 			slog.Uint64("principal_id", uint64(principalID)),
 			slog.String("err", err.Error()))
-		return base, false
+		return base, false, nil
 	}
 	if !cfg.Enabled {
-		return base, false
+		return base, false, nil
 	}
 	prompt := cfg.Prompt
 	if cfg.Guardrail != "" {
@@ -203,7 +207,7 @@ func (a *imapImportSpamAdapter) buildClassifyContext(ctx context.Context, princi
 			base.Categories[i] = spam.CategoryOption{Name: c.Name, Description: c.Description}
 		}
 	}
-	return base, true
+	return base, true, cfg.SenderRules
 }
 
 // RecordVerdict implements imapimport.SpamClassifier. A no-op when

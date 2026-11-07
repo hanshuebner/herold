@@ -62,6 +62,30 @@ func buildClassifierFixture(t *testing.T) string {
 // a message via raw SMTP and asserts the stored Email carries the
 // $category-promotions keyword.
 func TestSMTPInbound_E2E_CategorisesINBOXMessages(t *testing.T) {
+	kws := deliverAndReadCategoryKeywords(t, nil)
+	if len(kws) == 0 {
+		t.Fatalf("expected $category-* keyword on delivered message")
+	}
+}
+
+// TestSMTPInbound_E2E_SenderRuleOverridesClassifier delivers a message
+// from a ruled sender while the classifier plugin assigns "promotions":
+// the stored message carries the rule's category instead (issue #555).
+func TestSMTPInbound_E2E_SenderRuleOverridesClassifier(t *testing.T) {
+	kws := deliverAndReadCategoryKeywords(t, []store.SenderCategoryRule{
+		{Sender: "bob@external.example", Category: "social"},
+	})
+	if len(kws) != 1 || kws[0] != "$category-social" {
+		t.Fatalf("category keywords = %v, want [$category-social]", kws)
+	}
+}
+
+// deliverAndReadCategoryKeywords boots the production wiring with a
+// classifier plugin that assigns "promotions", seeds alice with the given
+// sender rules, delivers one message from bob@external.example over SMTP,
+// and returns the $category-* keywords on the stored message.
+func deliverAndReadCategoryKeywords(t *testing.T, rules []store.SenderCategoryRule) []string {
+	t.Helper()
 	if testing.Short() {
 		t.Skip("e2e wiring test")
 	}
@@ -153,6 +177,16 @@ metrics_bind = ""
 	pid, err := dirAdapter.CreatePrincipal(ctx, "alice@"+domain, "correct-horse-staple-battery")
 	if err != nil {
 		t.Fatalf("CreatePrincipal: %v", err)
+	}
+	if len(rules) > 0 {
+		cc, err := st.Meta().GetCategorisationConfig(ctx, pid)
+		if err != nil {
+			t.Fatalf("GetCategorisationConfig: %v", err)
+		}
+		cc.SenderRules = rules
+		if err := st.Meta().UpdateCategorisationConfig(ctx, cc); err != nil {
+			t.Fatalf("UpdateCategorisationConfig: %v", err)
+		}
 	}
 	if err := st.Close(); err != nil {
 		t.Fatalf("store close: %v", err)
@@ -257,39 +291,24 @@ metrics_bind = ""
 	defer func() { _ = st2.Close() }()
 
 	deadline := time.Now().Add(10 * time.Second)
-	var foundKeyword bool
-	for !foundKeyword && time.Now().Before(deadline) {
+	var kws []string
+	for time.Now().Before(deadline) {
 		mb, err := st2.Meta().GetMailboxByName(ctx, pid, "INBOX")
-		if err != nil {
-			time.Sleep(50 * time.Millisecond)
-			continue
-		}
-		msgs, err := st2.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 10})
-		if err != nil || len(msgs) == 0 {
-			time.Sleep(50 * time.Millisecond)
-			continue
-		}
-		for _, kw := range msgs[0].Keywords {
-			if strings.HasPrefix(kw, "$category-") {
-				foundKeyword = true
-				break
+		if err == nil {
+			msgs, err := st2.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 10})
+			if err == nil && len(msgs) > 0 {
+				kws = nil
+				for _, kw := range msgs[0].Keywords {
+					if strings.HasPrefix(kw, "$category-") {
+						kws = append(kws, kw)
+					}
+				}
+				if len(kws) > 0 {
+					return kws
+				}
 			}
-		}
-		if foundKeyword {
-			break
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	if !foundKeyword {
-		// Gather what keywords were present for a useful failure message.
-		mb, _ := st2.Meta().GetMailboxByName(ctx, pid, "INBOX")
-		var kws []string
-		if mb.ID != 0 {
-			msgs, _ := st2.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 10})
-			if len(msgs) > 0 {
-				kws = msgs[0].Keywords
-			}
-		}
-		t.Fatalf("expected $category-* keyword on delivered message; keywords=%v", kws)
-	}
+	return nil
 }

@@ -226,6 +226,9 @@ type CategorisationConfigRow struct {
 	// it so a post-restore SetDerivedCategories call is not rejected by a
 	// stale epoch mismatch.
 	DerivedCategoriesEpoch int64 `json:"derived_categories_epoch"`
+	// SenderRulesJSON is the migration-0119 JSON array of per-sender
+	// category rules (issue #555); NULL means no rules.
+	SenderRulesJSON *string `json:"sender_rules_json,omitempty"`
 }
 
 type MailboxRow struct {

@@ -2599,6 +2599,7 @@ func (m *metadata) readCategorisationRow(ctx context.Context, pid store.Principa
 		categorySetJSON       []byte
 		derivedCategoriesJSON *string
 		derivedEpoch          int64
+		senderRulesJSON       *string
 		endpointURL           *string
 		model                 *string
 		apiKeyEnv             *string
@@ -2608,13 +2609,13 @@ func (m *metadata) readCategorisationRow(ctx context.Context, pid store.Principa
 	)
 	err := m.s.pool.QueryRow(ctx, `
 		SELECT prompt, guardrail, category_set_json, derived_categories_json,
-		       derived_categories_epoch,
+		       derived_categories_epoch, sender_rules_json,
 		       endpoint_url, model, api_key_env,
 		       timeout_sec, enabled, updated_at_us
 		  FROM jmap_categorisation_config
 		 WHERE principal_id = $1`, int64(pid)).Scan(
 		&prompt, &guardrail, &categorySetJSON, &derivedCategoriesJSON,
-		&derivedEpoch,
+		&derivedEpoch, &senderRulesJSON,
 		&endpointURL, &model, &apiKeyEnv,
 		&timeoutSec, &enabled, &updatedAtUs)
 	if err != nil {
@@ -2643,6 +2644,11 @@ func (m *metadata) readCategorisationRow(ctx context.Context, pid store.Principa
 	if derivedCategoriesJSON != nil && *derivedCategoriesJSON != "" {
 		if err := json.Unmarshal([]byte(*derivedCategoriesJSON), &cfg.DerivedCategories); err != nil {
 			return store.CategorisationConfig{}, false, fmt.Errorf("storepg: decode derived_categories_json: %w", err)
+		}
+	}
+	if senderRulesJSON != nil && *senderRulesJSON != "" {
+		if err := json.Unmarshal([]byte(*senderRulesJSON), &cfg.SenderRules); err != nil {
+			return store.CategorisationConfig{}, false, fmt.Errorf("storepg: decode sender_rules_json: %w", err)
 		}
 	}
 	return cfg, true, nil
@@ -2686,18 +2692,28 @@ func (m *metadata) UpdateCategorisationConfig(ctx context.Context, cfg store.Cat
 			s := string(b)
 			derivedJSON = &s
 		}
+		var rulesJSON *string
+		if len(cfg.SenderRules) > 0 {
+			b, jerr := json.Marshal(cfg.SenderRules)
+			if jerr != nil {
+				return fmt.Errorf("storepg: encode sender_rules_json: %w", jerr)
+			}
+			s := string(b)
+			rulesJSON = &s
+		}
 		_, err := tx.Exec(ctx, `
 			INSERT INTO jmap_categorisation_config
 			  (principal_id, prompt, guardrail, category_set_json, derived_categories_json,
-			   derived_categories_epoch,
+			   derived_categories_epoch, sender_rules_json,
 			   endpoint_url, model, api_key_env, timeout_sec, enabled, updated_at_us)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 			ON CONFLICT (principal_id) DO UPDATE SET
 			  prompt = EXCLUDED.prompt,
 			  guardrail = EXCLUDED.guardrail,
 			  category_set_json = EXCLUDED.category_set_json,
 			  derived_categories_json = EXCLUDED.derived_categories_json,
 			  derived_categories_epoch = EXCLUDED.derived_categories_epoch,
+			  sender_rules_json = EXCLUDED.sender_rules_json,
 			  endpoint_url = EXCLUDED.endpoint_url,
 			  model = EXCLUDED.model,
 			  api_key_env = EXCLUDED.api_key_env,
@@ -2705,7 +2721,7 @@ func (m *metadata) UpdateCategorisationConfig(ctx context.Context, cfg store.Cat
 			  enabled = EXCLUDED.enabled,
 			  updated_at_us = EXCLUDED.updated_at_us`,
 			int64(cfg.PrincipalID), cfg.Prompt, cfg.Guardrail, js, derivedJSON,
-			newEpoch,
+			newEpoch, rulesJSON,
 			cfg.Endpoint, cfg.Model, cfg.APIKeyEnv,
 			int32(timeoutSec), cfg.Enabled, usMicros(now))
 		return mapErr(err)

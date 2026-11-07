@@ -2150,6 +2150,18 @@ type Metadata interface {
 	// REQ-AUTH-EXT-SUBMIT-05).
 	ListIdentitiesWithHeldSubmissions(ctx context.Context) ([]string, error)
 
+	// ListMessagesFromCandidates returns the per-mailbox membership rows
+	// of pid's messages whose raw From header contains needle
+	// (case-insensitive substring), in ascending message-id order, for
+	// messages with id > afterID. A message contributes one row per
+	// membership in a mailbox that is neither Trash nor Junk. The
+	// substring match is a prefilter: callers confirm the exact From
+	// address themselves. limit caps the number of distinct messages per
+	// page (non-positive applies 500); callers page by passing the last
+	// message id seen as afterID. Used by per-sender category rules to
+	// find the stored mail a new rule applies to.
+	ListMessagesFromCandidates(ctx context.Context, pid PrincipalID, needle string, afterID MessageID, limit int) ([]Message, error)
+
 	// -- Phase 2 JMAP snooze (REQ-PROTO-49) ---------------------------
 
 	// ListDueSnoozedMessages returns messages whose SnoozedUntil <= now

@@ -207,6 +207,13 @@ func (c *Categoriser) CategoriseRich(
 		return CategorisationResult{}, nil
 	}
 
+	// A per-sender rule decides the category directly: the From address
+	// is looked up before any classifier call, and a match skips it.
+	if cat := SenderRuleCategory(cfg.SenderRules, msg.Envelope.From); cat != "" {
+		observe.CategoriseCallsTotal.WithLabelValues("sender_rule").Inc()
+		return CategorisationResult{Category: cat}, nil
+	}
+
 	// Resolve which LLM client to use. When the caller has injected an
 	// explicit client (e.g. llmtest.Replayer in tests), use it directly
 	// and skip endpoint validation — the caller owns the transport.

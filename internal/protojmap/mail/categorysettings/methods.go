@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/mail"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/hanshuebner/herold/internal/categorise"
@@ -33,7 +36,16 @@ type handlerSet struct {
 	jobs        *categorise.JobRegistry
 	logger      *slog.Logger
 	clk         clock.Clock
+	// bg tracks sender-rule recategorisation goroutines so tests can wait
+	// for them to finish.
+	bg sync.WaitGroup
 }
+
+// maxSenderRules caps the number of sender rules one account can hold.
+const maxSenderRules = 1000
+
+// maxSenderBytes is the longest address a rule accepts (RFC 5321 path).
+const maxSenderBytes = 320
 
 // AccountCapability satisfies protojmap.AccountCapabilityProvider. It
 // reports the active category set IDs and whether bulk recategorisation is
@@ -73,6 +85,22 @@ type jmapCategorySettings struct {
 	// reading the Mailbox collection always finds a disposition/priority
 	// carrier for every entry.
 	DerivedCategories []string `json:"derivedCategories"`
+	// SenderRules are the per-sender category overrides (issue #555): mail
+	// whose From address equals a rule's sender (case-insensitive) is
+	// categorised as the rule's category without a classifier call. Always
+	// an array (empty when the account has no rules). Writable: a set
+	// replaces the whole list, so omitting a rule deletes it.
+	SenderRules []jmapSenderRule `json:"senderRules"`
+}
+
+// jmapSenderRule is the wire form of one sender rule.
+type jmapSenderRule struct {
+	// Sender is the exact From email address; the server returns it
+	// lower-cased.
+	Sender string `json:"sender"`
+	// Category is a bare category name from the account's category set
+	// (derivedCategories plus the configured vocabulary).
+	Category string `json:"category"`
 }
 
 // stateString converts an int64 JMAP state counter to the opaque string
@@ -85,11 +113,16 @@ func configToJMAP(cfg store.CategorisationConfig) jmapCategorySettings {
 	if derived == nil {
 		derived = []string{}
 	}
+	rules := make([]jmapSenderRule, 0, len(cfg.SenderRules))
+	for _, r := range cfg.SenderRules {
+		rules = append(rules, jmapSenderRule{Sender: r.Sender, Category: r.Category})
+	}
 	return jmapCategorySettings{
 		ID:                singletonID,
 		Prompt:            cfg.Prompt,
 		DefaultPrompt:     categorise.DefaultPrompt,
 		DerivedCategories: derived,
+		SenderRules:       rules,
 	}
 }
 
@@ -274,6 +307,7 @@ func (s *setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 		if err := s.h.store.Meta().UpdateCategorisationConfig(ctx, patched); err != nil {
 			return nil, protojmap.NewMethodError("serverFail", err.Error())
 		}
+		s.h.recategoriseChangedRules(p.ID, current.SenderRules, patched.SenderRules)
 		updated := configToJMAP(patched)
 		if resp.Updated == nil {
 			resp.Updated = make(map[jmapID]*jmapCategorySettings)
@@ -318,6 +352,12 @@ func applySetPatch(current store.CategorisationConfig, raw json.RawMessage) (sto
 				return current, fmt.Errorf("prompt exceeds maximum size of %d bytes", maxPromptBytes)
 			}
 			out.Prompt = s
+		case "senderRules":
+			rules, err := parseSenderRules(v, categorise.AllowedCategories(current))
+			if err != nil {
+				return current, fmt.Errorf("senderRules: %w", err)
+			}
+			out.SenderRules = rules
 		case "id", "defaultPrompt", "derivedCategories":
 			return current, fmt.Errorf("%s is read-only", k)
 		case "categories":
@@ -328,6 +368,89 @@ func applySetPatch(current store.CategorisationConfig, raw json.RawMessage) (sto
 		}
 	}
 	return out, nil
+}
+
+// parseSenderRules decodes and validates a senderRules value: a list of
+// {sender, category} objects with distinct, well-formed sender addresses
+// and categories drawn from allowed. Senders are returned lower-cased.
+func parseSenderRules(raw json.RawMessage, allowed []string) ([]store.SenderCategoryRule, error) {
+	var in []jmapSenderRule
+	if err := json.Unmarshal(raw, &in); err != nil {
+		return nil, err
+	}
+	if len(in) > maxSenderRules {
+		return nil, fmt.Errorf("at most %d rules are allowed", maxSenderRules)
+	}
+	ok := make(map[string]bool, len(allowed))
+	for _, a := range allowed {
+		ok[a] = true
+	}
+	seen := make(map[string]bool, len(in))
+	out := make([]store.SenderCategoryRule, 0, len(in))
+	for i, r := range in {
+		sender := categorise.NormalizeSender(r.Sender)
+		if sender == "" || len(sender) > maxSenderBytes {
+			return nil, fmt.Errorf("rule %d: sender must be an email address of at most %d bytes", i, maxSenderBytes)
+		}
+		addr, err := mail.ParseAddress(sender)
+		if err != nil || strings.ToLower(addr.Address) != sender {
+			return nil, fmt.Errorf("rule %d: sender %q is not a bare email address", i, r.Sender)
+		}
+		if seen[sender] {
+			return nil, fmt.Errorf("rule %d: duplicate sender %q", i, sender)
+		}
+		seen[sender] = true
+		if !ok[r.Category] {
+			return nil, fmt.Errorf("rule %d: unknown category %q", i, r.Category)
+		}
+		out = append(out, store.SenderCategoryRule{Sender: sender, Category: r.Category})
+	}
+	return out, nil
+}
+
+// recategoriseChangedRules recategorises the stored mail of every sender
+// whose rule is new or whose category changed between old and updated.
+// Deleted rules leave stored mail alone. The work runs in the background
+// through the same keyword path as CategorySettings/recategorise, so
+// clients see the changes through the normal state/push flow.
+func (h *handlerSet) recategoriseChangedRules(pid store.PrincipalID, old, updated []store.SenderCategoryRule) {
+	prev := make(map[string]string, len(old))
+	for _, r := range old {
+		prev[categorise.NormalizeSender(r.Sender)] = r.Category
+	}
+	var todo []store.SenderCategoryRule
+	for _, r := range updated {
+		if cat, had := prev[r.Sender]; !had || cat != r.Category {
+			todo = append(todo, r)
+		}
+	}
+	if len(todo) == 0 {
+		return
+	}
+	logger := h.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	st := h.store
+	h.bg.Add(1)
+	go func() {
+		defer h.bg.Done()
+		bgCtx := context.Background()
+		for _, r := range todo {
+			n, err := categorise.RecategoriseSender(bgCtx, st, pid, r.Sender, r.Category)
+			if err != nil {
+				logger.WarnContext(bgCtx, "categorysettings: sender rule recategorise failed",
+					slog.Uint64("principal_id", uint64(pid)),
+					slog.String("sender", r.Sender),
+					slog.String("err", err.Error()))
+				continue
+			}
+			logger.DebugContext(bgCtx, "categorysettings: sender rule recategorised",
+				slog.Uint64("principal_id", uint64(pid)),
+				slog.String("sender", r.Sender),
+				slog.Int("messages", n))
+		}
+	}()
 }
 
 // -- CategorySettings/recategorise ----------------------------------

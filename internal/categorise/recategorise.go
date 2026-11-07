@@ -230,41 +230,41 @@ func (c *Categoriser) loadAndParse(ctx context.Context, m store.Message) (mailpa
 }
 
 // applyCategoryKeyword reconciles the desired category against the
-// keywords on the message: clears any existing $category-* keywords
-// and adds the new one (if any). Idempotent: setting the same
-// category twice produces no extra updates.
+// keywords on the message via ApplyCategoryKeyword.
 func (c *Categoriser) applyCategoryKeyword(ctx context.Context, m store.Message, newCat string) error {
-	var clear []string
-	var have string
-	for _, k := range m.Keywords {
-		if strings.HasPrefix(k, CategoryKeywordPrefix) {
-			if have == "" {
-				have = strings.TrimPrefix(k, CategoryKeywordPrefix)
-			}
-			clear = append(clear, k)
-		}
-	}
+	return ApplyCategoryKeyword(ctx, c.store, m, newCat)
+}
+
+// ApplyCategoryKeyword reconciles the desired category against the
+// keywords on the message: clears any existing $category-* keywords
+// other than the desired one and adds the desired one (when newCat is
+// non-empty). Idempotent: a message already carrying exactly the
+// desired category produces no update.
+func ApplyCategoryKeyword(ctx context.Context, st store.Store, m store.Message, newCat string) error {
 	desired := ""
 	if newCat != "" {
 		desired = CategoryKeywordPrefix + newCat
 	}
-	if have == newCat {
-		return nil
+	var clear []string
+	have := false
+	for _, k := range m.Keywords {
+		if !strings.HasPrefix(k, CategoryKeywordPrefix) {
+			continue
+		}
+		if k == desired {
+			have = true
+			continue
+		}
+		clear = append(clear, k)
 	}
 	var add []string
-	if desired != "" {
+	if desired != "" && !have {
 		add = []string{desired}
-		// Do not clear the desired keyword if it already happens to
-		// be present (shouldn't due to dedup above, but defensive).
-		filtered := make([]string, 0, len(clear))
-		for _, k := range clear {
-			if k != desired {
-				filtered = append(filtered, k)
-			}
-		}
-		clear = filtered
 	}
-	_, err := c.store.Meta().UpdateMessageFlags(ctx, m.ID, m.MailboxID, 0, 0, add, clear, 0)
+	if len(add) == 0 && len(clear) == 0 {
+		return nil
+	}
+	_, err := st.Meta().UpdateMessageFlags(ctx, m.ID, m.MailboxID, 0, 0, add, clear, 0)
 	return err
 }
 

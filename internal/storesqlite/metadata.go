@@ -4997,6 +4997,48 @@ func (m *metadata) ListDueSnoozedMessages(ctx context.Context, now time.Time, li
 	return out, rows.Err()
 }
 
+func (m *metadata) ListMessagesFromCandidates(ctx context.Context, pid store.PrincipalID, needle string, afterID store.MessageID, limit int) ([]store.Message, error) {
+	if limit <= 0 || limit > 5000 {
+		limit = 500
+	}
+	if needle == "" {
+		return nil, nil
+	}
+	mask := int64(store.MailboxAttrTrash | store.MailboxAttrJunk)
+	rows, err := m.s.db.QueryContext(ctx, `
+		SELECT m.id, m.principal_id, m.blob_hash, m.blob_size, m.internal_date_us,
+		       m.received_at_us, m.size, m.thread_id,
+		       m.env_subject, m.env_from, m.env_to, m.env_cc, m.env_bcc, m.env_reply_to,
+		       m.env_message_id, m.env_in_reply_to, m.env_references, m.env_date_us,
+		       m.internalize_pending, m.preview, m.has_attachment, m.body_meta_computed,
+		       m.ingest_source, m.ingest_source_ref,
+		       mm.mailbox_id, mm.uid, mm.modseq, mm.flags, mm.keywords_csv, mm.snoozed_until_us, mm.wake_mailbox_id, mm.received_to
+		  FROM messages m
+		  JOIN message_mailboxes mm ON mm.message_id = m.id
+		  JOIN mailboxes mb ON mb.id = mm.mailbox_id
+		 WHERE m.id IN (
+		         SELECT id FROM messages
+		          WHERE principal_id = ? AND id > ?
+		            AND instr(lower(env_from), lower(?)) > 0
+		          ORDER BY id LIMIT ?)
+		   AND (mb.attributes & ?) = 0
+		 ORDER BY m.id ASC, mm.mailbox_id ASC`,
+		int64(pid), int64(afterID), needle, limit, mask)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	var out []store.Message
+	for rows.Next() {
+		msg, err := scanMessage(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, msg)
+	}
+	return out, rows.Err()
+}
+
 func (m *metadata) SetSnooze(ctx context.Context, msgID store.MessageID, mailboxID store.MailboxID, when *time.Time, wake *store.MailboxID) (store.ModSeq, error) {
 	now := m.s.clock.Now().UTC()
 	var modseq store.ModSeq

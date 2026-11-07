@@ -373,6 +373,9 @@ func Run(t *testing.T, f Factory) {
 		{"SetLLMClassification_CreatesLabelMailboxes", testSetLLMClassificationCreatesLabelMailboxes},
 		{"SetLLMClassification_DoesNotCreateLabelWithNoCategory", testSetLLMClassificationDoesNotCreateLabelWithNoCategory},
 		{"EnsureCategoryLabelMailboxes_HealsPreExistingRow", testEnsureCategoryLabelMailboxesHealsPreExistingRow},
+		// issue #555: per-sender category rules.
+		{"SenderRules_RoundTrip", testSenderRulesRoundTrip},
+		{"ListMessagesFromCandidates", testListMessagesFromCandidates},
 		{"SetLLMClassification_HealsPreExistingSteadyState", testSetLLMClassificationHealsPreExistingSteadyState},
 		// -- REQ-FILT-66 / REQ-FILT-216 / G14 LLM classification records --
 		{"LLMClassification_SetGet_SpamOnly", testLLMClassificationSpamOnly},

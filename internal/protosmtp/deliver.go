@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hanshuebner/herold/internal/categorise"
 	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/extimg"
 	"github.com/hanshuebner/herold/internal/mailauth"
@@ -1275,12 +1276,13 @@ type recipientRef struct {
 func classifyMessage(ctx context.Context, srv *Server, msg mailparse.Message, auth *mailauth.AuthResults, recipients []recipientRef) classifyAttempt {
 	var clsCtx spam.ClassifyContext
 	var categorisationEnabled bool
+	var senderRules []store.SenderCategoryRule
 	var ownAddresses []string
 	for _, r := range recipients {
 		if r.principalID == 0 {
 			continue
 		}
-		clsCtx, categorisationEnabled = buildClassifyContext(ctx, srv, r.principalID, r.addr)
+		clsCtx, categorisationEnabled, senderRules = buildClassifyContext(ctx, srv, r.principalID, r.addr)
 		// re #386: same first-local-recipient simplification as the
 		// category context above -- one classify call per message, so
 		// own_addresses reflects that recipient's own addresses.
@@ -1337,6 +1339,9 @@ func classifyMessage(ctx context.Context, srv *Server, msg mailparse.Message, au
 		cls.Category = ""
 	case !categorisationEnabled:
 		cls.Category = ""
+	case categorise.SenderRuleCategory(senderRules, msg.Envelope.From) != "":
+		// A per-sender rule overrides whatever the classifier picked.
+		cls.Category = categorise.SenderRuleCategory(senderRules, msg.Envelope.From)
 	case cls.Category == "":
 		// ADR-0002 structural fallback: runs only where the plugin's
 		// category is empty (no plugin at all collapses to the same
@@ -1390,7 +1395,7 @@ func logClassifyOutcome(ctx context.Context, srv *Server, msg mailparse.Message,
 // is disabled for this principal or the config could not be loaded --
 // callers use it to suppress both the plugin's category and the
 // structural fallback.
-func buildClassifyContext(ctx context.Context, srv *Server, principalID store.PrincipalID, addr string) (spam.ClassifyContext, bool) {
+func buildClassifyContext(ctx context.Context, srv *Server, principalID store.PrincipalID, addr string) (spam.ClassifyContext, bool, []store.SenderCategoryRule) {
 	base := spam.ClassifyContext{
 		Principal:       fmt.Sprint(principalID),
 		RecipientDomain: domainOfRecipient(addr),
@@ -1401,10 +1406,10 @@ func buildClassifyContext(ctx context.Context, srv *Server, principalID store.Pr
 			slog.String("activity", observe.ActivitySystem),
 			slog.Uint64("principal_id", uint64(principalID)),
 			slog.String("err", err.Error()))
-		return base, false
+		return base, false, nil
 	}
 	if !cfg.Enabled {
-		return base, false
+		return base, false, nil
 	}
 	prompt := cfg.Prompt
 	if cfg.Guardrail != "" {
@@ -1417,7 +1422,7 @@ func buildClassifyContext(ctx context.Context, srv *Server, principalID store.Pr
 			base.Categories[i] = spam.CategoryOption{Name: c.Name, Description: c.Description}
 		}
 	}
-	return base, true
+	return base, true, cfg.SenderRules
 }
 
 // runSieve loads the recipient's script via

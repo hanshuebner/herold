@@ -954,7 +954,7 @@ const CurrentBackupVersion = 1
 //	principal_id), the explicit enablement set, FK to apps(id) and
 //	principals(id), both ON DELETE CASCADE. New tables; AppRow and
 //	AppPrincipalRow.
-const CurrentSchemaVersion = 118
+const CurrentSchemaVersion = 119
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

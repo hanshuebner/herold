@@ -2753,6 +2753,7 @@ func (m *metadata) readCategorisationRow(ctx context.Context, pid store.Principa
 		categorySetJSON       []byte
 		derivedCategoriesJSON sql.NullString
 		derivedEpoch          int64
+		senderRulesJSON       sql.NullString
 		endpointURL           sql.NullString
 		model                 sql.NullString
 		apiKeyEnv             sql.NullString
@@ -2762,13 +2763,13 @@ func (m *metadata) readCategorisationRow(ctx context.Context, pid store.Principa
 	)
 	err := m.s.db.QueryRowContext(ctx, `
 		SELECT prompt, guardrail, category_set_json, derived_categories_json,
-		       derived_categories_epoch,
+		       derived_categories_epoch, sender_rules_json,
 		       endpoint_url, model, api_key_env,
 		       timeout_sec, enabled, updated_at_us
 		  FROM jmap_categorisation_config
 		 WHERE principal_id = ?`, int64(pid)).Scan(
 		&prompt, &guardrail, &categorySetJSON, &derivedCategoriesJSON,
-		&derivedEpoch,
+		&derivedEpoch, &senderRulesJSON,
 		&endpointURL, &model, &apiKeyEnv,
 		&timeoutSec, &enabled, &updatedAtUs)
 	if err != nil {
@@ -2794,6 +2795,11 @@ func (m *metadata) readCategorisationRow(ctx context.Context, pid store.Principa
 	if derivedCategoriesJSON.Valid && derivedCategoriesJSON.String != "" {
 		if err := json.Unmarshal([]byte(derivedCategoriesJSON.String), &cfg.DerivedCategories); err != nil {
 			return store.CategorisationConfig{}, false, fmt.Errorf("storesqlite: decode derived_categories_json: %w", err)
+		}
+	}
+	if senderRulesJSON.Valid && senderRulesJSON.String != "" {
+		if err := json.Unmarshal([]byte(senderRulesJSON.String), &cfg.SenderRules); err != nil {
+			return store.CategorisationConfig{}, false, fmt.Errorf("storesqlite: decode sender_rules_json: %w", err)
 		}
 	}
 	if endpointURL.Valid {
@@ -2851,18 +2857,27 @@ func (m *metadata) UpdateCategorisationConfig(ctx context.Context, cfg store.Cat
 			derivedJSON = string(b)
 		}
 		// derivedJSON is nil → SQL NULL (clears the column).
+		var rulesJSON any
+		if len(cfg.SenderRules) > 0 {
+			b, jerr := json.Marshal(cfg.SenderRules)
+			if jerr != nil {
+				return fmt.Errorf("storesqlite: encode sender_rules_json: %w", jerr)
+			}
+			rulesJSON = string(b)
+		}
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO jmap_categorisation_config
 			  (principal_id, prompt, guardrail, category_set_json, derived_categories_json,
-			   derived_categories_epoch,
+			   derived_categories_epoch, sender_rules_json,
 			   endpoint_url, model, api_key_env, timeout_sec, enabled, updated_at_us)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(principal_id) DO UPDATE SET
 			  prompt = excluded.prompt,
 			  guardrail = excluded.guardrail,
 			  category_set_json = excluded.category_set_json,
 			  derived_categories_json = excluded.derived_categories_json,
 			  derived_categories_epoch = excluded.derived_categories_epoch,
+			  sender_rules_json = excluded.sender_rules_json,
 			  endpoint_url = excluded.endpoint_url,
 			  model = excluded.model,
 			  api_key_env = excluded.api_key_env,
@@ -2870,7 +2885,7 @@ func (m *metadata) UpdateCategorisationConfig(ctx context.Context, cfg store.Cat
 			  enabled = excluded.enabled,
 			  updated_at_us = excluded.updated_at_us`,
 			int64(cfg.PrincipalID), cfg.Prompt, cfg.Guardrail, js, derivedJSON,
-			newEpoch,
+			newEpoch, rulesJSON,
 			nullStringPtr(cfg.Endpoint), nullStringPtr(cfg.Model), nullStringPtr(cfg.APIKeyEnv),
 			int64(timeoutSec), boolToInt(cfg.Enabled), usMicros(now))
 		return mapErr(err)

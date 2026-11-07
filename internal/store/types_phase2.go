@@ -1450,6 +1450,16 @@ type CategoryDef struct {
 	Description string `json:"description"`
 }
 
+// SenderCategoryRule pins one sender to one category: mail whose From
+// address equals Sender (case-insensitive) is categorised as Category
+// without consulting the classifier. Sender is stored lower-cased.
+type SenderCategoryRule struct {
+	// Sender is the exact From email address, lower-cased.
+	Sender string `json:"sender"`
+	// Category is a bare category name from the account's category set.
+	Category string `json:"category"`
+}
+
 // CategorisationConfig is the per-account row driving the LLM
 // categoriser (REQ-FILT-211/213/217). Endpoint, Model, APIKeyEnv and
 // TimeoutSec are nullable so a per-account row can override only the
@@ -1492,6 +1502,11 @@ type CategorisationConfig struct {
 	// epoch still matches, making concurrent stale classifier writes
 	// a silent no-op rather than a data-corruption risk.
 	DerivedCategoriesEpoch int64
+	// SenderRules are the per-sender category overrides: at most one
+	// rule per Sender. A From-address match assigns the rule's category
+	// directly; the classifier does not decide it. Written only through
+	// UpdateCategorisationConfig; SetDerivedCategories leaves them alone.
+	SenderRules []SenderCategoryRule
 	// Endpoint, when non-nil, overrides the operator-default
 	// OpenAI-compatible endpoint URL for this account.
 	Endpoint *string
