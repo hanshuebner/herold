@@ -8,6 +8,7 @@
   import { movePicker } from '../lib/mail/move-picker.svelte';
   import { snoozePicker } from '../lib/mail/snooze-picker.svelte';
   import { categoryPicker } from '../lib/mail/category-picker.svelte';
+  import { moveEmailsToCategory } from '../lib/mail/category-move';
   import {
     categorySettings,
     emailMatchesTab,
@@ -847,6 +848,23 @@
     // the actual patch targets the full folder server-side.
     labelPicker.openBulk(selectedIds());
   }
+  function onTabDragOver(e: DragEvent, name: string, isActive: boolean): void {
+    if (!threadDnd.isValidCategoryTarget(name, isActive ? name : null)) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    threadDnd.setHoveredCategory(name);
+  }
+  function onTabDragLeave(name: string): void {
+    if (threadDnd.current?.hoveredCategory === name) threadDnd.setHoveredCategory(null);
+  }
+  function onTabDrop(e: DragEvent, name: string, isActive: boolean): void {
+    if (!threadDnd.isValidCategoryTarget(name, isActive ? name : null)) return;
+    e.preventDefault();
+    const ids = threadDnd.current?.ids ?? [];
+    threadDnd.end();
+    if (ids.length === 0) return;
+    void moveEmailsToCategory(ids, name, true);
+  }
   function openBulkCategoryPicker(): void {
     if (mail.listWholeMailboxSelected) {
       mail.wholeMailboxActionUnavailable();
@@ -1633,7 +1651,11 @@
             class="tab"
             class:tab-active={isActive}
             aria-current={isActive ? 'page' : undefined}
+            class:tab-drop={threadDnd.current?.hoveredCategory === name}
             onclick={() => selectTab(tabKey)}
+            ondragover={(e) => onTabDragOver(e, name, isActive)}
+            ondragleave={() => onTabDragLeave(name)}
+            ondrop={(e) => onTabDrop(e, name, isActive)}
           >
             {categoryLabel(name)}
             {#if unread > 0}
@@ -1846,6 +1868,13 @@
   .tab:hover {
     color: var(--text-primary);
     background: var(--layer-01);
+  }
+  .tab.tab-drop,
+  .tab.tab-drop:hover {
+    background: var(--layer-hover-01);
+    color: var(--text-primary);
+    outline: 2px dashed var(--interactive);
+    outline-offset: -2px;
   }
   .tab-active,
   .tab-active:hover {

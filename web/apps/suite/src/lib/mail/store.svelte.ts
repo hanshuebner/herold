@@ -4880,9 +4880,9 @@ class MailStore {
     emailId: string,
     categoryKeyword: string | null,
     threadGranular: boolean,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const email = this.emails.get(emailId);
-    if (!email) return;
+    if (!email) return false;
 
     // Collect the ids to patch (thread-granular or single).
     const targetIds: string[] = threadGranular
@@ -4921,10 +4921,11 @@ class MailStore {
       updates[id] = setPatches;
     }
 
-    if (Object.keys(updates).length === 0) return;
+    if (Object.keys(updates).length === 0) return false;
 
     try {
       await this.#emailSetUpdateBulk(updates);
+      return true;
     } catch (err) {
       // Revert all patches.
       for (const [id, prev] of prevById) {
@@ -4935,6 +4936,7 @@ class MailStore {
         kind: 'error',
         timeoutMs: 6000,
       });
+      return false;
     }
   }
 

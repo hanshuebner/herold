@@ -488,3 +488,21 @@ describe('categorySettings.recategorise', () => {
     mock.__setBatchImpl(null);
   });
 });
+
+describe('sender rule list merge (re #555)', () => {
+  const { mergeSenderRule, removeSenderRule } = _internals_forTest;
+  const base = [
+    { sender: 'a@x.example', category: 'social' },
+    { sender: 'b@x.example', category: 'updates' },
+  ];
+  it('appends a rule for a new sender', () => {
+    expect(mergeSenderRule(base, { sender: 'C@x.example', category: 'forums' })).toEqual([...base, { sender: 'c@x.example', category: 'forums' }]);
+  });
+  it('replaces the rule for an existing sender in place', () => {
+    expect(mergeSenderRule(base, { sender: 'A@X.example', category: 'promotions' })).toEqual([{ sender: 'a@x.example', category: 'promotions' }, base[1]]);
+  });
+  it('removes a rule and leaves the input untouched', () => {
+    expect(removeSenderRule(base, 'A@x.example')).toEqual([base[1]]);
+    expect(base).toHaveLength(2);
+  });
+});

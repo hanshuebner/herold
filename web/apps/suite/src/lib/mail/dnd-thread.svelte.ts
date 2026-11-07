@@ -22,6 +22,8 @@ interface DragInfo {
   ids: string[];
   /** Mailbox-row id currently under the pointer, or null. */
   hoveredMailboxId: string | null;
+  /** Category tab (category name) currently under the pointer, or null. */
+  hoveredCategory: string | null;
 }
 
 class ThreadDnd {
@@ -33,7 +35,7 @@ class ThreadDnd {
       this.current = null;
       return;
     }
-    this.current = { ids, hoveredMailboxId: null };
+    this.current = { ids, hoveredMailboxId: null, hoveredCategory: null };
   }
 
   /** End the drag — called on dragend / drop / cancel. */
@@ -45,6 +47,22 @@ class ThreadDnd {
   setHovered(id: string | null): void {
     if (!this.current) return;
     this.current.hoveredMailboxId = id;
+  }
+
+  /** Update which category tab the pointer is over. Pass null to clear. */
+  setHoveredCategory(name: string | null): void {
+    if (!this.current) return;
+    this.current.hoveredCategory = name;
+  }
+
+  /**
+   * True when a drop on the category tab `name` should fire: a drag is in
+   * progress and the tab is not the active one (`activeName` is the
+   * category name of the tab currently shown, or null).
+   */
+  isValidCategoryTarget(name: string, activeName: string | null): boolean {
+    if (!this.current || this.current.ids.length === 0) return false;
+    return name !== activeName;
   }
 
   /** Resolve `mail.listFolder` (role or custom id) to a mailbox row id. */

@@ -10,12 +10,8 @@
    * The `m` shortcut in MailView triggers this overlay.
    */
   import { categoryPicker } from './category-picker.svelte';
-  import {
-    categorySettings,
-    categoryKeyword,
-    categoryLabel,
-  } from '../settings/category-settings.svelte';
-  import { mail } from './store.svelte';
+  import { categorySettings, categoryLabel } from '../settings/category-settings.svelte';
+  import { moveEmailsToCategory } from './category-move';
   import { t } from '../i18n/i18n.svelte';
 
   function handleBackdrop(e: MouseEvent): void {
@@ -30,8 +26,7 @@
     const { emailId, threadGranular } = categoryPicker;
     if (!emailId) return;
     categoryPicker.close();
-    const kw = catName ? categoryKeyword(catName) : null;
-    await mail.setCategoryKeyword(emailId, kw, threadGranular);
+    await moveEmailsToCategory([emailId], catName, threadGranular);
   }
 </script>
 

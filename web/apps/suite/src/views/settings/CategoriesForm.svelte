@@ -146,6 +146,42 @@
     {/if}
   </section>
 
+  <!-- Per-sender category rules (re #555). -->
+  <section class="form-section">
+    <h3>{t('cat.rules.heading')}</h3>
+    <p class="hint">{t('cat.rules.hint')}</p>
+    {#if categorySettings.senderRules.length > 0}
+      <table class="rules" aria-label={t('cat.rules.heading')}>
+        <thead>
+          <tr>
+            <th>{t('cat.rules.sender')}</th>
+            <th>{t('cat.rules.category')}</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each categorySettings.senderRules as rule (rule.sender)}
+            <tr>
+              <td>{rule.sender}</td>
+              <td>{categoryLabel(rule.category)}</td>
+              <td>
+                <Button
+                  variant="secondary"
+                  ariaLabel={t('cat.rules.deleteAria', { sender: rule.sender })}
+                  onclick={() => void categorySettings.deleteSenderRule(rule.sender)}
+                >
+                  {t('cat.rules.delete')}
+                </Button>
+              </td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    {:else}
+      <p class="hint empty-state">{t('cat.rules.empty')}</p>
+    {/if}
+  </section>
+
   <!-- REQ-CAT-30: bulk re-categorisation. -->
   <section class="form-section">
     <h3>{t('cat.recategorise.heading')}</h3>
@@ -225,6 +261,18 @@
     color: var(--text-primary);
     font-size: var(--type-body-compact-01-size);
     white-space: nowrap;
+  }
+
+  .rules {
+    border-collapse: collapse;
+    font-size: var(--type-body-compact-01-size);
+    color: var(--text-primary);
+  }
+  .rules th,
+  .rules td {
+    text-align: left;
+    padding: var(--spacing-02) var(--spacing-04) var(--spacing-02) 0;
+    border-bottom: 1px solid var(--border-subtle-01);
   }
 
   .empty-state {

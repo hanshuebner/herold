@@ -41,6 +41,34 @@ Respond with JSON only, no explanation:
 {"categories":["Primary","Social","Promotions","Updates","Forums"],"assigned":"<chosen category>"}
 If none of the categories fit, use "Primary". The "assigned" value must be one of the "categories" list.`;
 
+/** One per-sender category rule (`CategorySettings.senderRules`). */
+export interface SenderRule {
+  /** Lower-cased exact email address. */
+  sender: string;
+  /** Category name from the account's category set. */
+  category: string;
+}
+
+/**
+ * Return `rules` with `rule` applied: a rule for an existing sender (case
+ * insensitive) replaces it in place, otherwise the rule is appended. The
+ * server's `senderRules` update replaces the whole list, so callers send
+ * the merged result.
+ */
+export function mergeSenderRule(rules: SenderRule[], rule: SenderRule): SenderRule[] {
+  const sender = rule.sender.trim().toLowerCase();
+  const next: SenderRule = { sender, category: rule.category };
+  const idx = rules.findIndex((r) => r.sender.toLowerCase() === sender);
+  if (idx < 0) return [...rules.map((r) => ({ ...r })), next];
+  return rules.map((r, i) => (i === idx ? next : { ...r }));
+}
+
+/** Return `rules` without the rule for `sender` (case insensitive). */
+export function removeSenderRule(rules: SenderRule[], sender: string): SenderRule[] {
+  const key = sender.trim().toLowerCase();
+  return rules.filter((r) => r.sender.toLowerCase() !== key).map((r) => ({ ...r }));
+}
+
 function invocationArgs<T>(inv: Invocation | undefined): T {
   if (!inv) throw new Error('Expected method invocation, got undefined');
   return inv[1] as T;
@@ -60,6 +88,9 @@ class CategorySettingsStore {
   systemPrompt = $state<string>('');
   defaultPrompt = $state<string>(DEFAULT_PROMPT);
   enabled = $state<boolean>(true);
+
+  /** Per-sender category rules; always an array. */
+  senderRules = $state<SenderRule[]>([]);
 
   /** True while a bulk re-categorise RPC is in flight. */
   recategorising = $state(false);
@@ -131,6 +162,7 @@ class CategorySettingsStore {
           systemPrompt?: string;
           defaultPrompt?: string;
           enabled?: boolean;
+          senderRules?: SenderRule[];
         }>;
         state: string;
       }>(responses[0]);
@@ -143,7 +175,11 @@ class CategorySettingsStore {
         this.systemPrompt = row.systemPrompt ?? '';
         this.defaultPrompt = row.defaultPrompt ?? DEFAULT_PROMPT;
         this.enabled = row.enabled ?? true;
+        this.senderRules = Array.isArray(row.senderRules)
+          ? row.senderRules.map((r) => ({ sender: r.sender, category: r.category }))
+          : [];
       } else {
+        this.senderRules = [];
         // Server synthesises defaults; mirror them locally.
         this.derivedCategories = [];
         this.systemPrompt = '';
@@ -178,6 +214,30 @@ class CategorySettingsStore {
     await this.#set({ enabled: value }, () => {
       this.enabled = prev;
     });
+  }
+
+  /**
+   * Create or replace the rule for `sender`. Reads the current list,
+   * merges, and writes the whole list back. Optimistic; reverts on failure.
+   * Resolves true when the server accepted the update.
+   */
+  async addSenderRule(sender: string, category: string): Promise<boolean> {
+    const prev = this.senderRules;
+    const next = mergeSenderRule(prev, { sender, category });
+    this.senderRules = next;
+    return this.#set({ senderRules: next }, () => {
+      this.senderRules = prev;
+    }, 'Rule saved');
+  }
+
+  /** Delete the rule for `sender`. Optimistic; reverts on failure. */
+  async deleteSenderRule(sender: string): Promise<boolean> {
+    const prev = this.senderRules;
+    const next = removeSenderRule(prev, sender);
+    this.senderRules = next;
+    return this.#set({ senderRules: next }, () => {
+      this.senderRules = prev;
+    }, 'Rule deleted');
   }
 
   /**
@@ -233,10 +293,14 @@ class CategorySettingsStore {
   }
 
   /** Internal: issue `CategorySettings/set` and revert on failure. */
-  async #set(patches: Record<string, unknown>, revert: () => void): Promise<void> {
-    if (!this.available) return;
+  async #set(
+    patches: Record<string, unknown>,
+    revert: () => void,
+    successMessage = 'Settings saved',
+  ): Promise<boolean> {
+    if (!this.available) return false;
     const accountId = auth.session?.primaryAccounts[Capability.Mail] ?? null;
-    if (!accountId) return;
+    if (!accountId) return false;
 
     try {
       const { responses } = await jmap.batch((b) => {
@@ -264,9 +328,10 @@ class CategorySettingsStore {
           kind: 'error',
           timeoutMs: 6000,
         });
-        return;
+        return false;
       }
-      toast.show({ message: 'Settings saved' });
+      toast.show({ message: successMessage });
+      return true;
     } catch (err) {
       revert();
       toast.show({
@@ -274,6 +339,7 @@ class CategorySettingsStore {
         kind: 'error',
         timeoutMs: 6000,
       });
+      return false;
     }
   }
 }
@@ -348,4 +414,6 @@ export const _internals_forTest = {
   emailCategory,
   emailMatchesTab,
   DEFAULT_PROMPT,
+  mergeSenderRule,
+  removeSenderRule,
 };

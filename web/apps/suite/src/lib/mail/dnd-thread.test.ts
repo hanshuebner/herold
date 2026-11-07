@@ -159,3 +159,21 @@ describe('dragIdsForRow — multi-selection honouring', () => {
     expect(dragIdsForRow('e1')).toEqual(['e1']);
   });
 });
+
+describe('threadDnd category tabs (re #555)', () => {
+  it('rejects a drop with no drag in progress', () => {
+    expect(threadDnd.isValidCategoryTarget('promotions', null)).toBe(false);
+  });
+  it('accepts a non-active tab and rejects the active one', () => {
+    threadDnd.begin(['e1', 'e2']);
+    expect(threadDnd.isValidCategoryTarget('promotions', 'primary')).toBe(true);
+    expect(threadDnd.isValidCategoryTarget('primary', 'primary')).toBe(false);
+  });
+  it('tracks and clears the hovered tab', () => {
+    threadDnd.begin(['e1']);
+    threadDnd.setHoveredCategory('social');
+    expect(threadDnd.current?.hoveredCategory).toBe('social');
+    threadDnd.setHoveredCategory(null);
+    expect(threadDnd.current?.hoveredCategory).toBeNull();
+  });
+});

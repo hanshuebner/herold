@@ -552,6 +552,16 @@ export const de = {
     'Dies sind die Kategorien, die das Sprachmodell aktuell verwendet, abgeleitet aus dem Prompt oben. Bearbeite den Prompt, um sie zu ändern.',
   'cat.currentCategories.empty':
     'Noch keine Kategorien. Kategorien erscheinen hier, sobald die nächste Nachricht klassifiziert wurde.',
+  'cat.move.moved': 'Verschoben nach {category}',
+  'cat.rule.offer': 'Mails von {sender} immer als {category} einordnen',
+  'cat.rules.heading': 'Absenderregeln',
+  'cat.rules.hint':
+    'Mails dieser Absender werden immer in die angegebene Kategorie einsortiert, ohne den Klassifizierer zu befragen.',
+  'cat.rules.empty': 'Noch keine Absenderregeln.',
+  'cat.rules.sender': 'Absender',
+  'cat.rules.category': 'Kategorie',
+  'cat.rules.delete': 'Löschen',
+  'cat.rules.deleteAria': 'Regel für {sender} löschen',
   'cat.prompt.heading': 'Klassifizierungs-Prompt',
   'cat.prompt.hint':
     'Der Prompt, den das Sprachmodell zur Klassifizierung deiner Nachrichten in Kategorien verwendet. Anpassungen wirken sich auf zukünftige (und neu klassifizierte) Nachrichten aus. Max. 32 KB.',

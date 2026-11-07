@@ -552,6 +552,16 @@ export const en = {
     'These are the categories the LLM is currently using, derived from the prompt above. Edit the prompt to change them.',
   'cat.currentCategories.empty':
     'No categories yet. Categories will appear here after the next message is classified.',
+  'cat.move.moved': 'Moved to {category}',
+  'cat.rule.offer': 'Always categorize mail from {sender} as {category}',
+  'cat.rules.heading': 'Sender rules',
+  'cat.rules.hint':
+    'Mail from these senders is always filed in the given category without asking the classifier.',
+  'cat.rules.empty': 'No sender rules yet.',
+  'cat.rules.sender': 'Sender',
+  'cat.rules.category': 'Category',
+  'cat.rules.delete': 'Delete',
+  'cat.rules.deleteAria': 'Delete rule for {sender}',
   'cat.prompt.heading': 'Classification prompt',
   'cat.prompt.hint':
     'The prompt used by the LLM to classify your mail into categories. Editing this changes how future mail (and re-categorised mail) is classified. Max 32 KB.',
