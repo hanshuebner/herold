@@ -43,7 +43,7 @@ jobs:
   pre-commit:
     name: pre-commit (run --all-files)
     runs-on: [self-hosted, netzhansa, amd64]
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -112,7 +112,7 @@ jobs:
   lint:
     name: lint
     runs-on: [self-hosted, netzhansa, amd64]
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -150,7 +150,7 @@ jobs:
   confidence-x86:
     name: confidence (x86_64 sanity smoke)
     runs-on: [self-hosted, netzhansa, amd64]
-    timeout-minutes: 10
+    timeout-minutes: 20
     # No `services:` block: act_runner host-mode does not start
     # workflow service containers (confirmed in run #21: no
     # `docker create image=postgres:16` shows up in the log, and
@@ -218,13 +218,13 @@ jobs:
         # job 11917: storepg 284s + diag/migrate 8s + e2e 13s), so the
         # 5m budget here is no longer a safety margin, just the median
         # -- run #1144's confidence job (job 11913) hit the wall with
-        # TestCompliance still in flight at 4m58s. 8m keeps headroom
-        # under the job's 10-minute timeout-minutes without shrinking
-        # the suite.
+        # TestCompliance still in flight at 4m58s. 15m keeps headroom
+        # for the pool's slower runners (brick's VM) under the job's
+        # 20-minute timeout-minutes without shrinking the suite.
         env:
           HEROLD_PG_DSN: postgres://herold:herold@localhost:5432/herold?sslmode=disable
         run: |
-          go test -count=1 -timeout 8m -p 1 \
+          go test -count=1 -timeout 15m -p 1 \
             ./internal/storepg/... ./internal/diag/migrate/... ./test/e2e/...
       - name: stop postgres
         if: always()
@@ -448,15 +448,12 @@ jobs:
   test:
     name: test (arm64 / ${{ matrix.store }})
     runs-on: [self-hosted, netzhansa, amd64]
-    # 45 min: the sqlite lane historically ran the entire tree under
-    # -race and hit ~37 min wall on the arm64 self-hosted runner. The
-    # lane is now split into a race-on subset (test/race-packages.txt)
-    # and a no-race remainder so the detector cost is paid only on
-    # concurrency-heavy packages. The arm64 runner pool was also
-    # bumped from cax21 (4 vCPU) to cax31 (8 vCPU) to halve the
-    # detector wall time; the 45 min cap is left in place as
-    # headroom for the worst-case package.
-    timeout-minutes: 45
+    # 60 min: the sqlite lane splits into a race-on subset
+    # (test/race-packages.txt) and a no-race remainder so the detector
+    # cost is paid only on concurrency-heavy packages. It runs ~24 min
+    # on a cpx42 and ~35 min on the pool's slowest runner (brick's VM);
+    # the cap leaves headroom for the worst-case package.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -583,7 +580,7 @@ jobs:
   fuzz-short:
     name: fuzz (short)
     runs-on: [self-hosted, netzhansa, amd64]
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
