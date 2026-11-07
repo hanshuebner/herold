@@ -21,8 +21,10 @@ name: deploy
 # notify_service.NewRelease, confirmed in the same source tree), which
 # is the closest available substitute for "on ci success": it fires
 # once per successfully-published release, never for a failing or
-# superseded run, with no polling needed. `schedule` (every 30 minutes)
-# is a backstop for a missed or failed run of this workflow itself.
+# superseded run, with no polling needed. A missed or failed run of this
+# workflow is caught up by outpost itself: herold's deploy service there
+# also polls for the newest complete ci- release (netzhansa-infra
+# roles/deploy, `poll: true`), so this workflow needs no schedule.
 #
 # Because ci.yml's `release` job already gates publication on every
 # test/lint/build job, "the newest ci-<sha> release" IS "the newest
@@ -45,8 +47,6 @@ name: deploy
 on:
   release:
     types: [published]
-  schedule:
-    - cron: "*/30 * * * *"
   workflow_dispatch:
 
 permissions:
