@@ -1828,6 +1828,7 @@
     gap: var(--spacing-02);
     padding: var(--spacing-03) var(--spacing-04);
     color: var(--text-secondary);
+    background: var(--background);
     font-size: var(--type-body-compact-01-size);
     white-space: nowrap;
     border-bottom: 2px solid transparent;
@@ -1835,14 +1836,21 @@
     min-height: var(--touch-min);
     transition:
       color var(--duration-fast-02) var(--easing-productive-enter),
+      background-color var(--duration-fast-02) var(--easing-productive-enter),
       border-color var(--duration-fast-02) var(--easing-productive-enter);
   }
+  /* Inactive tabs sit on --background (white in light, the page tone in
+     dark); hover steps to --layer-01 and the active tab takes
+     --layer-hover-01, the darkest of the three in light and the lightest
+     in dark, so it stands out from both its neighbours and the strip. */
   .tab:hover {
     color: var(--text-primary);
-    background: var(--layer-02);
+    background: var(--layer-01);
   }
-  .tab-active {
+  .tab-active,
+  .tab-active:hover {
     color: var(--text-primary);
+    background: var(--layer-hover-01);
     font-weight: 600;
     border-bottom-color: var(--interactive);
   }
