@@ -3,7 +3,11 @@ package storepg
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/hanshuebner/herold/internal/store"
 )
@@ -129,8 +133,8 @@ func (s *Store) TruncateAll(ctx context.Context) error {
 		"principals",
 		"domains",
 	}
-	// Reset row state between tests by truncating every managed table in
-	// one statement, which acquires all the ACCESS EXCLUSIVE locks together.
+	// Reset row state between tests with resetDirty (row-level); the
+	// fallback truncates every managed table in one statement, which acquires all the ACCESS EXCLUSIVE locks together.
 	//
 	// The hazard this guards against: pgxpool.Pool.Close() sends Terminate
 	// to each pooled connection and returns once the client sockets are
@@ -154,8 +158,6 @@ func (s *Store) TruncateAll(ctx context.Context) error {
 	//     for ACCESS EXCLUSIVE; the bounded retry re-clears any that raced
 	//     in, then surfaces the error rather than spinning forever.
 	const truncateAttempts = 3
-	truncate := "TRUNCATE TABLE " + strings.Join(tables, ", ") + " RESTART IDENTITY CASCADE"
-
 	conn, err := s.pool.Acquire(ctx)
 	if err != nil {
 		return err
@@ -165,6 +167,8 @@ func (s *Store) TruncateAll(ctx context.Context) error {
 	if _, err := conn.Exec(ctx, "SET lock_timeout = '20s'"); err != nil {
 		return err
 	}
+
+	truncate := "TRUNCATE TABLE " + strings.Join(tables, ", ") + " RESTART IDENTITY CASCADE"
 
 	var lastErr error
 	for attempt := 0; attempt < truncateAttempts; attempt++ {
@@ -179,6 +183,15 @@ func (s *Store) TruncateAll(ctx context.Context) error {
 			  AND pid <> pg_backend_pid()
 		`)
 
+		// A full TRUNCATE ... CASCADE swaps the relfilenode of every table
+		// reachable through a foreign key (nearly the whole schema, via
+		// principals and domains) and flushes WAL for each, which dominates
+		// the suite's wall time. Row-level reset touches only what a case
+		// dirtied, so it runs first; the full TRUNCATE remains as the
+		// fallback when the targeted reset cannot complete.
+		if err := resetDirty(ctx, conn); err == nil {
+			return nil
+		}
 		if _, err := conn.Exec(ctx, truncate); err != nil {
 			lastErr = err
 			continue
@@ -186,6 +199,145 @@ func (s *Store) TruncateAll(ctx context.Context) error {
 		return nil
 	}
 	return lastErr
+}
+
+// resetDirty deletes the rows of every application table that holds any and
+// rewinds every identity/serial sequence that has handed out a value, all
+// in one transaction. The table set is discovered from the catalog (every
+// ordinary table in the current schema except schema_migrations) and
+// deleted children-first following the foreign-key graph, so tables
+// reached only through a foreign key are reset along with the ones
+// enumerated in TruncateAll.
+func resetDirty(ctx context.Context, conn *pgxpool.Conn) (err error) {
+	// parents[child] lists the tables child references (self-references
+	// excluded).
+	parents := make(map[string][]string)
+	rows, err := conn.Query(ctx, `
+		SELECT c.relname::text, COALESCE(p.relname::text, '')
+		  FROM pg_class c
+		  LEFT JOIN pg_constraint k ON k.conrelid = c.oid AND k.contype = 'f'
+		                           AND k.confrelid <> c.oid
+		  LEFT JOIN pg_class p ON p.oid = k.confrelid
+		 WHERE c.relkind = 'r'
+		   AND c.relnamespace = current_schema()::regnamespace
+		   AND c.relname <> 'schema_migrations'`)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var child, parent string
+		if err := rows.Scan(&child, &parent); err != nil {
+			rows.Close()
+			return err
+		}
+		parents[child] = append(parents[child], parent)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	names := make([]string, 0, len(parents))
+	for n := range parents {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+
+	// Order tables so every child precedes the tables it references:
+	// post-order DFS over the parent edges yields parents first, so the
+	// reverse is the delete order.
+	var postOrder []string
+	state := make(map[string]int)
+	var visit func(string)
+	visit = func(n string) {
+		if state[n] != 0 {
+			return
+		}
+		state[n] = 1
+		for _, p := range parents[n] {
+			if p != "" {
+				visit(p)
+			}
+		}
+		postOrder = append(postOrder, n)
+	}
+	for _, n := range names {
+		visit(n)
+	}
+
+	var q strings.Builder
+	q.WriteString("SELECT 't', t, '' FROM (")
+	for i, t := range names {
+		if i > 0 {
+			q.WriteString(" UNION ALL ")
+		}
+		fmt.Fprintf(&q, "SELECT %s::text AS t WHERE EXISTS (SELECT 1 FROM %s)",
+			quoteLiteral(t), pgx.Identifier{t}.Sanitize())
+	}
+	q.WriteString(`) x UNION ALL
+		SELECT 's', '',
+		       format('SELECT setval(%L, %s, false)', sq.oid::regclass::text, ps.start_value)
+		  FROM pg_class c
+		  JOIN pg_depend d  ON d.refobjid = c.oid AND d.deptype IN ('a', 'i')
+		  JOIN pg_class sq  ON sq.oid = d.objid AND sq.relkind = 'S'
+		  JOIN pg_sequences ps ON ps.sequencename = sq.relname
+		                      AND ps.schemaname = current_schema()
+		 WHERE c.relnamespace = current_schema()::regnamespace
+		   AND c.relname <> 'schema_migrations'
+		   AND ps.last_value IS NOT NULL`)
+	rows, err = conn.Query(ctx, q.String())
+	if err != nil {
+		return err
+	}
+	dirty := make(map[string]bool)
+	var seqStmts []string
+	for rows.Next() {
+		var kind, name, stmt string
+		if err := rows.Scan(&kind, &name, &stmt); err != nil {
+			rows.Close()
+			return err
+		}
+		if kind == "t" {
+			dirty[name] = true
+		} else {
+			seqStmts = append(seqStmts, stmt)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(dirty) == 0 && len(seqStmts) == 0 {
+		return nil
+	}
+
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback(ctx)
+		}
+	}()
+	for i := len(postOrder) - 1; i >= 0; i-- {
+		t := postOrder[i]
+		if !dirty[t] {
+			continue
+		}
+		if _, err = tx.Exec(ctx, "DELETE FROM "+pgx.Identifier{t}.Sanitize()); err != nil {
+			return err
+		}
+	}
+	for _, stmt := range seqStmts {
+		if _, err = tx.Exec(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+func quoteLiteral(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
 
 // ForceCredentialForTest writes passwordHash/totpSecret directly onto the
