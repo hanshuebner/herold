@@ -45,6 +45,7 @@ func newDiagCmd() *cobra.Command {
 	c.AddCommand(newDiagOrphanBlobsCmd())
 	c.AddCommand(newDiagDuplicateMessagesCmd())
 	c.AddCommand(newDiagMergeMailboxCmd())
+	c.AddCommand(newDiagImapImportGhostRowsCmd())
 	return c
 }
 

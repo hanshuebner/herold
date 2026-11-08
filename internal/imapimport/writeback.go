@@ -30,11 +30,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
 	imap "github.com/emersion/go-imap/v2"
 
+	"github.com/hanshuebner/herold/internal/mailparse"
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
@@ -226,23 +228,95 @@ const writeBackRetryDelay = 5 * writeBackPollDelay
 // Keep this short so flag changes propagate promptly.
 const writeBackPollDelay = 2e9 // 2 seconds as nanoseconds (time.Duration)
 
+// rowDivergent reports whether ms records a placement that herold redirected
+// away from the folder's nominal mailbox (a spam verdict routing an
+// INBOX-mapped insert to Junk, archive precedence): MappedMailboxID names a
+// different mailbox than HeroldMailboxID. A zero MappedMailboxID predates the
+// column and counts as non-divergent.
+func rowDivergent(ms store.IMAPImportMessageState) bool {
+	return ms.MappedMailboxID != 0 && ms.MappedMailboxID != ms.HeroldMailboxID
+}
+
+// writeBackRows returns this account's state rows for msgID in a
+// deterministic order: non-divergent rows first, then by upstream folder and
+// UID.
+func (w *accountWorker) writeBackRows(ctx context.Context, msgID store.MessageID) ([]store.IMAPImportMessageState, error) {
+	all, err := w.opts.store.Meta().ListIMAPImportMessageStatesByMessage(ctx, msgID)
+	if err != nil {
+		return nil, err
+	}
+	var rows []store.IMAPImportMessageState
+	for _, r := range all {
+		if r.AccountID == w.opts.account.ID {
+			rows = append(rows, r)
+		}
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		di, dj := rowDivergent(rows[i]), rowDivergent(rows[j])
+		if di != dj {
+			return !di
+		}
+		if rows[i].UpstreamFolder != rows[j].UpstreamFolder {
+			return rows[i].UpstreamFolder < rows[j].UpstreamFolder
+		}
+		return rows[i].UpstreamUID < rows[j].UpstreamUID
+	})
+	return rows, nil
+}
+
+// rowBeyondFolderBound reports whether ms's UID is at or above its folder's
+// last-known UIDNEXT, i.e. cannot name an upstream message (a ghost row).
+// A folder without a cursor reports false here; callers that must be sure
+// require the cursor themselves.
+func (w *accountWorker) rowBeyondFolderBound(ctx context.Context, ms store.IMAPImportMessageState) bool {
+	cur, found, err := w.opts.store.Meta().GetIMAPImportFolderCursor(ctx, ms.AccountID, ms.UpstreamFolder)
+	if err != nil || !found || cur.UIDNext == 0 {
+		return false
+	}
+	return uint64(ms.UpstreamUID) >= cur.UIDNext
+}
+
+// upstreamIdentity reports whether the message at uid in the selected
+// upstream folder is present and, when both sides carry a Message-ID, the
+// same message as the herold one. A non-nil error means the check could not
+// run and nothing may be inferred.
+func (w *accountWorker) upstreamIdentity(ctx context.Context, conn Conn, uid imap.UID, heroldMsgID string) (present, same bool, upstreamMsgID string, err error) {
+	envs, err := conn.UIDFetchEnvelope(ctx, []imap.UID{uid})
+	if err != nil {
+		return false, false, "", err
+	}
+	for _, e := range envs {
+		if e.UID != uid {
+			continue
+		}
+		if heroldMsgID != "" && e.MessageID != "" && e.MessageID != mailparse.NormalizeMessageID(heroldMsgID) {
+			return true, false, e.MessageID, nil
+		}
+		return true, true, e.MessageID, nil
+	}
+	return false, false, "", nil
+}
+
 // processWriteBack handles a single EntityKindEmail change. It looks up the
 // IMAPImportMessageState and dispatches to the appropriate handler.
 func (w *accountWorker) processWriteBack(ctx context.Context, conn Conn, ch store.StateChange, msgID store.MessageID) {
 	account := w.opts.account
 	log := w.opts.log
 
-	// Look up import state for this account.
-	ms, found, err := w.opts.store.Meta().GetIMAPImportMessageStateByMessage(ctx, account.ID, msgID)
+	// Every state row this account holds for the message, in a fixed order
+	// (writeBackRows). The database returns rows in no defined order, so the
+	// row a single-row lookup happened to pick decided what got moved or
+	// expunged upstream (re #558).
+	rows, err := w.writeBackRows(ctx, msgID)
 	if err != nil {
-		log.Warn("imapimport: write-back: GetIMAPImportMessageStateByMessage error",
+		log.Warn("imapimport: write-back: ListIMAPImportMessageStatesByMessage error",
 			slog.String("account_id", account.ID),
 			slog.Uint64("msg_id", uint64(msgID)),
 			slog.String("error", err.Error()),
 		)
 		return
 	}
-	if !found {
+	if len(rows) == 0 {
 		// Message does not belong to this account — skip.
 		return
 	}
@@ -252,7 +326,9 @@ func (w *accountWorker) processWriteBack(ctx context.Context, conn Conn, ch stor
 		// Could be a flag update or a mailbox membership change (move).
 		// We dispatch both; the handlers are no-ops when irrelevant.
 		w.reconcileMessageFlags(ctx, conn, msgID)
-		w.writeBackMove(ctx, conn, ms, msgID)
+		for _, ms := range rows {
+			w.writeBackMove(ctx, conn, ms, msgID)
+		}
 
 	case store.ChangeOpDestroyed:
 		// A destroyed email change is also emitted when one mailbox
@@ -263,7 +339,9 @@ func (w *accountWorker) processWriteBack(ctx context.Context, conn Conn, ch stor
 		// (re #558). Expunging on a membership removal deleted whatever the
 		// state row's UID named upstream, including an unrelated message.
 		if _, gerr := w.opts.store.Meta().GetMessage(ctx, msgID); gerr == nil {
-			w.writeBackMove(ctx, conn, ms, msgID)
+			for _, ms := range rows {
+				w.writeBackMove(ctx, conn, ms, msgID)
+			}
 			return
 		} else if !errors.Is(gerr, store.ErrNotFound) {
 			log.Warn("imapimport: write-back: GetMessage error; skipping destroy",
@@ -273,7 +351,9 @@ func (w *accountWorker) processWriteBack(ctx context.Context, conn Conn, ch stor
 			)
 			return
 		}
-		w.writeBackDestroy(ctx, conn, ms, msgID)
+		for _, ms := range rows {
+			w.writeBackDestroy(ctx, conn, ms, msgID)
+		}
 	}
 	// ChangeOpCreated: a newly-mirrored message was created by THIS worker;
 	// no write-back needed (we own it).
@@ -352,6 +432,10 @@ func (w *accountWorker) reconcileMessageFlags(ctx context.Context, conn Conn, ms
 	for _, r := range allRows {
 		if r.AccountID != account.ID {
 			// Belongs to a different import account; not ours to reconcile.
+			continue
+		}
+		if w.rowBeyondFolderBound(ctx, r) {
+			// A ghost row names no upstream message (re #558).
 			continue
 		}
 		if _, err := conn.SelectReadWrite(ctx, r.UpstreamFolder); err != nil {
@@ -511,6 +595,38 @@ func (w *accountWorker) writeBackMove(ctx context.Context, conn Conn, ms store.I
 		return
 	}
 
+	// A UID MOVE of a UID the folder does not hold (or holds for a different
+	// message) succeeds as a no-op, so confirm the row addresses this
+	// message before acting on it. A row that does not is a ghost: drop it
+	// (re #558).
+	present, same, upMsgID, ierr := w.upstreamIdentity(ctx, conn, imap.UID(ms.UpstreamUID), heroldMsg.Envelope.MessageID)
+	if ierr != nil {
+		log.Warn("imapimport: write-back: move: upstream identity check failed; skipping",
+			slog.String("account_id", account.ID),
+			slog.String("folder", ms.UpstreamFolder),
+			slog.Uint64("uid", uint64(ms.UpstreamUID)),
+			slog.String("error", ierr.Error()),
+		)
+		return
+	}
+	if !present || !same {
+		log.Warn("imapimport: write-back: move: state row does not address this message upstream; dropping row",
+			slog.String("account_id", account.ID),
+			slog.Uint64("msg_id", uint64(msgID)),
+			slog.String("folder", ms.UpstreamFolder),
+			slog.Uint64("uid", uint64(ms.UpstreamUID)),
+			slog.Bool("present", present),
+			slog.String("upstream_message_id", upMsgID),
+		)
+		if derr := w.opts.store.Meta().DeleteIMAPImportMessageState(ctx, ms.AccountID, ms.UpstreamFolder, ms.UpstreamUID); derr != nil && !errors.Is(derr, store.ErrNotFound) {
+			log.Warn("imapimport: write-back: failed to delete ghost message_state row",
+				slog.String("account_id", account.ID),
+				slog.String("error", derr.Error()),
+			)
+		}
+		return
+	}
+
 	if moveErr, permanent := w.moveWithTryCreate(ctx, conn, imap.UID(ms.UpstreamUID), newUpstreamFolder); moveErr != nil {
 		log.Warn("imapimport: write-back: UID MOVE failed (best-effort)",
 			slog.String("account_id", account.ID),
@@ -597,6 +713,30 @@ func (w *accountWorker) writeBackDestroy(ctx context.Context, conn Conn, ms stor
 		return
 	}
 
+	// Never expunge through a row that may not address this message
+	// upstream (re #558): a divergent row records a placement herold
+	// redirected, and a row whose UID is not below its folder's UIDNEXT is a
+	// ghost. The message is gone from herold, so the upstream message's
+	// identity is verified below against live herold messages instead.
+	if rowDivergent(ms) {
+		log.Info("imapimport: write-back: destroy: skipping divergent state row",
+			slog.String("account_id", account.ID),
+			slog.Uint64("msg_id", uint64(msgID)),
+			slog.String("folder", ms.UpstreamFolder),
+		)
+		return
+	}
+	cur, curFound, cerr := w.opts.store.Meta().GetIMAPImportFolderCursor(ctx, account.ID, ms.UpstreamFolder)
+	if cerr != nil || !curFound || cur.UIDNext == 0 || uint64(ms.UpstreamUID) >= cur.UIDNext {
+		log.Info("imapimport: write-back: destroy: state row is not provably within the folder; skipping",
+			slog.String("account_id", account.ID),
+			slog.Uint64("msg_id", uint64(msgID)),
+			slog.String("folder", ms.UpstreamFolder),
+			slog.Uint64("uid", uint64(ms.UpstreamUID)),
+		)
+		return
+	}
+
 	// Select the upstream folder read-write.
 	if _, err := conn.SelectReadWrite(ctx, ms.UpstreamFolder); err != nil {
 		log.Warn("imapimport: write-back: destroy SelectReadWrite failed",
@@ -608,6 +748,39 @@ func (w *accountWorker) writeBackDestroy(ctx context.Context, conn Conn, ms stor
 	}
 
 	uid := imap.UID(ms.UpstreamUID)
+
+	// The upstream message at this UID must not be one herold still holds:
+	// a live herold message carrying its Message-ID means the UID names
+	// someone else's mail, not the message that was deleted.
+	present, _, upMsgID, ierr := w.upstreamIdentity(ctx, conn, uid, "")
+	if ierr != nil {
+		log.Warn("imapimport: write-back: destroy: upstream identity check failed; skipping",
+			slog.String("account_id", account.ID),
+			slog.Uint64("uid", uint64(uid)),
+			slog.String("error", ierr.Error()),
+		)
+		return
+	}
+	if !present {
+		return // already gone upstream
+	}
+	if upMsgID != "" {
+		if _, lerr := w.opts.store.Meta().GetMessageByMessageIDHeader(ctx, store.PrincipalID(account.PrincipalID), upMsgID); lerr == nil {
+			log.Warn("imapimport: write-back: destroy: upstream message is a live herold message; skipping expunge",
+				slog.String("account_id", account.ID),
+				slog.Uint64("msg_id", uint64(msgID)),
+				slog.String("folder", ms.UpstreamFolder),
+				slog.Uint64("uid", uint64(uid)),
+			)
+			return
+		} else if !errors.Is(lerr, store.ErrNotFound) {
+			log.Warn("imapimport: write-back: destroy: live-message lookup failed; skipping",
+				slog.String("account_id", account.ID),
+				slog.String("error", lerr.Error()),
+			)
+			return
+		}
+	}
 
 	// Mark \Deleted.
 	if storeErr := conn.UIDStoreFlags(ctx, uid, imap.StoreFlagsAdd, []imap.Flag{imap.FlagDeleted}); storeErr != nil {
