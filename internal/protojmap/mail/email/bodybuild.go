@@ -281,14 +281,91 @@ func hasBodyPartID(parts []emailBodyPart, partID string) bool {
 	return false
 }
 
-// writeLiteralHeader writes "Name: Value\r\n" with no additional folding.
-// The caller is responsible for encoding the value (e.g. mime.QEncoding
-// for non-ASCII subjects).
+// headerFoldWidth is the column at which writeLiteralHeader folds a header
+// line (RFC 5322 section 2.1.1 recommends 78 octets per line).
+const headerFoldWidth = 78
+
+// writeLiteralHeader writes "Name: Value\r\n", folding the line at
+// whitespace so no line exceeds headerFoldWidth where the value offers a
+// fold point (RFC 5322 section 2.2.3). A value without whitespace is
+// written as one line. The caller is responsible for encoding the value
+// (e.g. mime.QEncoding for non-ASCII subjects).
 func writeLiteralHeader(buf *bytes.Buffer, name, value string) {
 	buf.WriteString(name)
-	buf.WriteString(": ")
-	buf.WriteString(value)
+	buf.WriteString(":")
+	lineLen := len(name) + 1
+	// value is written as " " + value; every space is a candidate fold
+	// point, and an existing CRLF resets the column.
+	rest := " " + value
+	for len(rest) > 0 {
+		// Next chunk: from the current position up to (excluding) the next
+		// space after the leading whitespace run, or a CRLF.
+		end := len(rest)
+		for i := 1; i < len(rest); i++ {
+			if rest[i] == ' ' || rest[i] == '\t' {
+				end = i
+				break
+			}
+			if rest[i] == '\r' {
+				end = i
+				break
+			}
+		}
+		chunk := rest[:end]
+		if strings.HasPrefix(chunk, "\r\n") {
+			buf.WriteString("\r\n")
+			rest = rest[2:]
+			lineLen = 0
+			continue
+		}
+		if lineLen+len(chunk) > headerFoldWidth && lineLen > 0 &&
+			(chunk[0] == ' ' || chunk[0] == '\t') {
+			buf.WriteString("\r\n")
+			lineLen = 0
+		}
+		buf.WriteString(chunk)
+		lineLen += len(chunk)
+		rest = rest[end:]
+	}
 	buf.WriteString("\r\n")
+}
+
+// base64LineWriter wraps base64 output into CRLF-terminated lines of at
+// most 76 characters (RFC 2045 section 6.8).
+type base64LineWriter struct {
+	w   io.Writer
+	col int
+}
+
+func (b *base64LineWriter) Write(p []byte) (int, error) {
+	n := len(p)
+	for len(p) > 0 {
+		room := 76 - b.col
+		if room == 0 {
+			if _, err := b.w.Write([]byte("\r\n")); err != nil {
+				return 0, err
+			}
+			b.col = 0
+			room = 76
+		}
+		take := min(room, len(p))
+		if _, err := b.w.Write(p[:take]); err != nil {
+			return 0, err
+		}
+		b.col += take
+		p = p[take:]
+	}
+	return n, nil
+}
+
+// finish terminates the last partial line.
+func (b *base64LineWriter) finish() error {
+	if b.col == 0 {
+		return nil
+	}
+	b.col = 0
+	_, err := b.w.Write([]byte("\r\n"))
+	return err
 }
 
 // writeTextPart writes the Content-Type / Content-Transfer-Encoding
@@ -544,10 +621,15 @@ func writeBlobPartInto(ctx context.Context, meta store.Metadata, blobs store.Blo
 	if err != nil {
 		return err
 	}
-	enc := base64.NewEncoder(base64.StdEncoding, p)
-	_, _ = enc.Write(attData)
-	_ = enc.Close()
-	return nil
+	lw := &base64LineWriter{w: p}
+	enc := base64.NewEncoder(base64.StdEncoding, lw)
+	if _, err := enc.Write(attData); err != nil {
+		return err
+	}
+	if err := enc.Close(); err != nil {
+		return err
+	}
+	return lw.finish()
 }
 
 // writeMultipartRelated assembles a multipart/related body per RFC 2387.
