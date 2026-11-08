@@ -3439,6 +3439,15 @@ type Metadata interface {
 	// (re #561).
 	SetIMAPImportMessageStateIdentity(ctx context.Context, accountID, upstreamFolder string, upstreamUID uint32, heroldMessageID MessageID, upstreamMessageID string, upstreamSize int64) (bool, error)
 
+	// EnsureIMAPImportMessageState is the ingest-path write. It inserts
+	// state when no row exists for the key, replaces the row when it names
+	// a different herold message, and leaves a row that already names
+	// state.HeroldMessageID exactly as it is. A re-ingest of an already
+	// linked UID therefore never rewrites the placement, MappedMailboxID,
+	// LastSyncedFlags or recorded upstream identity that write-back and the
+	// identity backfill maintain on that row (re #563).
+	EnsureIMAPImportMessageState(ctx context.Context, state IMAPImportMessageState) error
+
 	// SetIMAPImportMessageStateFlags records flags as the row's
 	// LastSyncedFlags, touching only that column. It applies only when the
 	// row still exists and still names heroldMessageID, and reports whether

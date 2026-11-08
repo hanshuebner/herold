@@ -586,7 +586,7 @@ func (w *accountWorker) syncFolderGmailAllMailEnvelopeDedup(ctx context.Context,
 				// unaddressable, so flag changes to archived mail never
 				// propagated upstream. REQ-IMAP-IMP-34.
 				sf := w.ingestedSyncedFlags(ctx, env.Flags, existing.ID)
-				if msErr := w.opts.store.Meta().UpsertIMAPImportMessageState(ctx, store.IMAPImportMessageState{
+				if msErr := w.opts.store.Meta().EnsureIMAPImportMessageState(ctx, store.IMAPImportMessageState{
 					AccountID:       accountID,
 					UpstreamFolder:  gmailAllMail,
 					UpstreamUID:     uint32(env.UID),
@@ -597,7 +597,7 @@ func (w *accountWorker) syncFolderGmailAllMailEnvelopeDedup(ctx context.Context,
 					UpstreamMessageID: env.MessageID,
 					UpstreamSize:      env.Size,
 				}); msErr != nil {
-					log.Warn("imapimport: Gmail All Mail UpsertIMAPImportMessageState (skip) failed",
+					log.Warn("imapimport: Gmail All Mail EnsureIMAPImportMessageState (skip) failed",
 						slog.String("account_id", accountID),
 						slog.Uint64("uid", uid),
 						slog.String("error", msErr.Error()),

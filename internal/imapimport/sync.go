@@ -545,7 +545,7 @@ func (w *accountWorker) fetchAndIngest(
 				principalID := store.PrincipalID(account.PrincipalID)
 				if mappedMB, mbErr := w.ensureMailbox(ctx, principalID, heroldMailbox); mbErr == nil {
 					sf := w.ingestedSyncedFlags(ctx, fm.Flags, msgID)
-					if msErr := w.opts.store.Meta().UpsertIMAPImportMessageState(ctx, store.IMAPImportMessageState{
+					if msErr := w.opts.store.Meta().EnsureIMAPImportMessageState(ctx, store.IMAPImportMessageState{
 						AccountID:       account.ID,
 						UpstreamFolder:  upstreamFolder,
 						UpstreamUID:     uint32(fm.UID),
@@ -557,7 +557,7 @@ func (w *accountWorker) fetchAndIngest(
 						UpstreamMessageID: upMsgID,
 						UpstreamSize:      upSize,
 					}); msErr != nil {
-						w.opts.log.Warn("imapimport: UpsertIMAPImportMessageState failed (inbox-suppressed)",
+						w.opts.log.Warn("imapimport: EnsureIMAPImportMessageState failed (inbox-suppressed)",
 							slog.String("account_id", account.ID),
 							slog.Uint64("uid", uid),
 							slog.String("error", msErr.Error()),
@@ -608,8 +608,8 @@ func (w *accountWorker) fetchAndIngest(
 				state.MappedMailboxID = mappedMB.ID
 			}
 		}
-		if msErr := w.opts.store.Meta().UpsertIMAPImportMessageState(ctx, state); msErr != nil {
-			w.opts.log.Warn("imapimport: UpsertIMAPImportMessageState failed",
+		if msErr := w.opts.store.Meta().EnsureIMAPImportMessageState(ctx, state); msErr != nil {
+			w.opts.log.Warn("imapimport: EnsureIMAPImportMessageState failed",
 				slog.String("account_id", account.ID),
 				slog.Uint64("uid", uid),
 				slog.String("error", msErr.Error()),

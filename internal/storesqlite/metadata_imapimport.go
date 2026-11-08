@@ -693,6 +693,29 @@ func (m *metadata) UpsertIMAPImportMessageState(ctx context.Context, state store
 	})
 }
 
+func (m *metadata) EnsureIMAPImportMessageState(ctx context.Context, state store.IMAPImportMessageState) error {
+	return m.runTx(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO imapimport_message_state
+			  (account_id, upstream_folder, upstream_uid, herold_message_id, herold_mailbox_id, last_synced_flags, mapped_mailbox_id, upstream_message_id, upstream_size)
+			VALUES (?,?,?,?,?,?,?,?,?)
+			ON CONFLICT(account_id, upstream_folder, upstream_uid) DO UPDATE SET
+			  herold_message_id = excluded.herold_message_id,
+			  herold_mailbox_id = excluded.herold_mailbox_id,
+			  last_synced_flags = excluded.last_synced_flags,
+			  mapped_mailbox_id = excluded.mapped_mailbox_id,
+			  upstream_message_id = excluded.upstream_message_id,
+			  upstream_size = excluded.upstream_size
+			WHERE imapimport_message_state.herold_message_id <> excluded.herold_message_id`,
+			state.AccountID, state.UpstreamFolder, int64(state.UpstreamUID),
+			int64(state.HeroldMessageID), int64(state.HeroldMailboxID),
+			int32(state.LastSyncedFlags), int64(state.MappedMailboxID),
+			state.UpstreamMessageID, state.UpstreamSize,
+		)
+		return mapErr(err)
+	})
+}
+
 func (m *metadata) ListIMAPImportMessageStatesByFolder(ctx context.Context, accountID, upstreamFolder string) ([]store.IMAPImportMessageState, error) {
 	rows, err := m.s.db.QueryContext(ctx,
 		`SELECT `+imapImportMessageStateSelectCols+`

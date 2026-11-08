@@ -1007,6 +1007,38 @@ func testIMAPImport_MessageStateUpsertAndLookups(t *testing.T, s store.Store) {
 		t.Errorf("row after MovePlacement = %+v", gm)
 	}
 
+	// EnsureIMAPImportMessageState (re #563): inserts when absent, leaves a
+	// row naming the same herold message untouched, replaces a row naming a
+	// different one.
+	ens := store.IMAPImportMessageState{
+		AccountID: acc.ID, UpstreamFolder: "INBOX", UpstreamUID: 60,
+		HeroldMessageID: 3001, HeroldMailboxID: 2001, MappedMailboxID: 2001,
+		LastSyncedFlags: store.IMAPImportFlagSeen, UpstreamMessageID: "e@example.test", UpstreamSize: 5,
+	}
+	if err := s.Meta().EnsureIMAPImportMessageState(ctx, ens); err != nil {
+		t.Fatalf("Ensure (insert): %v", err)
+	}
+	if g, found, _ := s.Meta().GetIMAPImportMessageState(ctx, acc.ID, "INBOX", 60); !found || g != ens {
+		t.Errorf("Ensure insert: found=%v row=%+v want %+v", found, g, ens)
+	}
+	again := ens
+	again.HeroldMailboxID, again.MappedMailboxID, again.LastSyncedFlags = 2002, 0, 0
+	again.UpstreamMessageID, again.UpstreamSize = "", 0
+	if err := s.Meta().EnsureIMAPImportMessageState(ctx, again); err != nil {
+		t.Fatalf("Ensure (same message): %v", err)
+	}
+	if g, _, _ := s.Meta().GetIMAPImportMessageState(ctx, acc.ID, "INBOX", 60); g != ens {
+		t.Errorf("Ensure rewrote a row naming the same message: %+v want %+v", g, ens)
+	}
+	other := again
+	other.HeroldMessageID = 3002
+	if err := s.Meta().EnsureIMAPImportMessageState(ctx, other); err != nil {
+		t.Fatalf("Ensure (different message): %v", err)
+	}
+	if g, _, _ := s.Meta().GetIMAPImportMessageState(ctx, acc.ID, "INBOX", 60); g != other {
+		t.Errorf("Ensure did not replace a row naming a different message: %+v want %+v", g, other)
+	}
+
 	// GetIMAPImportMessageStateByMessage with non-existent message id.
 	_, found, err = s.Meta().GetIMAPImportMessageStateByMessage(ctx, acc.ID, 9999)
 	if err != nil {
