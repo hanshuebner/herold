@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/hanshuebner/herold/internal/auth/sendpolicy"
 	"github.com/hanshuebner/herold/internal/clock"
@@ -1607,6 +1608,10 @@ func buildEnvelope(env *jmapEnvelope, identityEmail string, msg store.Message) (
 		mailFrom := env.MailFrom.Email
 		if mailFrom == "" {
 			mailFrom = identityEmail
+		} else if !isValidRcptAddr(mailFrom) {
+			return "", nil, &setError{Type: "invalidProperties",
+				Properties:  []string{"envelope.mailFrom"},
+				Description: fmt.Sprintf("mailFrom %q is not a valid email address", mailFrom)}
 		}
 		recipients := make([]string, 0, len(env.RcptTo))
 		for _, r := range env.RcptTo {
@@ -1659,7 +1664,22 @@ func isValidRcptAddr(s string) bool {
 	if err != nil {
 		return false
 	}
-	return addr.Address == trimmed
+	return addr.Address == trimmed && envelopeSafe(addr.Address)
+}
+
+// envelopeSafe reports whether a is non-empty and free of angle brackets,
+// whitespace and control characters, so it can be written into an SMTP
+// path without carrying extra parameters.
+func envelopeSafe(a string) bool {
+	if a == "" {
+		return false
+	}
+	for _, r := range a {
+		if r == '<' || r == '>' || unicode.IsSpace(r) || unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
 }
 
 // dedupRecipients removes duplicate entries from a recipient list,
@@ -1687,6 +1707,18 @@ func dedupRecipients(in []string) []string {
 // extract the first <addr> in each comma-separated chunk, falling back
 // to the trimmed token when no angle-brackets appear.
 func extractAddrs(header string) []string {
+	var out []string
+	for _, a := range extractAddrsRaw(header) {
+		// Only a token that parses as an address and is a bare, safe
+		// addr-spec reaches the envelope.
+		if p, err := mail.ParseAddress(a); err == nil && p.Address == a && envelopeSafe(a) {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+func extractAddrsRaw(header string) []string {
 	if header == "" {
 		return nil
 	}

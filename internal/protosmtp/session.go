@@ -1428,6 +1428,12 @@ func extractAngleAddr(s string) (addr, rest string, err error) {
 		if strings.ContainsAny(inner, "<>") {
 			return "", "", errors.New("nested angle brackets in address")
 		}
+		// Whitespace or control characters inside the path would let a
+		// client smuggle extra parameters into the stored address and,
+		// from there, into the outbound RCPT TO / MAIL FROM line.
+		if unsafeEnvelopeAddress(inner) != "" {
+			return "", "", errors.New("whitespace or control character in address")
+		}
 		return inner, strings.TrimSpace(s[end+1:]), nil
 	}
 	// Bare form: first token. A stray '<' or '>' here is malformed

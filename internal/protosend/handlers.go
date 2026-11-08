@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/hanshuebner/herold/internal/auth/sendpolicy"
 	"github.com/hanshuebner/herold/internal/mailparse"
@@ -187,12 +188,16 @@ func (s *Server) processSend(ctx context.Context, r *http.Request, req sendReque
 		return nil, newProblem(r, http.StatusInternalServerError, "internal-error",
 			"could not build message", "")
 	}
-	rcpts := allRecipients(req.Destination)
+	// The envelope carries the parsed addr-spec only; display names and
+	// comments stay in the message headers. validateSendRequest has
+	// already proven every address parses.
+	rcpts := envelopeAddresses(allRecipients(req.Destination))
+	mailFrom, _ := envelopeAddress(req.Source)
 	idempKey := composeIdempotencyKey(key.ID, req.IdempotencyKey)
-	signingDomain := domainOf(req.Source)
+	signingDomain := domainOf(mailFrom)
 	envID, err := s.queue.Submit(ctx, queue.Submission{
 		PrincipalID:        pidPtr(p.ID),
-		MailFrom:           req.Source,
+		MailFrom:           mailFrom,
 		Recipients:         rcpts,
 		Body:               bytes.NewReader(built.bytes),
 		IdempotencyKey:     idempKey,
@@ -249,6 +254,12 @@ func (s *Server) processSendRaw(ctx context.Context, r *http.Request, req sendRa
 		return nil, newProblem(r, http.StatusBadRequest, "validation-failed",
 			fmt.Sprintf("destinations exceeds %d", s.opts.MaxRecipients), "")
 	}
+	for _, d := range req.Destinations {
+		if _, ok := envelopeAddress(d); !ok || hasControlChars(d, false) || len(d) > maxHeaderLine/2 {
+			return nil, newProblem(r, http.StatusBadRequest, "validation-failed",
+				"destinations contains an invalid email address", "")
+		}
+	}
 	// TODO(REQ-STORE-19, Phase 2): a streaming raw-upload endpoint
 	// (octet-stream body) would remove this full base64 decode; bounded
 	// by MaxBodySize.  The JSON-string contract forces the entire
@@ -281,7 +292,7 @@ func (s *Server) processSendRaw(ctx context.Context, r *http.Request, req sendRa
 	}
 	fromHdr := parsed.Header.Get("From")
 	source := extractFirstAddress(fromHdr)
-	if source == "" {
+	if _, ok := envelopeAddress(source); !ok {
 		return nil, newProblem(r, http.StatusBadRequest, "validation-failed",
 			"raw message missing From: address", "")
 	}
@@ -303,7 +314,7 @@ func (s *Server) processSendRaw(ctx context.Context, r *http.Request, req sendRa
 	envID, err := s.queue.Submit(ctx, queue.Submission{
 		PrincipalID:        pidPtr(p.ID),
 		MailFrom:           source,
-		Recipients:         req.Destinations,
+		Recipients:         envelopeAddresses(req.Destinations),
 		Body:               bodyReader,
 		IdempotencyKey:     idempKey,
 		Sign:               true,
@@ -355,6 +366,10 @@ func (s *Server) validateSendRequest(r *http.Request, req sendRequest) *problemD
 	if _, err := mail.ParseAddress(req.Source); err != nil {
 		return newProblem(r, http.StatusBadRequest, "validation-failed",
 			"source is not a valid email address", err.Error())
+	}
+	if _, ok := envelopeAddress(req.Source); !ok {
+		return newProblem(r, http.StatusBadRequest, "validation-failed",
+			"source is not a usable envelope address", "")
 	}
 	if strings.TrimSpace(req.Message.Subject) == "" {
 		return newProblem(r, http.StatusBadRequest, "validation-failed",
@@ -415,6 +430,10 @@ func (s *Server) validateSendRequest(r *http.Request, req sendRequest) *problemD
 			return newProblem(r, http.StatusBadRequest, "validation-failed",
 				"recipient is not a valid email address: "+rcpt, err.Error())
 		}
+		if _, ok := envelopeAddress(rcpt); !ok {
+			return newProblem(r, http.StatusBadRequest, "validation-failed",
+				"recipient is not a usable envelope address: "+rcpt, "")
+		}
 	}
 	return nil
 }
@@ -467,6 +486,35 @@ func allRecipients(d destination) []string {
 	out = append(out, d.ToAddresses...)
 	out = append(out, d.CCAddresses...)
 	out = append(out, d.BCCAddresses...)
+	return out
+}
+
+// envelopeAddress returns the bare addr-spec of a caller-supplied address
+// (display name and comments dropped) and whether it is safe to write into
+// an SMTP path: non-empty, with no angle bracket, whitespace or control
+// character.
+func envelopeAddress(raw string) (string, bool) {
+	a, err := mail.ParseAddress(raw)
+	if err != nil || a.Address == "" {
+		return "", false
+	}
+	for _, r := range a.Address {
+		if r == '<' || r == '>' || unicode.IsSpace(r) || unicode.IsControl(r) {
+			return "", false
+		}
+	}
+	return a.Address, true
+}
+
+// envelopeAddresses maps envelopeAddress over in. Callers validate first;
+// an entry that fails is dropped rather than passed through raw.
+func envelopeAddresses(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, raw := range in {
+		if a, ok := envelopeAddress(raw); ok {
+			out = append(out, a)
+		}
+	}
 	return out
 }
 

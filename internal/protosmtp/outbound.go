@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/mailauth"
@@ -198,6 +199,17 @@ func (c *Client) Deliver(ctx context.Context, req DeliveryRequest) (DeliveryOutc
 		return DeliveryOutcome{}, errors.New("protosmtp: DeliveryRequest.Message required")
 	}
 	startedAt := c.clk.Now()
+	// The envelope addresses are written verbatim into MAIL FROM / RCPT TO;
+	// an address that could terminate the path or carry extra SMTP
+	// parameters is refused before any connection is made.
+	if bad := unsafeEnvelopeAddress(req.RcptTo, req.MailFrom); bad != "" {
+		return DeliveryOutcome{
+			Status:      DeliveryPermanent,
+			SMTPCode:    550,
+			Diagnostic:  fmt.Sprintf("invalid envelope address %q", bad),
+			AttemptedAt: startedAt,
+		}, nil
+	}
 	domain, ok := domainOfAddress(req.RcptTo)
 	if !ok {
 		return DeliveryOutcome{
@@ -359,6 +371,20 @@ func (c *Client) domainPublishesTLSRPT(ctx context.Context, domain string) bool 
 
 // domainOfAddress extracts the domain part of an email address. Empty
 // addresses (the null reverse-path) and malformed inputs return ok=false.
+// unsafeEnvelopeAddress returns the first of addrs that contains an angle
+// bracket, whitespace or a control character, or "" when all are safe.
+// An empty address (the null reverse-path) is safe.
+func unsafeEnvelopeAddress(addrs ...string) string {
+	for _, a := range addrs {
+		for _, r := range a {
+			if r == '<' || r == '>' || r <= ' ' || r == 0x7f || unicode.IsSpace(r) || unicode.IsControl(r) {
+				return a
+			}
+		}
+	}
+	return ""
+}
+
 func domainOfAddress(addr string) (string, bool) {
 	addr = strings.TrimSpace(addr)
 	if addr == "" {
