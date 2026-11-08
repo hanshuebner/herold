@@ -191,3 +191,41 @@ func TestBuildEmail_LongNonASCIISubjectAndFilename(t *testing.T) {
 		t.Fatalf("filename did not round-trip: %+v", env.Attachments)
 	}
 }
+
+// TestBuildEmail_LongMIMETypeHasNoBareLF: an attachment whose MIME type is
+// longer than the fold width (the Office Open XML types) keeps every line
+// ending in CRLF; a bare LF in a header is rejected by strict MXes.
+func TestBuildEmail_LongMIMETypeHasNoBareLF(t *testing.T) {
+	for _, typ := range []string{
+		"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+		"application/vnd.openxmlformats-officedocument.presentationml.presentation",
+	} {
+		blobs := memBlobs{data: map[string][]byte{"att1": []byte("office-bytes")}}
+		in := emailCreateInput{
+			From:       []emailAddress{{Email: "me@example.test"}},
+			To:         []emailAddress{{Email: "you@example.test"}},
+			BodyValues: map[string]emailBodyValue{"1": {Value: "hi"}},
+			TextBody:   []emailBodyPart{{PartID: "1", Type: "text/plain"}},
+			attachmentParts: []emailBodyStructurePart{
+				{Type: typ, BlobID: "att1", Name: "r.docx", Disposition: "attachment"},
+			},
+		}
+		raw, err := buildEmailFromProperties(context.Background(), nil, blobs, in, time.Unix(1794121361, 0), "mail.example.test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := range raw {
+			if raw[i] == '\n' && (i == 0 || raw[i-1] != '\r') {
+				t.Fatalf("%s: bare LF at offset %d: %q", typ, i, raw[max(0, i-40):min(len(raw), i+40)])
+			}
+		}
+		env, err := enmime.ReadEnvelope(bytes.NewReader(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(env.Attachments) != 1 || env.Attachments[0].ContentType != typ {
+			t.Fatalf("%s: attachment content type did not round-trip: %+v", typ, env.Attachments)
+		}
+	}
+}

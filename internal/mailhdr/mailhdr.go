@@ -83,7 +83,8 @@ func EncodeWords(s string) string {
 const maxParamSegment = 90
 
 // ExtendedParam renders attr=value as RFC 2231 continuations
-// (attr*0*=utf-8”..., attr*1*=...), each segment short enough to fold on
+// (attr*0*= carrying the utf-8 charset and an empty language tag, then
+// attr*1*=, ...), each segment short enough to fold on
 // its own line. Segments end on rune boundaries and percent-escapes are
 // never split. mime.ParseMediaType reassembles them.
 func ExtendedParam(attr, value string) string {

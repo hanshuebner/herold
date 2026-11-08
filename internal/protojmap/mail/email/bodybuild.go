@@ -583,9 +583,12 @@ func writeBlobPartInto(ctx context.Context, meta store.Metadata, blobs store.Blo
 		}
 		ph.Set("Content-ID", cid)
 	}
+	// FoldValue's result starts with the separating space, or with a fold
+	// (CRLF SP) when the first token does not fit on the field-name line;
+	// CreatePart writes "Name: " itself, so only a leading space is dropped.
 	for k, v := range ph {
 		for i := range v {
-			v[i] = mailhdr.FoldValue(k, v[i])[1:]
+			v[i] = strings.TrimPrefix(mailhdr.FoldValue(k, v[i]), " ")
 		}
 	}
 	p, err := mw.CreatePart(ph)
