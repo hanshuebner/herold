@@ -255,6 +255,24 @@ func (w *accountWorker) processWriteBack(ctx context.Context, conn Conn, ch stor
 		w.writeBackMove(ctx, conn, ms, msgID)
 
 	case store.ChangeOpDestroyed:
+		// A destroyed email change is also emitted when one mailbox
+		// membership is removed from a message that lives on (every drag
+		// to another folder removes the source membership). Only a message
+		// that no longer exists in herold is expunged upstream; a message
+		// that still exists had a membership removed, which is a move
+		// (re #558). Expunging on a membership removal deleted whatever the
+		// state row's UID named upstream, including an unrelated message.
+		if _, gerr := w.opts.store.Meta().GetMessage(ctx, msgID); gerr == nil {
+			w.writeBackMove(ctx, conn, ms, msgID)
+			return
+		} else if !errors.Is(gerr, store.ErrNotFound) {
+			log.Warn("imapimport: write-back: GetMessage error; skipping destroy",
+				slog.String("account_id", account.ID),
+				slog.Uint64("msg_id", uint64(msgID)),
+				slog.String("error", gerr.Error()),
+			)
+			return
+		}
 		w.writeBackDestroy(ctx, conn, ms, msgID)
 	}
 	// ChangeOpCreated: a newly-mirrored message was created by THIS worker;
@@ -521,10 +539,22 @@ func (w *accountWorker) writeBackMove(ctx context.Context, conn Conn, ms store.I
 		return
 	}
 
-	// Update message state with new folder and mailbox.
-	ms.UpstreamFolder = newUpstreamFolder
-	ms.HeroldMailboxID = newMailboxID
-	w.upsertMessageState(ctx, ms)
+	// The upstream server assigned the moved copy a fresh UID in the
+	// destination folder; the row keyed (source folder, source UID) no longer
+	// addresses anything. Recording the source UID under the destination folder
+	// would track a UID that names a different message (or none) there, and the
+	// next down-sync would read the absent UID as an upstream expunge and remove
+	// the message's only herold membership (re #558). Drop the stale row; the
+	// next sync of the destination folder ingests the moved copy, dedups it onto
+	// this herold message and records a row with the real UID.
+	if derr := w.opts.store.Meta().DeleteIMAPImportMessageState(ctx, ms.AccountID, ms.UpstreamFolder, ms.UpstreamUID); derr != nil && !errors.Is(derr, store.ErrNotFound) {
+		log.Warn("imapimport: write-back: failed to delete moved message_state row",
+			slog.String("account_id", account.ID),
+			slog.String("upstream_folder", ms.UpstreamFolder),
+			slog.Uint64("uid", uint64(ms.UpstreamUID)),
+			slog.String("error", derr.Error()),
+		)
+	}
 }
 
 // moveWithTryCreate issues UID MOVE to destMailbox on the currently-selected

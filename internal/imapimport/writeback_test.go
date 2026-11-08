@@ -548,14 +548,25 @@ func TestWriteBackMoveTryCreateCreatesTargetAndRetries(t *testing.T) {
 		t.Errorf("upstream INBOX NumMessages = %d; want 0 (message should have moved)", inboxSI.NumMessages)
 	}
 
-	// Message state reflects the new folder; this was a genuine success, not
-	// a permanent failure, so the failures counter must not move.
-	ms2, found, err := ha.Store.Meta().GetIMAPImportMessageState(ctx, acc.ID, "Archive", uint32(ms.UpstreamUID))
-	if err != nil || !found {
-		t.Fatalf("GetIMAPImportMessageState(Archive): found=%v err=%v", found, err)
+	// The write-back drops the source row (the destination UID is unknown to
+	// it); the next sync of Archive links the moved copy to the herold
+	// message again. This was a genuine success, not a permanent failure, so
+	// the failures counter must not move.
+	if err := runSyncOnce(t, ha, ts, acc, nil); err != nil {
+		t.Fatalf("sync: %v", err)
 	}
-	if ms2.HeroldMailboxID != archiveMB.ID {
-		t.Errorf("HeroldMailboxID = %d; want %d (Archive)", ms2.HeroldMailboxID, archiveMB.ID)
+	states, err := ha.Store.Meta().ListIMAPImportMessageStatesByMessage(ctx, ms.HeroldMessageID)
+	if err != nil {
+		t.Fatalf("ListIMAPImportMessageStatesByMessage: %v", err)
+	}
+	var linked bool
+	for _, s := range states {
+		if s.UpstreamFolder == "Archive" && s.HeroldMailboxID == archiveMB.ID {
+			linked = true
+		}
+	}
+	if !linked {
+		t.Errorf("states = %+v; want a row for upstream Archive addressing herold mailbox %d", states, archiveMB.ID)
 	}
 
 	after := testutil.ToFloat64(observe.IMAPImportWriteBackFailuresTotal.WithLabelValues(acc.ID, "move"))
