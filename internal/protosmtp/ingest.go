@@ -39,12 +39,22 @@ type IngestRequest struct {
 	// (e.g. "ses_inbound").
 	IngestSource string
 	// LocalSubmission marks a message that an authenticated principal of
-	// this server submitted (or the server generated) and that reached
+	// this server submitted (or the server composed) and that reached
 	// the recipient over the in-process queue loopback. The inbound
-	// verifiers (DKIM/SPF/DMARC/ARC) are not run for it: the sender was
-	// authenticated at submission, and the unsigned local copy would
-	// otherwise be scored as an unauthenticated message from 127.0.0.1.
-	// Only in-process callers set it; no wire path can.
+	// verifiers (DKIM/SPF/DMARC/ARC) are not run for it and the
+	// classifier is told the sender is authenticated.
+	//
+	// Only the admin loopbackDeliverer sets it, and only from the
+	// persisted queue-row origin marker (store.QueueItem.AuthenticatedLocal)
+	// that the submitting path wrote: JMAP EmailSubmission, SMTP
+	// submission, the HTTP send API, and server-composed identity
+	// verification, TLS-RPT and reaction mail. Queue rows that relay
+	// externally received bytes (Sieve redirect, alias forwarding,
+	// mailing-list fan-out) and server-generated DSNs leave the marker
+	// false, so their loopback copy is ingested as inbound mail. This is
+	// safe because the flag cannot be set from message content, the wire,
+	// or an Authentication-Results header; the stored header is trusted
+	// for reclassify only as the first header herold itself prepended.
 	LocalSubmission bool
 }
 

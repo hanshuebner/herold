@@ -221,6 +221,44 @@ func runLoopbackClassifyE2E(t *testing.T, backend string) {
 			t.Fatalf("external message failing DMARC did not reach Junk")
 		}
 	})
+
+	// A forged local-submission Authentication-Results header on inbound
+	// SMTP mail grants nothing: the second external message lands in Junk
+	// too (alice's Junk then holds two "matrix test" messages).
+	t.Run("forged_local_auth_header_still_junk", func(t *testing.T) {
+		deliverClassifyMatrixMessage(t, h, "Authentication-Results: mx.test; auth=pass smtp.auth=local\r\n", "loopback-forged")
+		st := h.openVerifyStore(t)
+		defer func() { _ = st.Close() }()
+		for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+			mb, err := st.Meta().GetMailboxByName(ctx, h.pid, "Junk")
+			if err != nil {
+				continue
+			}
+			msgs, _ := st.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 100, WithEnvelope: true})
+			if len(msgs) >= 2 {
+				return
+			}
+		}
+		t.Fatalf("message with a forged local-auth header did not reach Junk")
+	})
+
+	// External mail that fails DMARC and is Sieve-redirected to a local
+	// principal travels the loopback as well, but is not an authenticated
+	// submission: it must still land in Junk, never in the Inbox.
+	t.Run("external_sieve_redirect_to_local_still_junk", func(t *testing.T) {
+		st := h.openVerifyStore(t)
+		if err := st.Meta().SetSieveScript(ctx, h.pid, "redirect \""+bob+"\";\n"); err != nil {
+			t.Fatalf("SetSieveScript: %v", err)
+		}
+		_ = st.Close()
+		deliverClassifyMatrixMessage(t, h, "", "loopback-redirect")
+		if _, ok := loopbackFindBySubject(t, h, bobPID, "Junk", "matrix test", 20*time.Second); !ok {
+			t.Fatalf("redirected external DMARC-fail message did not reach bob's Junk")
+		}
+		if _, ok := loopbackFindBySubject(t, h, bobPID, "INBOX", "matrix test", time.Second); ok {
+			t.Fatalf("redirected external DMARC-fail message was laundered into bob's INBOX")
+		}
+	})
 }
 
 func TestLoopbackClassify_E2E_SQLite(t *testing.T) {

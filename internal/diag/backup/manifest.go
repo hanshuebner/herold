@@ -954,7 +954,14 @@ const CurrentBackupVersion = 1
 //	principal_id), the explicit enablement set, FK to apps(id) and
 //	principals(id), both ON DELETE CASCADE. New tables; AppRow and
 //	AppPrincipalRow.
-const CurrentSchemaVersion = 119
+//
+// 120 — 0120_queue_authenticated_local.sql (issue #559). Adds
+//
+//	queue.authenticated_local (default false), the origin marker the
+//	loopback deliverer reads to ingest an authenticated submission as a
+//	local submission and externally received forwards/list fan-out as
+//	inbound mail. No new table; QueueRow gains the one field.
+const CurrentSchemaVersion = 120
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

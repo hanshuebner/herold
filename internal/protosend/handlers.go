@@ -191,14 +191,15 @@ func (s *Server) processSend(ctx context.Context, r *http.Request, req sendReque
 	idempKey := composeIdempotencyKey(key.ID, req.IdempotencyKey)
 	signingDomain := domainOf(req.Source)
 	envID, err := s.queue.Submit(ctx, queue.Submission{
-		PrincipalID:    pidPtr(p.ID),
-		MailFrom:       req.Source,
-		Recipients:     rcpts,
-		Body:           bytes.NewReader(built.bytes),
-		IdempotencyKey: idempKey,
-		Sign:           true,
-		SigningDomain:  signingDomain,
-		DSNNotify:      parseDSNNotify(req.DSNNotify),
+		PrincipalID:        pidPtr(p.ID),
+		MailFrom:           req.Source,
+		Recipients:         rcpts,
+		Body:               bytes.NewReader(built.bytes),
+		IdempotencyKey:     idempKey,
+		Sign:               true,
+		AuthenticatedLocal: true,
+		SigningDomain:      signingDomain,
+		DSNNotify:          parseDSNNotify(req.DSNNotify),
 	})
 	if err != nil && !errors.Is(err, queue.ErrConflict) {
 		s.loggerFrom(ctx).Error("protosend.queue.submit",
@@ -300,14 +301,15 @@ func (s *Server) processSendRaw(ctx context.Context, r *http.Request, req sendRa
 	}
 	idempKey := composeIdempotencyKey(key.ID, req.IdempotencyKey)
 	envID, err := s.queue.Submit(ctx, queue.Submission{
-		PrincipalID:    pidPtr(p.ID),
-		MailFrom:       source,
-		Recipients:     req.Destinations,
-		Body:           bodyReader,
-		IdempotencyKey: idempKey,
-		Sign:           true,
-		SigningDomain:  domainOf(source),
-		DSNNotify:      parseDSNNotify(req.DSNNotify),
+		PrincipalID:        pidPtr(p.ID),
+		MailFrom:           source,
+		Recipients:         req.Destinations,
+		Body:               bodyReader,
+		IdempotencyKey:     idempKey,
+		Sign:               true,
+		AuthenticatedLocal: true,
+		SigningDomain:      domainOf(source),
+		DSNNotify:          parseDSNNotify(req.DSNNotify),
 	})
 	if err != nil && !errors.Is(err, queue.ErrConflict) {
 		s.loggerFrom(ctx).Error("protosend.queue.submit_raw",

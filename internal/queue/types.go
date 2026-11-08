@@ -105,6 +105,11 @@ type DeliveryRequest struct {
 	// REQUIRETLS mirrors RFC 8689: when true the deliverer must not
 	// fall back to plaintext.
 	REQUIRETLS bool
+	// AuthenticatedLocal mirrors store.QueueItem.AuthenticatedLocal: the
+	// message was submitted by an authenticated principal of this server
+	// or composed by it, as opposed to relayed externally received
+	// bytes.
+	AuthenticatedLocal bool
 	// PolicyHints carries pre-resolved MTA-STS / DANE hints. May be
 	// the zero value when no hints are available.
 	PolicyHints PolicyHints

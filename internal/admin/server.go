@@ -3983,6 +3983,9 @@ func (a queueTLSRPTAdapter) Submit(ctx context.Context, msg autodns.ReportSubmis
 		Recipients: msg.Recipients,
 		Body:       strings.NewReader(string(msg.Body)),
 		Sign:       msg.Sign,
+
+		// Server-composed TLS-RPT report.
+		AuthenticatedLocal: true,
 	})
 	return string(envID), err
 }

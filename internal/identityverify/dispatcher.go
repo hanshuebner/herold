@@ -277,6 +277,8 @@ func (d *Dispatcher) dispatch(ctx context.Context, row store.JMAPIdentity, isRes
 		Body:          bytes.NewReader(composed.Bytes),
 		Sign:          true,
 		SigningDomain: signingDomain,
+		// Composed by the server from its own template.
+		AuthenticatedLocal: true,
 		// IdempotencyKey ties retries to one envelope. The row ID is
 		// stable across resends within one token issuance; if the
 		// caller resends (REQ-IDENT-37) the token rotates and the

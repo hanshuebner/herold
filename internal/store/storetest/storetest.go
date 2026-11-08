@@ -176,6 +176,7 @@ func Run(t *testing.T, f Factory) {
 		// -- Phase 2 Wave 2.0 --------------------------------------
 		{"QueueEnqueueAndList", testQueueEnqueueAndList},
 		{"QueueHeaderOverlay_Roundtrip", testQueueHeaderOverlayRoundtrip},
+		{"QueueAuthenticatedLocal_Roundtrip", testQueueAuthenticatedLocalRoundtrip},
 		{"QueueIdempotency", testQueueIdempotency},
 		{"QueueClaimDueTransitionsState", testQueueClaimDueTransitionsState},
 		{"QueueCompleteSuccessVsFailure", testQueueCompleteSuccessVsFailure},

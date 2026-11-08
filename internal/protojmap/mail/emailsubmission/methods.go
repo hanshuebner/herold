@@ -937,6 +937,8 @@ func (s setHandler) processCreate(ctx context.Context, p store.Principal, raw js
 		Sign:          true,
 		SigningDomain: signingDomain,
 		SendAt:        sendAt,
+
+		AuthenticatedLocal: true,
 	})
 	if err != nil {
 		return jmapEmailSubmission{}, &setError{Type: "serverFail",

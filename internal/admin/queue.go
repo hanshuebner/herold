@@ -174,10 +174,11 @@ func (d loopbackDeliverer) Deliver(ctx context.Context, req queue.DeliveryReques
 		MailFrom:     req.MailFrom,
 		SourceIP:     "127.0.0.1",
 		IngestSource: "loopback",
-		// The queue only holds mail an authenticated principal
-		// submitted or the server generated; ingest records that
-		// instead of running inbound mail-auth on the unsigned copy.
-		LocalSubmission: true,
+		// Only a queue row that an authenticated principal submitted or
+		// the server composed is ingested as a local submission; a
+		// forwarded or list-expanded copy carries externally received
+		// bytes and keeps the inbound mail-auth evaluation.
+		LocalSubmission: req.AuthenticatedLocal,
 		Recipients: []protosmtp.IngestRecipient{{
 			Addr:        req.Recipient,
 			PrincipalID: pid,

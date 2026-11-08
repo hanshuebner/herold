@@ -28,7 +28,7 @@ const queueSelectColumnsPG = `
 	id, principal_id, mail_from, rcpt_to, envelope_id,
 	body_blob_hash, headers_blob_hash, state, attempts, last_attempt_at_us,
 	next_attempt_at_us, last_error, dsn_notify_flags, dsn_ret, dsn_envid,
-	dsn_orcpt, idempotency_key, created_at_us, header_overlay, message_id`
+	dsn_orcpt, idempotency_key, created_at_us, header_overlay, message_id, authenticated_local`
 
 func scanQueueItemPG(row pgx.Row) (store.QueueItem, error) {
 	var (
@@ -46,11 +46,12 @@ func scanQueueItemPG(row pgx.Row) (store.QueueItem, error) {
 		idempKey                              *string
 		headerOverlay                         string
 		messageID                             string
+		authLocal                             bool
 	)
 	err := row.Scan(&id, &principalID, &mailFrom, &rcptTo, &envID,
 		&bodyHash, &headersHash, &state, &attempts, &lastUs,
 		&nextUs, &lastErr, &dsnFlags, &dsnRet, &dsnEnvID, &orcpt,
-		&idempKey, &createdUs, &headerOverlay, &messageID)
+		&idempKey, &createdUs, &headerOverlay, &messageID, &authLocal)
 	if err != nil {
 		return store.QueueItem{}, mapErr(err)
 	}
@@ -73,6 +74,8 @@ func scanQueueItemPG(row pgx.Row) (store.QueueItem, error) {
 		CreatedAt:       fromMicros(createdUs),
 		HeaderOverlay:   headerOverlay,
 		MessageID:       messageID,
+
+		AuthenticatedLocal: authLocal,
 	}
 	if principalID != nil {
 		q.PrincipalID = store.PrincipalID(*principalID)
@@ -123,15 +126,16 @@ func (m *metadata) EnqueueMessage(ctx context.Context, item store.QueueItem) (st
 			INSERT INTO queue (principal_id, mail_from, rcpt_to, envelope_id,
 			  body_blob_hash, headers_blob_hash, state, attempts, last_attempt_at_us,
 			  next_attempt_at_us, last_error, dsn_notify_flags, dsn_ret, dsn_envid,
-			  dsn_orcpt, idempotency_key, created_at_us, header_overlay, message_id)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+			  dsn_orcpt, idempotency_key, created_at_us, header_overlay, message_id, authenticated_local)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
 			RETURNING id`,
 			pid, strings.ToLower(item.MailFrom), strings.ToLower(item.RcptTo),
 			string(item.EnvelopeID), item.BodyBlobHash, item.HeadersBlobHash,
 			int32(item.State), int32(item.Attempts), usMicros(item.LastAttemptAt),
 			usMicros(item.NextAttemptAt), item.LastError,
 			int32(item.DSNNotify), int32(item.DSNRet), item.DSNEnvID, item.DSNOrcpt,
-			idempKey, usMicros(item.CreatedAt), item.HeaderOverlay, item.MessageID).Scan(&id)
+			idempKey, usMicros(item.CreatedAt), item.HeaderOverlay, item.MessageID,
+			item.AuthenticatedLocal).Scan(&id)
 		if err != nil {
 			return mapErr(err)
 		}

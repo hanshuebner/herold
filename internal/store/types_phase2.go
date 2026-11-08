@@ -256,6 +256,16 @@ type QueueItem struct {
 	// submitted body has no parseable Message-ID header (e.g. a
 	// synthetic DSN).
 	MessageID string
+	// AuthenticatedLocal is true when an authenticated principal of this
+	// server submitted the message (JMAP EmailSubmission, SMTP
+	// submission, the HTTP send API) or this server generated it (DSN,
+	// reports, verification mail), and false when the row carries
+	// externally received bytes (Sieve redirect, alias forwarding,
+	// mailing-list fan-out). The loopback deliverer ingests a true row as
+	// an authenticated local submission; a false row is ingested as
+	// inbound mail and keeps its mail-auth evaluation (migration 0120,
+	// issue #559). The zero value is the safe one.
+	AuthenticatedLocal bool
 }
 
 // QueueFilter narrows a ListQueueItems read. Zero values mean "no

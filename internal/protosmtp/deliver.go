@@ -1938,17 +1938,20 @@ func (sess *session) queueOutboundFromSubmission(
 	}
 	requireTLS := sess.envelope.mailFromParams.requireTLS
 	envID, err := q.Submit(ctx, queue.Submission{
-		PrincipalID:    &pid,
-		MailFrom:       sess.envelope.mailFrom,
-		Recipients:     []string{rc.addr},
-		Body:           bytes.NewReader(finalBytes),
-		Sign:           true,
-		SigningDomain:  signingDomain,
-		DSNNotify:      parseDSNNotifyFlags(rc.notify),
-		DSNRet:         parseDSNRet(sess.envelope.mailFromParams.ret),
-		DSNEnvelopeID:  sess.envelope.mailFromParams.envid,
-		IdempotencyKey: idemKey,
-		REQUIRETLS:     requireTLS,
+		PrincipalID:   &pid,
+		MailFrom:      sess.envelope.mailFrom,
+		Recipients:    []string{rc.addr},
+		Body:          bytes.NewReader(finalBytes),
+		Sign:          true,
+		SigningDomain: signingDomain,
+
+		// The submission listener required AUTH for this session.
+		AuthenticatedLocal: true,
+		DSNNotify:          parseDSNNotifyFlags(rc.notify),
+		DSNRet:             parseDSNRet(sess.envelope.mailFromParams.ret),
+		DSNEnvelopeID:      sess.envelope.mailFromParams.envid,
+		IdempotencyKey:     idemKey,
+		REQUIRETLS:         requireTLS,
 	})
 	if err != nil {
 		sess.log.WarnContext(ctx, "submission listener: queue.Submit failed",
@@ -2130,8 +2133,10 @@ func (sess *session) queueForward(
 		MailFrom:    mailFrom,
 		Recipients:  []string{targetAddr},
 		Body:        bytes.NewReader(finalBytes),
-		Sign:        false,                  // do not re-sign a forwarded message
-		DSNNotify:   store.DSNNotifyFailure, // notify sender on permanent delivery failure
+		Sign:        false, // do not re-sign a forwarded message
+		// Externally received bytes: the loopback copy is ingested as
+		// inbound mail (AuthenticatedLocal stays false, re #559).
+		DSNNotify: store.DSNNotifyFailure, // notify sender on permanent delivery failure
 	})
 	if err != nil {
 		sess.log.WarnContext(ctx, "forward: queue.Submit failed",

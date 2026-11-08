@@ -125,6 +125,16 @@ type Submission struct {
 	IdempotencyKey string
 	// REQUIRETLS forwards RFC 8689 to the deliverer.
 	REQUIRETLS bool
+	// AuthenticatedLocal marks a message that an authenticated principal
+	// of this server submitted (JMAP EmailSubmission, SMTP submission,
+	// the HTTP send API) or that this server composed from its own
+	// templates (identity verification, TLS-RPT reports, reactions). It
+	// is persisted on every queue row, and the loopback deliverer
+	// ingests such a row to a local recipient as an authenticated local
+	// submission. Paths that relay externally received bytes (Sieve
+	// redirect, alias forwarding, mailing-list fan-out) leave it false;
+	// their loopback copies are ingested as inbound mail.
+	AuthenticatedLocal bool
 	// Sign requests DKIM/ARC signing on each delivery attempt. When
 	// false (forwarding path) the worker streams the body verbatim.
 	Sign bool
@@ -383,6 +393,8 @@ func (q *Queue) Submit(ctx context.Context, msg Submission) (EnvelopeID, error) 
 			CreatedAt:       now,
 			HeaderOverlay:   string(msg.HeaderOverlay),
 			MessageID:       messageID,
+
+			AuthenticatedLocal: msg.AuthenticatedLocal,
 		}
 		// Stash signing intent + REQUIRETLS in DSNOrcpt and Headers
 		// blob? No — both fields are typed and load-bearing. Use a
@@ -904,6 +916,8 @@ func (q *Queue) deliver(parentCtx context.Context, item store.QueueItem) {
 		PrincipalID: item.PrincipalID,
 		Message:     messageReader,
 		REQUIRETLS:  intent.REQUIRETLS,
+
+		AuthenticatedLocal: item.AuthenticatedLocal,
 	}
 
 	start := q.clk.Now()

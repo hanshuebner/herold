@@ -523,6 +523,10 @@ type QueueRow struct {
 	// the submitted body at enqueue time (migration 0096, issue #235).
 	// Empty when the body had no parseable Message-ID header.
 	MessageID string `json:"message_id"`
+	// AuthenticatedLocal is the migration-0120 origin marker (issue
+	// #559): true for a row an authenticated principal submitted or the
+	// server generated, false for externally received bytes.
+	AuthenticatedLocal bool `json:"authenticated_local"`
 }
 
 type DKIMKeyRow struct {
