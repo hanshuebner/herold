@@ -39,7 +39,8 @@
     fetchFullHtmlBody,
   } from './html-body-full';
   import { isKnownNonRenderableImageType } from './image-decode';
-  import { mail } from './store.svelte';
+  import { mail, isInAnyJunkMailbox } from './store.svelte';
+  import NotSpamDialog from './NotSpamDialog.svelte';
   import { settings } from '../settings/settings.svelte';
   import { jmap } from '../jmap/client';
   import { auth } from '../auth/auth.svelte';
@@ -685,6 +686,16 @@
     void mail.reportPhishing(email.id);
   }
 
+  // A message filed to any junk-role mailbox is Junk: the kebab offers
+  // Not spam (the same NotSpamDialog flow as the thread toolbar) and
+  // hides Report spam / Report phishing, matching ThreadToolbar.
+  let isInJunk = $derived(isInAnyJunkMailbox(email.mailboxIds, mail.mailboxes));
+  let notSpamDialogOpen = $state(false);
+
+  function openNotSpamDialog(): void {
+    notSpamDialogOpen = true;
+  }
+
   // REQ-MAIL-141: download URL + suggested filename for the raw RFC 5322
   // blob. Null when the JMAP session is not yet bootstrapped — the kebab
   // item is omitted in that window. REQ-MAIL-142 (Show original) reuses
@@ -753,18 +764,26 @@
       danger: true,
       onclick: deleteMessage,
     });
-    // REQ-MAIL-135.
-    items.push({
-      id: 'reportSpam',
-      label: t('msg.reportSpam'),
-      onclick: reportSpam,
-    });
-    // REQ-MAIL-136.
-    items.push({
-      id: 'reportPhishing',
-      label: t('msg.reportPhishing'),
-      onclick: reportPhishing,
-    });
+    if (isInJunk) {
+      items.push({
+        id: 'notSpam',
+        label: t('msg.notSpam'),
+        onclick: openNotSpamDialog,
+      });
+    } else {
+      // REQ-MAIL-135.
+      items.push({
+        id: 'reportSpam',
+        label: t('msg.reportSpam'),
+        onclick: reportSpam,
+      });
+      // REQ-MAIL-136.
+      items.push({
+        id: 'reportPhishing',
+        label: t('msg.reportPhishing'),
+        onclick: reportPhishing,
+      });
+    }
     // REQ-MAIL-141. Anchor-style item — browser handles the save dialog.
     if (downloadEmlInfo) {
       items.push({
@@ -1117,6 +1136,15 @@
     </div>
   {/if}
 </article>
+
+{#if notSpamDialogOpen}
+  <NotSpamDialog
+    emailId={email.id}
+    senderEmail={email.from?.[0]?.email ?? ''}
+    onclose={() => (notSpamDialogOpen = false)}
+    onmoved={() => (notSpamDialogOpen = false)}
+  />
+{/if}
 
 <RawSourceModal
   open={showOriginalOpen}

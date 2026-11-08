@@ -105,7 +105,7 @@ const { mailMock, INBOX_MBX, WORK_MBX } = vi.hoisted(() => {
   return { mailMock, INBOX_MBX, WORK_MBX };
 });
 
-vi.mock('./store.svelte', () => ({ mail: mailMock }));
+vi.mock('./store.svelte', () => ({ mail: mailMock, isInAnyJunkMailbox: () => false }));
 
 vi.mock('./avatar-resolver.svelte', () => ({
   resolve: vi.fn().mockResolvedValue(null),

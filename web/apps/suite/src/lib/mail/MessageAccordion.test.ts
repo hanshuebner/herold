@@ -111,7 +111,15 @@ const { mailMock, WORK_MBX, TRASH_MBX } = vi.hoisted(() => {
   return { mailMock, WORK_MBX, TRASH_MBX };
 });
 
-vi.mock('./store.svelte', () => ({ mail: mailMock }));
+vi.mock('./store.svelte', () => ({
+  mail: mailMock,
+  // Same semantics as the real isInAnyJunkMailbox: membership in any
+  // mailbox whose role is 'junk'.
+  isInAnyJunkMailbox: (
+    mailboxIds: Record<string, boolean>,
+    mailboxes: Map<string, import('./types').Mailbox>,
+  ) => [...mailboxes.values()].some((m) => m.role === 'junk' && mailboxIds[m.id]),
+}));
 
 vi.mock('./avatar-resolver.svelte', () => ({
   resolve: vi.fn().mockResolvedValue(null),
@@ -416,6 +424,28 @@ describe('MessageAccordion: per-message kebab menu (conservative slice)', () => 
     await fireEvent.click(screen.getByText('msg.reportSpam'));
 
     expect(mailMock.reportSpam).toHaveBeenCalledWith(email.id, 'spam');
+  });
+
+  it('message in a second junk-role mailbox: kebab offers Not spam, hides Report spam / Report phishing (re #509)', async () => {
+    const JUNK = { ...WORK_MBX, id: 'mbx-junk', name: 'Junk', role: 'junk' };
+    const SPAM = { ...WORK_MBX, id: 'mbx-spam', name: 'Spam', role: 'junk' };
+    mailMock.mailboxes.set('mbx-junk', JUNK);
+    mailMock.mailboxes.set('mbx-spam', SPAM);
+    try {
+      const email = makeEmail({ mailboxIds: { 'mbx-spam': true } });
+      renderAccordion(email, /* expanded */ true);
+
+      await fireEvent.click(screen.getByLabelText('msg.kebab.openLabel'));
+      expect(screen.getByText('msg.notSpam')).toBeInTheDocument();
+      expect(screen.queryByText('msg.reportSpam')).not.toBeInTheDocument();
+      expect(screen.queryByText('msg.reportPhishing')).not.toBeInTheDocument();
+
+      await fireEvent.click(screen.getByText('msg.notSpam'));
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+    } finally {
+      mailMock.mailboxes.delete('mbx-junk');
+      mailMock.mailboxes.delete('mbx-spam');
+    }
   });
 
   it('Report phishing item calls mail.reportPhishing(emailId)', async () => {

@@ -64,7 +64,7 @@ const { mailMock } = vi.hoisted(() => {
   return { mailMock };
 });
 
-vi.mock('./store.svelte', () => ({ mail: mailMock }));
+vi.mock('./store.svelte', () => ({ mail: mailMock, isInAnyJunkMailbox: () => false }));
 
 vi.mock('./avatar-resolver.svelte', () => ({
   resolve: vi.fn().mockResolvedValue(null),
