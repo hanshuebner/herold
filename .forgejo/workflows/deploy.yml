@@ -284,6 +284,76 @@ jobs:
           fi
           echo "confirmed: outpost runs ${{ steps.target.outputs.ref }}"
 
+      # Mails the maintainer the release notes for the newly live release:
+      # every commit since the last announced release, grouped by ticket
+      # (scripts/release-notes.sh). Runs on "skip" as well as "deploy",
+      # because outpost's own poller can activate a release before this
+      # workflow reaches it; in both cases the target is confirmed live.
+      # A release counts as announced once its Forgejo release body holds
+      # the notes, so a re-run never mails twice and a release activated
+      # without an announcement is covered by the next one. Sent through
+      # herold's own HTTP send API with a mail.send-scoped API key; the
+      # step is a no-op until RELEASE_NOTES_API_KEY and
+      # RELEASE_NOTES_ADDRESS (sender and recipient) are configured.
+      - name: announce the release
+        if: >-
+          steps.guard.outputs.enabled == 'true' && steps.target.outputs.found == 'true' &&
+          (steps.decide.outputs.decision == 'deploy' || steps.decide.outputs.decision == 'skip')
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          RELEASE_NOTES_API_KEY: ${{ secrets.RELEASE_NOTES_API_KEY }}
+          RELEASE_NOTES_ADDRESS: ${{ secrets.RELEASE_NOTES_ADDRESS }}
+          SEND_URL: https://mail.netzhansa.com/api/v1/mail/send
+        run: |
+          set -euo pipefail
+          if [ -z "${RELEASE_NOTES_API_KEY}" ] || [ -z "${RELEASE_NOTES_ADDRESS}" ]; then
+            echo "RELEASE_NOTES_API_KEY or RELEASE_NOTES_ADDRESS is not set; not announcing"
+            exit 0
+          fi
+          API="${GITHUB_SERVER_URL}/api/v1"
+          REPO="herold/herold"
+          AUTH="Authorization: token ${RELEASE_TOKEN}"
+          ref="${{ steps.target.outputs.ref }}"
+          sha="${{ steps.target.outputs.sha }}"
+
+          releases=$(curl -fsS -H "${AUTH}" "${API}/repos/${REPO}/releases?limit=50" \
+            | jq '[.[] | select(.tag_name|startswith("ci-"))] | sort_by(.id) | reverse')
+          target=$(printf '%s' "${releases}" | jq -c --arg t "${ref}" '.[] | select(.tag_name==$t)')
+          if [ -n "$(printf '%s' "${target}" | jq -r '.body // empty')" ]; then
+            echo "${ref} is already announced"
+            exit 0
+          fi
+          id=$(printf '%s' "${target}" | jq -r '.id')
+          # The newest announced release older than the target (release ids
+          # increase with creation); before any release was announced, the
+          # release just before the target.
+          from=$(printf '%s' "${releases}" | jq -r --argjson id "${id}" \
+            '[.[] | select(.id < $id)] | ([.[] | select((.body // "") != "")] + .)[0].target_commitish // empty')
+          if [ -z "${from}" ] || [ "${from}" = "${sha}" ]; then
+            echo "no earlier ci- release to compare ${ref} against; not announcing"
+            exit 0
+          fi
+
+          FORGEJO_API="${API}" FORGEJO_TOKEN="${RELEASE_TOKEN}" \
+            ./scripts/release-notes.sh . "${from}" "${sha}" "${ref}" > notes.txt
+          subject=$(head -n 1 notes.txt)
+          body=$(tail -n +3 notes.txt)
+
+          jq -n --arg addr "${RELEASE_NOTES_ADDRESS}" --arg subject "${subject}" \
+                --arg text "${body}" --arg key "announce-${ref}" \
+            '{source: $addr, destination: {toAddresses: [$addr]},
+              message: {subject: $subject, body: {text: $text}},
+              idempotencyKey: $key}' > send.json
+          curl -fsS -X POST -H "Authorization: Bearer ${RELEASE_NOTES_API_KEY}" \
+            -H "Content-Type: application/json" --data @send.json "${SEND_URL}"
+          echo
+          echo "mailed release notes for ${ref} (${from:0:8}..${sha:0:8})"
+
+          jq -n --arg body "${body}" '{body: $body}' \
+            | curl -fsS -X PATCH -H "${AUTH}" -H "Content-Type: application/json" \
+                --data @- "${API}/repos/${REPO}/releases/${id}" > /dev/null
+          echo "recorded the notes on release ${ref}"
+
       - name: remove SSH key
         if: always() && steps.guard.outputs.enabled == 'true' && steps.target.outputs.found == 'true'
         run: |

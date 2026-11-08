@@ -954,6 +954,12 @@ jobs:
         if: steps.guard.outputs.enabled == 'true'
         run: ./scripts/test-deploy-decide.sh
 
+      # deploy.yml mails the output of scripts/release-notes.sh once a
+      # release is live; exercised here against fixture issues.
+      - name: release-notes.sh tests
+        if: steps.guard.outputs.enabled == 'true'
+        run: ./scripts/test-release-notes.sh
+
       - name: package release assets
         if: steps.guard.outputs.enabled == 'true'
         run: |
