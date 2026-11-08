@@ -12,6 +12,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/hanshuebner/herold/internal/mailhdr"
 )
 
 // codeAlphabet is the set of ASCII digits used to derive the 6-digit
@@ -199,15 +201,15 @@ func Compose(in ComposeInput) (ComposeOutput, error) {
 	// submitted hint helps recipients' mail clients distinguish this
 	// from user-initiated correspondence.
 	var out bytes.Buffer
-	fmt.Fprintf(&out, "From: %s\r\n", in.From)
-	fmt.Fprintf(&out, "To: %s\r\n", in.To)
+	out.WriteString(mailhdr.Fold("From", in.From))
+	out.WriteString(mailhdr.Fold("To", in.To))
 	fmt.Fprintf(&out, "Date: %s\r\n", in.Now.UTC().Format("Mon, 02 Jan 2006 15:04:05 +0000"))
-	fmt.Fprintf(&out, "Message-ID: %s\r\n", msgID)
+	out.WriteString(mailhdr.Fold("Message-ID", msgID))
 	fmt.Fprintf(&out, "Subject: %s\r\n", subject)
 	fmt.Fprintf(&out, "MIME-Version: 1.0\r\n")
 	fmt.Fprintf(&out, "Auto-Submitted: auto-generated\r\n")
 	fmt.Fprintf(&out, "X-Herold-Identity-Verification: 1\r\n")
-	fmt.Fprintf(&out, "Content-Type: multipart/alternative; boundary=%q\r\n", boundary)
+	out.WriteString(mailhdr.Fold("Content-Type", fmt.Sprintf("multipart/alternative; boundary=%q", boundary)))
 	fmt.Fprintf(&out, "\r\n")
 	if _, err := io.Copy(&out, &bodyBuf); err != nil {
 		return ComposeOutput{}, fmt.Errorf("identityverify.Compose: copy body: %w", err)

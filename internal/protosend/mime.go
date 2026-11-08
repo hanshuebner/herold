@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/hanshuebner/herold/internal/mailhdr"
 )
 
 // builtMessage is the result of assembling an RFC 5322 message from a
@@ -165,7 +167,7 @@ func writeHeaders(buf *bytes.Buffer, h map[string]string) {
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		fmt.Fprintf(buf, "%s: %s\r\n", k, h[k])
+		buf.WriteString(mailhdr.Fold(k, h[k]))
 	}
 }
 
@@ -203,42 +205,11 @@ func joinAddresses(addrs []string) string {
 	return strings.Join(out, ", ")
 }
 
-// encodeHeaderValue applies RFC 2047 encoded-word encoding when the
-// input contains non-ASCII bytes; otherwise returns it verbatim.
+// encodeHeaderValue applies RFC 2047 encoded-word encoding (words of at
+// most 75 characters, folded onto continuation lines) when the input
+// contains non-ASCII or control bytes; otherwise it returns it verbatim.
 func encodeHeaderValue(s string) string {
-	for _, r := range s {
-		if r > 0x7e || r < 0x20 {
-			// Use base64 encoded-word for safety.
-			return "=?utf-8?B?" + base64URLOk(s) + "?="
-		}
-	}
-	return s
-}
-
-func base64URLOk(s string) string {
-	// stdlib mime.BEncoding.Encode is correct here, but importing mime
-	// for one function bloats the dep graph minimally; explicit base64
-	// keeps the function readable.
-	const tbl = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-	src := []byte(s)
-	var out strings.Builder
-	for i := 0; i < len(src); i += 3 {
-		var b [3]byte
-		n := copy(b[:], src[i:])
-		out.WriteByte(tbl[b[0]>>2])
-		out.WriteByte(tbl[((b[0]&0x03)<<4)|(b[1]>>4)])
-		if n > 1 {
-			out.WriteByte(tbl[((b[1]&0x0f)<<2)|(b[2]>>6)])
-		} else {
-			out.WriteByte('=')
-		}
-		if n > 2 {
-			out.WriteByte(tbl[b[2]&0x3f])
-		} else {
-			out.WriteByte('=')
-		}
-	}
-	return out.String()
+	return mailhdr.EncodeWords(s)
 }
 
 // canonHeaderName uppercases the first letter and each letter following

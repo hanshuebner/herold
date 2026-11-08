@@ -7,11 +7,13 @@ import (
 	"io"
 	"log/slog"
 	"mime/multipart"
+	"mime/quotedprintable"
 	"net/textproto"
 	"strings"
 	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/mailhdr"
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/queue"
 	"github.com/hanshuebner/herold/internal/store"
@@ -186,36 +188,43 @@ func buildReactionBody(
 
 	plainHdr := textproto.MIMEHeader{}
 	plainHdr.Set("Content-Type", "text/plain; charset=utf-8")
+	plainHdr.Set("Content-Transfer-Encoding", "quoted-printable")
 	pw, err := mw.CreatePart(plainHdr)
 	if err != nil {
 		return nil, err
 	}
-	fmt.Fprintf(pw, "%s reacted with %s to your message.\r\n", displayName, emoji)
+	// Quoted-printable bounds line length however long displayName is.
+	qp := quotedprintable.NewWriter(pw)
+	fmt.Fprintf(qp, "%s reacted with %s to your message.\r\n", displayName, emoji)
+	_ = qp.Close()
 
 	htmlHdr := textproto.MIMEHeader{}
 	htmlHdr.Set("Content-Type", "text/html; charset=utf-8")
+	htmlHdr.Set("Content-Transfer-Encoding", "quoted-printable")
 	hw, err := mw.CreatePart(htmlHdr)
 	if err != nil {
 		return nil, err
 	}
-	fmt.Fprintf(hw, "<p>%s reacted with <span style=\"font-size:1.5em\">%s</span> to your message.</p>\r\n",
+	hq := quotedprintable.NewWriter(hw)
+	fmt.Fprintf(hq, "<p>%s reacted with <span style=\"font-size:1.5em\">%s</span> to your message.</p>\r\n",
 		htmlEscape(displayName), emoji)
+	_ = hq.Close()
 
 	if err := mw.Close(); err != nil {
 		return nil, err
 	}
 
 	// Write RFC 5322 headers.
-	fmt.Fprintf(&buf, "From: %s\r\n", reactorAddr)
+	buf.WriteString(mailhdr.Fold("From", reactorAddr))
 	fmt.Fprintf(&buf, "Date: %s\r\n", now.UTC().Format("Mon, 02 Jan 2006 15:04:05 +0000"))
-	fmt.Fprintf(&buf, "Message-ID: %s\r\n", newMsgID)
-	fmt.Fprintf(&buf, "Subject: %s\r\n", subject)
-	fmt.Fprintf(&buf, "In-Reply-To: %s\r\n", origMsgID)
-	fmt.Fprintf(&buf, "References: %s\r\n", refs)
-	fmt.Fprintf(&buf, "X-Herold-Reaction-To: %s\r\n", origMsgID)
-	fmt.Fprintf(&buf, "X-Herold-Reaction-Emoji: %s\r\n", emoji)
+	buf.WriteString(mailhdr.Fold("Message-ID", newMsgID))
+	buf.WriteString(mailhdr.Fold("Subject", mailhdr.EncodeWords(subject)))
+	buf.WriteString(mailhdr.Fold("In-Reply-To", origMsgID))
+	buf.WriteString(mailhdr.Fold("References", refs))
+	buf.WriteString(mailhdr.Fold("X-Herold-Reaction-To", origMsgID))
+	buf.WriteString(mailhdr.Fold("X-Herold-Reaction-Emoji", emoji))
 	fmt.Fprintf(&buf, "X-Herold-Reaction-Action: add\r\n")
-	fmt.Fprintf(&buf, "Content-Type: multipart/alternative; boundary=%q\r\n", boundary)
+	buf.WriteString(mailhdr.Fold("Content-Type", fmt.Sprintf("multipart/alternative; boundary=%q", boundary)))
 	fmt.Fprintf(&buf, "\r\n")
 	if _, err := io.Copy(&buf, &bodyBuf); err != nil {
 		return nil, err

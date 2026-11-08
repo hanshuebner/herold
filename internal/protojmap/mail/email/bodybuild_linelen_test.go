@@ -147,3 +147,47 @@ func TestBuildEmail_LongHeadersFoldAndUnfoldLossless(t *testing.T) {
 		t.Fatalf("To parsed %d addrs err=%v, want 40", len(to), err)
 	}
 }
+
+// TestBuildEmail_LongNonASCIISubjectAndFilename: a long non-ASCII subject
+// folds into encoded-words of at most 75 characters that decode back, and
+// a long non-ASCII attachment filename uses RFC 2231 continuations so no
+// line exceeds 998 octets (headers within 78 where foldable).
+func TestBuildEmail_LongNonASCIISubjectAndFilename(t *testing.T) {
+	subj := strings.Repeat("Gr\u00fc\u00dfe aus M\u00fcnchen \u65e5\u672c\u8a9e ", 30)
+	fname := strings.Repeat("Bericht \u00e4\u00f6\u00fc \u65e5\u672c\u8a9e ", 40) + ".png"
+	blobs := memBlobs{data: map[string][]byte{"att1": []byte("png-bytes")}}
+	in := emailCreateInput{
+		From:       []emailAddress{{Email: "me@example.test"}},
+		To:         []emailAddress{{Email: "you@example.test"}},
+		Subject:    &subj,
+		BodyValues: map[string]emailBodyValue{"1": {Value: "hi"}},
+		TextBody:   []emailBodyPart{{PartID: "1", Type: "text/plain"}},
+		attachmentParts: []emailBodyStructurePart{
+			{Type: "image/png", BlobID: "att1", Name: fname, Disposition: "attachment"},
+		},
+	}
+	raw, err := buildEmailFromProperties(context.Background(), nil, blobs, in, time.Unix(1794121361, 0), "mail.example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if max, at := maxLine(raw); max > 998 {
+		t.Fatalf("line %d is %d octets", at, max)
+	}
+	for _, l := range strings.Split(string(raw), "\r\n") {
+		for _, w := range strings.Fields(l) {
+			if strings.HasPrefix(w, "=?") && len(w) > 75 {
+				t.Fatalf("encoded-word of %d chars", len(w))
+			}
+		}
+	}
+	env, err := enmime.ReadEnvelope(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := env.GetHeader("Subject"); got != subj {
+		t.Fatalf("subject did not round-trip: %q", got)
+	}
+	if len(env.Attachments) != 1 || env.Attachments[0].FileName != fname {
+		t.Fatalf("filename did not round-trip: %+v", env.Attachments)
+	}
+}

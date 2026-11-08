@@ -17,6 +17,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/hanshuebner/herold/internal/mailhdr"
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
 )
@@ -281,53 +282,12 @@ func hasBodyPartID(parts []emailBodyPart, partID string) bool {
 	return false
 }
 
-// headerFoldWidth is the column at which writeLiteralHeader folds a header
-// line (RFC 5322 section 2.1.1 recommends 78 octets per line).
-const headerFoldWidth = 78
-
-// writeLiteralHeader writes "Name: Value\r\n", folding the line at
-// whitespace so no line exceeds headerFoldWidth where the value offers a
-// fold point (RFC 5322 section 2.2.3). A value without whitespace is
-// written as one line. The caller is responsible for encoding the value
-// (e.g. mime.QEncoding for non-ASCII subjects).
+// writeLiteralHeader writes "Name: Value\r\n", folded at whitespace so no
+// line exceeds 78 octets where the value offers a fold point (RFC 5322
+// section 2.2.3). The caller is responsible for encoding the value (e.g.
+// mime.QEncoding for non-ASCII subjects).
 func writeLiteralHeader(buf *bytes.Buffer, name, value string) {
-	buf.WriteString(name)
-	buf.WriteString(":")
-	lineLen := len(name) + 1
-	// value is written as " " + value; every space is a candidate fold
-	// point, and an existing CRLF resets the column.
-	rest := " " + value
-	for len(rest) > 0 {
-		// Next chunk: from the current position up to (excluding) the next
-		// space after the leading whitespace run, or a CRLF.
-		end := len(rest)
-		for i := 1; i < len(rest); i++ {
-			if rest[i] == ' ' || rest[i] == '\t' {
-				end = i
-				break
-			}
-			if rest[i] == '\r' {
-				end = i
-				break
-			}
-		}
-		chunk := rest[:end]
-		if strings.HasPrefix(chunk, "\r\n") {
-			buf.WriteString("\r\n")
-			rest = rest[2:]
-			lineLen = 0
-			continue
-		}
-		if lineLen+len(chunk) > headerFoldWidth && lineLen > 0 &&
-			(chunk[0] == ' ' || chunk[0] == '\t') {
-			buf.WriteString("\r\n")
-			lineLen = 0
-		}
-		buf.WriteString(chunk)
-		lineLen += len(chunk)
-		rest = rest[end:]
-	}
-	buf.WriteString("\r\n")
+	buf.WriteString(mailhdr.Fold(name, value))
 }
 
 // base64LineWriter wraps base64 output into CRLF-terminated lines of at
@@ -522,19 +482,25 @@ func writeMultipartMixed(ctx context.Context, meta store.Metadata, blobs store.B
 // extended form's percent-decoding -- confirmed by
 // TestMediaParam_RoundTripsThroughMailparse.
 func mediaParam(attr, value string) string {
-	if isASCIIParamValue(value) {
-		return formatOneMediaParam(attr, value)
+	plain := formatOneMediaParam(attr, value)
+	if isASCIIParamValue(value) && len(plain) <= maxPlainParam {
+		return plain
 	}
-	fallback := formatOneMediaParam(attr, asciiFallbackName(value))
-	// mime.FormatMediaType has no public hook for just the RFC 2231
-	// encoded value, so format a throwaway header with Go's own encoder
-	// (which emits only the attr*= extended form for a non-ASCII value)
-	// and lift that text -- guaranteeing our extended form matches
-	// exactly what mime.ParseMediaType expects.
-	full := mime.FormatMediaType("x", map[string]string{attr: value})
-	extended := strings.TrimPrefix(full, "x; ")
-	return fallback + "; " + extended
+	fb := asciiFallbackName(value)
+	if len(fb) > maxFallbackName {
+		fb = fb[:maxFallbackName]
+	}
+	fallback := formatOneMediaParam(attr, fb)
+	return fallback + "; " + mailhdr.ExtendedParam(attr, value)
 }
+
+// maxPlainParam is the longest "attr=value" text written as a single
+// plain parameter; longer values use RFC 2231 continuations.
+const maxPlainParam = 60
+
+// maxFallbackName bounds the plain-ASCII fallback accompanying an
+// extended parameter.
+const maxFallbackName = 40
 
 // formatOneMediaParam formats a single ASCII-safe "attr=value" parameter,
 // quoting it as a quoted-string when value is not a bare RFC 2045 token.
@@ -616,6 +582,11 @@ func writeBlobPartInto(ctx context.Context, meta store.Metadata, blobs store.Blo
 			cid = "<" + cid + ">"
 		}
 		ph.Set("Content-ID", cid)
+	}
+	for k, v := range ph {
+		for i := range v {
+			v[i] = mailhdr.FoldValue(k, v[i])[1:]
+		}
 	}
 	p, err := mw.CreatePart(ph)
 	if err != nil {
