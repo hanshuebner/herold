@@ -339,6 +339,9 @@ type envelopeFetchResult struct {
 	InternalDate time.Time
 	// Flags is the upstream system-flag set.
 	Flags []imap.Flag
+	// Size is the upstream RFC822.SIZE; zero when the upstream did not
+	// report it.
+	Size int64
 }
 
 // syncAllFoldersGmail is the Gmail-specific variant of syncAllFolders.
@@ -590,6 +593,9 @@ func (w *accountWorker) syncFolderGmailAllMailEnvelopeDedup(ctx context.Context,
 					HeroldMessageID: existing.ID,
 					HeroldMailboxID: existing.MailboxID,
 					LastSyncedFlags: sf,
+
+					UpstreamMessageID: env.MessageID,
+					UpstreamSize:      env.Size,
 				}); msErr != nil {
 					log.Warn("imapimport: Gmail All Mail UpsertIMAPImportMessageState (skip) failed",
 						slog.String("account_id", accountID),

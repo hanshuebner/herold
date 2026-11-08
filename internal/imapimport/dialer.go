@@ -217,6 +217,7 @@ func (c *prodConn) UIDFetchEnvelope(_ context.Context, uids []imap.UID) ([]envel
 		InternalDate: true,
 		Envelope:     true,
 		UID:          true,
+		RFC822Size:   true,
 	}
 	cmd := c.client.Fetch(uidSet, fetchOpts)
 	bufs, err := cmd.Collect()
@@ -234,6 +235,7 @@ func (c *prodConn) UIDFetchEnvelope(_ context.Context, uids []imap.UID) ([]envel
 			MessageID:    msgID,
 			InternalDate: buf.InternalDate,
 			Flags:        buf.Flags,
+			Size:         buf.RFC822Size,
 		})
 	}
 	return out, nil

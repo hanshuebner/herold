@@ -886,6 +886,9 @@ func testIMAPImport_MessageStateUpsertAndLookups(t *testing.T, s store.Store) {
 		HeroldMessageID: 1001,
 		HeroldMailboxID: 2001,
 		LastSyncedFlags: store.IMAPImportFlagSeen | store.IMAPImportFlagFlagged,
+
+		UpstreamMessageID: "id-42@example.test",
+		UpstreamSize:      4242,
 	}
 	if err := s.Meta().UpsertIMAPImportMessageState(ctx, ms); err != nil {
 		t.Fatalf("UpsertIMAPImportMessageState: %v", err)
@@ -908,6 +911,9 @@ func testIMAPImport_MessageStateUpsertAndLookups(t *testing.T, s store.Store) {
 	if got.LastSyncedFlags != (store.IMAPImportFlagSeen | store.IMAPImportFlagFlagged) {
 		t.Errorf("LastSyncedFlags = %d; want Seen|Flagged", got.LastSyncedFlags)
 	}
+	if got.UpstreamMessageID != "id-42@example.test" || got.UpstreamSize != 4242 {
+		t.Errorf("upstream identity = (%q, %d); want (id-42@example.test, 4242)", got.UpstreamMessageID, got.UpstreamSize)
+	}
 
 	// Lookup by herold message id.
 	got2, found, err := s.Meta().GetIMAPImportMessageStateByMessage(ctx, acc.ID, 1001)
@@ -929,6 +935,9 @@ func testIMAPImport_MessageStateUpsertAndLookups(t *testing.T, s store.Store) {
 	got3, _, _ := s.Meta().GetIMAPImportMessageState(ctx, acc.ID, "INBOX", 42)
 	if got3.LastSyncedFlags != store.IMAPImportFlagSeen {
 		t.Errorf("LastSyncedFlags after update = %d; want Seen only", got3.LastSyncedFlags)
+	}
+	if got3.UpstreamMessageID != "id-42@example.test" || got3.UpstreamSize != 4242 {
+		t.Errorf("upstream identity after update = (%q, %d); want it preserved", got3.UpstreamMessageID, got3.UpstreamSize)
 	}
 
 	// GetIMAPImportMessageStateByMessage with non-existent message id.

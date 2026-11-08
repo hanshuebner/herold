@@ -276,25 +276,21 @@ func (w *accountWorker) rowBeyondFolderBound(ctx context.Context, ms store.IMAPI
 	return uint64(ms.UpstreamUID) >= cur.UIDNext
 }
 
-// upstreamIdentity reports whether the message at uid in the selected
-// upstream folder is present and, when both sides carry a Message-ID, the
-// same message as the herold one. A non-nil error means the check could not
-// run and nothing may be inferred.
-func (w *accountWorker) upstreamIdentity(ctx context.Context, conn Conn, uid imap.UID, heroldMsgID string) (present, same bool, upstreamMsgID string, err error) {
+// upstreamEnvelope fetches the envelope of the message at uid in the
+// selected upstream folder. present is false when the folder holds no such
+// UID. A non-nil error means the check could not run and nothing may be
+// inferred.
+func (w *accountWorker) upstreamEnvelope(ctx context.Context, conn Conn, uid imap.UID) (env envelopeFetchResult, present bool, err error) {
 	envs, err := conn.UIDFetchEnvelope(ctx, []imap.UID{uid})
 	if err != nil {
-		return false, false, "", err
+		return envelopeFetchResult{}, false, err
 	}
 	for _, e := range envs {
-		if e.UID != uid {
-			continue
+		if e.UID == uid {
+			return e, true, nil
 		}
-		if heroldMsgID != "" && e.MessageID != "" && e.MessageID != mailparse.NormalizeMessageID(heroldMsgID) {
-			return true, false, e.MessageID, nil
-		}
-		return true, true, e.MessageID, nil
 	}
-	return false, false, "", nil
+	return envelopeFetchResult{}, false, nil
 }
 
 // processWriteBack handles a single EntityKindEmail change. It looks up the
@@ -599,13 +595,36 @@ func (w *accountWorker) writeBackMove(ctx context.Context, conn Conn, ms store.I
 	// message) succeeds as a no-op, so confirm the row addresses this
 	// message before acting on it. A row that does not is a ghost: drop it
 	// (re #558).
-	present, same, upMsgID, ierr := w.upstreamIdentity(ctx, conn, imap.UID(ms.UpstreamUID), heroldMsg.Envelope.MessageID)
+	// A row with a recorded identity (re #561) must also still name that
+	// message; a row without one is judged by the herold message's own
+	// Message-ID alone.
+	upEnv, present, ierr := w.upstreamEnvelope(ctx, conn, imap.UID(ms.UpstreamUID))
 	if ierr != nil {
 		log.Warn("imapimport: write-back: move: upstream identity check failed; skipping",
 			slog.String("account_id", account.ID),
 			slog.String("folder", ms.UpstreamFolder),
 			slog.Uint64("uid", uint64(ms.UpstreamUID)),
 			slog.String("error", ierr.Error()),
+		)
+		return
+	}
+	upMsgID := upEnv.MessageID
+	same := true
+	if hid := mailparse.NormalizeMessageID(heroldMsg.Envelope.MessageID); hid != "" && upMsgID != "" && upMsgID != hid {
+		same = false
+	}
+	if rowHasUpstreamIdentity(ms) && present && upMsgID != ms.UpstreamMessageID {
+		same = false
+	}
+	if present && same && rowHasUpstreamIdentity(ms) && !rowMatchesUpstream(ms, upEnv) {
+		// Same Message-ID, different size: the row may still name this
+		// message (an upstream that reports sizes differently), so keep it
+		// and leave the message where it is.
+		log.Warn("imapimport: write-back: move: upstream size differs from the recorded identity; skipping move",
+			slog.String("account_id", account.ID),
+			slog.Uint64("msg_id", uint64(msgID)),
+			slog.String("folder", ms.UpstreamFolder),
+			slog.Uint64("uid", uint64(ms.UpstreamUID)),
 		)
 		return
 	}
@@ -749,10 +768,22 @@ func (w *accountWorker) writeBackDestroy(ctx context.Context, conn Conn, ms stor
 
 	uid := imap.UID(ms.UpstreamUID)
 
-	// The upstream message at this UID must not be one herold still holds:
-	// a live herold message carrying its Message-ID means the UID names
-	// someone else's mail, not the message that was deleted.
-	present, _, upMsgID, ierr := w.upstreamIdentity(ctx, conn, uid, "")
+	// Expunge only the message the state row was created from: the upstream
+	// message at this UID must match the Message-ID and size recorded when
+	// the row was created (re #561). A row without a recorded identity, an
+	// upstream message without a Message-ID, or any mismatch names mail that
+	// cannot be tied to the deleted herold message.
+	if !rowHasUpstreamIdentity(ms) {
+		log.Warn("imapimport: write-back: destroy: state row has no recorded upstream identity; skipping expunge",
+			slog.String("account_id", account.ID),
+			slog.Uint64("msg_id", uint64(msgID)),
+			slog.String("folder", ms.UpstreamFolder),
+			slog.Uint64("uid", uint64(uid)),
+		)
+		return
+	}
+	upEnv, present, ierr := w.upstreamEnvelope(ctx, conn, uid)
+	upMsgID := upEnv.MessageID
 	if ierr != nil {
 		log.Warn("imapimport: write-back: destroy: upstream identity check failed; skipping",
 			slog.String("account_id", account.ID),
@@ -763,6 +794,16 @@ func (w *accountWorker) writeBackDestroy(ctx context.Context, conn Conn, ms stor
 	}
 	if !present {
 		return // already gone upstream
+	}
+	if upMsgID == "" || !rowMatchesUpstream(ms, upEnv) {
+		log.Warn("imapimport: write-back: destroy: upstream message does not match the recorded identity; skipping expunge",
+			slog.String("account_id", account.ID),
+			slog.Uint64("msg_id", uint64(msgID)),
+			slog.String("folder", ms.UpstreamFolder),
+			slog.Uint64("uid", uint64(uid)),
+			slog.Bool("upstream_has_message_id", upMsgID != ""),
+		)
+		return
 	}
 	if upMsgID != "" {
 		if _, lerr := w.opts.store.Meta().GetMessageByMessageIDHeader(ctx, store.PrincipalID(account.PrincipalID), upMsgID); lerr == nil {

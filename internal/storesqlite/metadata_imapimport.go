@@ -29,7 +29,7 @@ const imapImportAccountSelectCols = `
 const imapImportMessageStateSelectCols = `
 	account_id, upstream_folder, upstream_uid,
 	herold_message_id, herold_mailbox_id, last_synced_flags, copied_message_id,
-	mapped_mailbox_id`
+	mapped_mailbox_id, upstream_message_id, upstream_size`
 
 func scanIMAPImportAccount(row rowLike) (store.IMAPImportAccount, error) {
 	var (
@@ -645,10 +645,12 @@ func scanIMAPImportMessageState(row rowLike) (store.IMAPImportMessageState, erro
 		lastSyncedFlags           int32
 		copiedMessageID           int64
 		mappedMailboxID           int64
+		upstreamMessageID         string
+		upstreamSize              int64
 	)
 	err := row.Scan(&accountID, &upstreamFolder, &upstreamUID,
 		&heroldMessageID, &heroldMailboxID, &lastSyncedFlags, &copiedMessageID,
-		&mappedMailboxID)
+		&mappedMailboxID, &upstreamMessageID, &upstreamSize)
 	if err != nil {
 		return store.IMAPImportMessageState{}, mapErr(err)
 	}
@@ -661,6 +663,9 @@ func scanIMAPImportMessageState(row rowLike) (store.IMAPImportMessageState, erro
 		LastSyncedFlags: store.IMAPImportSyncedFlags(lastSyncedFlags),
 		CopiedMessageID: store.MessageID(copiedMessageID),
 		MappedMailboxID: store.MailboxID(mappedMailboxID),
+
+		UpstreamMessageID: upstreamMessageID,
+		UpstreamSize:      upstreamSize,
 	}, nil
 }
 
@@ -670,16 +675,19 @@ func (m *metadata) UpsertIMAPImportMessageState(ctx context.Context, state store
 			INSERT INTO imapimport_message_state
 			  (account_id, upstream_folder, upstream_uid,
 			   herold_message_id, herold_mailbox_id, last_synced_flags,
-			   mapped_mailbox_id)
-			VALUES (?,?,?,?,?,?,?)
+			   mapped_mailbox_id, upstream_message_id, upstream_size)
+			VALUES (?,?,?,?,?,?,?,?,?)
 			ON CONFLICT(account_id, upstream_folder, upstream_uid) DO UPDATE SET
 			  herold_message_id = excluded.herold_message_id,
 			  herold_mailbox_id = excluded.herold_mailbox_id,
 			  last_synced_flags = excluded.last_synced_flags,
-			  mapped_mailbox_id = excluded.mapped_mailbox_id`,
+			  mapped_mailbox_id = excluded.mapped_mailbox_id,
+			  upstream_message_id = excluded.upstream_message_id,
+			  upstream_size = excluded.upstream_size`,
 			state.AccountID, state.UpstreamFolder, int64(state.UpstreamUID),
 			int64(state.HeroldMessageID), int64(state.HeroldMailboxID),
 			int32(state.LastSyncedFlags), int64(state.MappedMailboxID),
+			state.UpstreamMessageID, state.UpstreamSize,
 		)
 		return mapErr(err)
 	})

@@ -474,6 +474,7 @@ func (w *accountWorker) fetchAndIngestLabels(
 		// this upstream UID (REQ-IMAP-IMP-34). The primary (first) mailbox is
 		// recorded as the herold anchor.
 		sf := w.ingestedSyncedFlags(ctx, lm.Flags, primaryMsgID)
+		upMsgID, upSize := upstreamIdentityOf(lm.RFC822)
 		if msErr := w.opts.store.Meta().UpsertIMAPImportMessageState(ctx, store.IMAPImportMessageState{
 			AccountID:       account.ID,
 			UpstreamFolder:  gmailAllMail,
@@ -481,6 +482,9 @@ func (w *accountWorker) fetchAndIngestLabels(
 			HeroldMessageID: primaryMsgID,
 			HeroldMailboxID: primaryMbID,
 			LastSyncedFlags: sf,
+
+			UpstreamMessageID: upMsgID,
+			UpstreamSize:      upSize,
 		}); msErr != nil {
 			w.opts.log.Warn("imapimport: Gmail label UpsertIMAPImportMessageState failed",
 				slog.String("account_id", account.ID),

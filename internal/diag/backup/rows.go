@@ -1315,6 +1315,10 @@ type IMAPImportMessageStateRow struct {
 	// 0106 (issue #319). 0 means "equal to HeroldMailboxID" (the
 	// pre-migration default; non-divergent).
 	MappedMailboxID int64 `json:"mapped_mailbox_id"`
+	// UpstreamMessageID and UpstreamSize are the upstream identity added
+	// by migration 0121 (issue #561); "" / 0 mean not recorded.
+	UpstreamMessageID string `json:"upstream_message_id"`
+	UpstreamSize      int64  `json:"upstream_size"`
 }
 
 // SubAccountMigrationRow mirrors one row of the subaccount_migrations

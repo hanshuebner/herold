@@ -376,6 +376,15 @@ type IMAPImportMessageState struct {
 	// this column, so a live worker's routine flag-sync upserts cannot
 	// clobber it.
 	CopiedMessageID MessageID
+	// UpstreamMessageID is the normalised Message-ID (no angle brackets) of
+	// the upstream message this row was created from, and UpstreamSize its
+	// RFC822 size (migration 0121, issue #561). Write-back expunges the
+	// upstream message at (UpstreamFolder, UpstreamUID) only when it matches
+	// both. Empty / zero mean "identity not recorded" (rows written before
+	// the migration, and upstream messages without a Message-ID): such a row
+	// is never expunged through.
+	UpstreamMessageID string
+	UpstreamSize      int64
 }
 
 // ValidateIMAPImportCredentialCT returns an error when ct is non-nil

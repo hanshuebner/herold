@@ -961,7 +961,16 @@ const CurrentBackupVersion = 1
 //	loopback deliverer reads to ingest an authenticated submission as a
 //	local submission and externally received forwards/list fan-out as
 //	inbound mail. No new table; QueueRow gains the one field.
-const CurrentSchemaVersion = 120
+//
+// 121 — 0121_imapimport_upstream_identity.sql (issue #561). Adds
+//
+//	imapimport_message_state.upstream_message_id (normalised
+//	Message-ID, default '') and upstream_size (RFC822 size, default 0):
+//	the identity of the upstream message the row was created from.
+//	Write-back expunges only an upstream message that matches it; ''/0
+//	mean not recorded and are never expunged through. No new table;
+//	IMAPImportMessageStateRow gains the two fields.
+const CurrentSchemaVersion = 121
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

@@ -378,6 +378,10 @@ func (w *accountWorker) syncFolder(ctx context.Context, conn Conn, upstreamFolde
 			)
 		}
 
+		// Record the upstream identity of legacy rows the folder verifiably
+		// still holds (re #561). Best-effort.
+		w.backfillUpstreamIdentity(ctx, conn, upstreamFolder)
+
 		// Reconcile upstream expunges (re #303): drop the membership and
 		// message_state row for any previously-mirrored UID this pass's
 		// unbounded UID search no longer sees. Only runs when the pass took
@@ -519,6 +523,7 @@ func (w *accountWorker) fetchAndIngest(
 			continue
 		}
 
+		upMsgID, upSize := upstreamIdentityOf(fm.RFC822)
 		isNew, isNewMember, msgID, mbID, finalMailbox, ingestErr := w.ingestMessage(ctx, fm, upstreamFolder, heroldMailbox, categorise)
 		if ingestErr != nil {
 			if errors.Is(ingestErr, errINBOXSuppressedByJunk) || errors.Is(ingestErr, errINBOXSuppressedByArchive) {
@@ -548,6 +553,9 @@ func (w *accountWorker) fetchAndIngest(
 						HeroldMailboxID: mbID,
 						MappedMailboxID: mappedMB.ID,
 						LastSyncedFlags: sf,
+
+						UpstreamMessageID: upMsgID,
+						UpstreamSize:      upSize,
 					}); msErr != nil {
 						w.opts.log.Warn("imapimport: UpsertIMAPImportMessageState failed (inbox-suppressed)",
 							slog.String("account_id", account.ID),
@@ -590,6 +598,9 @@ func (w *accountWorker) fetchAndIngest(
 			HeroldMailboxID: mbID,
 			MappedMailboxID: mbID,
 			LastSyncedFlags: sf,
+
+			UpstreamMessageID: upMsgID,
+			UpstreamSize:      upSize,
 		}
 		if !strings.EqualFold(finalMailbox, heroldMailbox) {
 			principalID := store.PrincipalID(account.PrincipalID)

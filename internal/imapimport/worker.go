@@ -138,6 +138,12 @@ type accountWorker struct {
 	// confirmation of a still-ongoing drop by the passes needed to rebuild
 	// the streak.
 	massExpungeStreak map[string]int
+
+	// identityBackfillTried holds the (folder, uid) keys of state rows
+	// backfillUpstreamIdentity already examined this process lifetime, so a
+	// row that cannot be verified is not refetched every pass (re #561).
+	// Accessed only from the worker's supervising goroutine.
+	identityBackfillTried map[string]struct{}
 }
 
 func newAccountWorker(opts accountWorkerOpts) *accountWorker {
