@@ -28,6 +28,19 @@ func TestBuildEnvelope_UnsafeAddressesNeverReachEnvelope(t *testing.T) {
 			t.Fatalf("recipient with whitespace accepted")
 		}
 	})
+	t.Run("duplicates-collapse", func(t *testing.T) {
+		m := store.Message{}
+		m.Envelope.To = "bob@dest.test, Bob <bob@dest.test>"
+		_, rcpts, serr := buildEnvelope(nil, "id@example.test", m)
+		if serr != nil || len(rcpts) != 1 || rcpts[0] != "bob@dest.test" {
+			t.Fatalf("rcpts=%q err=%v", rcpts, serr)
+		}
+		_, rcpts, serr = buildEnvelope(&jmapEnvelope{RcptTo: []jmapAddress{
+			{Email: "bob@dest.test"}, {Email: "BOB@dest.test"}}}, "id@example.test", store.Message{})
+		if serr != nil || len(rcpts) != 1 {
+			t.Fatalf("rcpts=%q err=%v", rcpts, serr)
+		}
+	})
 	t.Run("header-derived", func(t *testing.T) {
 		for _, hdr := range []string{
 			"x <" + bad + ">",

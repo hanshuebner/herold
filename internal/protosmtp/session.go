@@ -1417,7 +1417,7 @@ func extractAngleAddr(s string) (addr, rest string, err error) {
 		return "", "", errors.New("CR/LF in path")
 	}
 	if strings.HasPrefix(s, "<") {
-		end := strings.IndexByte(s, '>')
+		end := pathCloseIndex(s)
 		if end < 0 {
 			return "", "", errors.New("missing '>'")
 		}
@@ -1428,7 +1428,8 @@ func extractAngleAddr(s string) (addr, rest string, err error) {
 		if strings.ContainsAny(inner, "<>") {
 			return "", "", errors.New("nested angle brackets in address")
 		}
-		// Whitespace or control characters inside the path would let a
+		// RFC 5321: whitespace is legal only inside a quoted-string local
+		// part. Unquoted whitespace or a control character would let a
 		// client smuggle extra parameters into the stored address and,
 		// from there, into the outbound RCPT TO / MAIL FROM line.
 		if unsafeEnvelopeAddress(inner) != "" {
@@ -1450,6 +1451,26 @@ func extractAngleAddr(s string) (addr, rest string, err error) {
 		return "", "", errors.New("stray angle bracket in bare address")
 	}
 	return addrTok, restTok, nil
+}
+
+// pathCloseIndex returns the index of the '>' that closes the path opened
+// by s[0] == '<', skipping a '>' inside a quoted-string local part, or -1.
+func pathCloseIndex(s string) int {
+	inQuote, esc := false, false
+	for i := 1; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case esc:
+			esc = false
+		case inQuote && c == '\\':
+			esc = true
+		case c == '"':
+			inQuote = !inQuote
+		case c == '>' && !inQuote:
+			return i
+		}
+	}
+	return -1
 }
 
 // splitAddress returns local/domain for local@domain. Null addresses

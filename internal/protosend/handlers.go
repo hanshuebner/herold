@@ -506,14 +506,28 @@ func envelopeAddress(raw string) (string, bool) {
 	return a.Address, true
 }
 
-// envelopeAddresses maps envelopeAddress over in. Callers validate first;
-// an entry that fails is dropped rather than passed through raw.
+// envelopeAddresses maps envelopeAddress over in and drops duplicates.
+// Callers validate first; an entry that fails is dropped rather than
+// passed through raw.
 func envelopeAddresses(in []string) []string {
 	out := make([]string, 0, len(in))
+	seen := make(map[string]struct{}, len(in))
 	for _, raw := range in {
-		if a, ok := envelopeAddress(raw); ok {
-			out = append(out, a)
+		a, ok := envelopeAddress(raw)
+		if !ok {
+			continue
 		}
+		// "bob@x" and "Bob <bob@x>" name one recipient; the domain is
+		// case-insensitive.
+		key := a
+		if at := strings.LastIndexByte(a, '@'); at >= 0 {
+			key = a[:at+1] + strings.ToLower(a[at+1:])
+		}
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, a)
 	}
 	return out
 }

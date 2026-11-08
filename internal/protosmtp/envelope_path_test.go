@@ -16,6 +16,23 @@ func TestExtractAngleAddr_RefusesWhitespaceAndControl(t *testing.T) {
 			t.Errorf("%q accepted as %q", in, addr)
 		}
 	}
+	// A quoted-string local part may contain whitespace (RFC 5321 4.1.2).
+	for in, want := range map[string]string{
+		`<"john doe"@example.com> SIZE=100`: `"john doe"@example.com`,
+		`<"a\ b"@example.com>`:              `"a\ b"@example.com`,
+		`<"a b"@example.com>`:               `"a b"@example.com`,
+		`<užívateľ@example.test>`:           `užívateľ@example.test`,
+	} {
+		if addr, _, err := extractAngleAddr(in); err != nil || addr != want {
+			t.Errorf("%q: addr=%q err=%v want %q", in, addr, err, want)
+		}
+	}
+	// Unterminated quote, or whitespace after the quoted part, is refused.
+	for _, in := range []string{`<"a b@example.com>`, `<"a b"@example.com NOTIFY=NEVER>`} {
+		if addr, _, err := extractAngleAddr(in); err == nil {
+			t.Errorf("%q accepted as %q", in, addr)
+		}
+	}
 	if addr, rest, err := extractAngleAddr("<bob@example.com> NOTIFY=NEVER"); err != nil || addr != "bob@example.com" || rest != "NOTIFY=NEVER" {
 		t.Errorf("legit path: %q %q %v", addr, rest, err)
 	}

@@ -369,22 +369,56 @@ func (c *Client) domainPublishesTLSRPT(ctx context.Context, domain string) bool 
 	return false
 }
 
-// domainOfAddress extracts the domain part of an email address. Empty
-// addresses (the null reverse-path) and malformed inputs return ok=false.
-// unsafeEnvelopeAddress returns the first of addrs that contains an angle
-// bracket, whitespace or a control character, or "" when all are safe.
-// An empty address (the null reverse-path) is safe.
+// unsafeEnvelopeAddress returns the first of addrs that cannot be written
+// into an SMTP path as-is, or "" when all are safe. Safe means free of
+// angle brackets, control characters and unquoted whitespace; whitespace
+// is accepted only inside a quoted-string local part (RFC 5321 4.1.2),
+// where a backslash escapes the next character. An empty address (the
+// null reverse-path) is safe.
 func unsafeEnvelopeAddress(addrs ...string) string {
 	for _, a := range addrs {
-		for _, r := range a {
-			if r == '<' || r == '>' || r <= ' ' || r == 0x7f || unicode.IsSpace(r) || unicode.IsControl(r) {
-				return a
-			}
+		if !envelopeAddressSafe(a) {
+			return a
 		}
 	}
 	return ""
 }
 
+func envelopeAddressSafe(a string) bool {
+	inQuote, esc := false, false
+	for _, r := range a {
+		if r < ' ' || r == 0x7f || unicode.IsControl(r) {
+			return false
+		}
+		switch {
+		case esc:
+			esc = false
+		case inQuote:
+			switch r {
+			case '\\':
+				esc = true
+			case '"':
+				inQuote = false
+			case '<', '>':
+				return false
+			default:
+				if r != ' ' && unicode.IsSpace(r) {
+					return false
+				}
+			}
+		default:
+			if r == '"' {
+				inQuote = true
+			} else if r == '<' || r == '>' || unicode.IsSpace(r) {
+				return false
+			}
+		}
+	}
+	return !inQuote && !esc
+}
+
+// domainOfAddress extracts the domain part of an email address. Empty
+// addresses (the null reverse-path) and malformed inputs return ok=false.
 func domainOfAddress(addr string) (string, bool) {
 	addr = strings.TrimSpace(addr)
 	if addr == "" {

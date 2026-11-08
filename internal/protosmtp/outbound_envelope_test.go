@@ -26,6 +26,9 @@ func TestDeliver_EnvelopeAddressGuard(t *testing.T) {
 	}{
 		"ok":             {protosmtp.DeliveryRequest{MailFrom: "n@a.test", RcptTo: "bob@example.com"}, protosmtp.DeliverySuccess},
 		"null-sender-ok": {protosmtp.DeliveryRequest{MailFrom: "", RcptTo: "bob@example.com"}, protosmtp.DeliverySuccess},
+		"quoted-ok":      {protosmtp.DeliveryRequest{MailFrom: `"a b"@a.test`, RcptTo: `"john doe"@example.com`}, protosmtp.DeliverySuccess},
+		"quoted-open":    {protosmtp.DeliveryRequest{MailFrom: "n@a.test", RcptTo: `"john@example.com`}, protosmtp.DeliveryPermanent},
+		"after-quote":    {protosmtp.DeliveryRequest{MailFrom: "n@a.test", RcptTo: `"a b"@example.com notify=never`}, protosmtp.DeliveryPermanent},
 		"rcpt-injection": {protosmtp.DeliveryRequest{MailFrom: "n@a.test", RcptTo: "bob@example.com (a> notify=never <b)"}, protosmtp.DeliveryPermanent},
 		"rcpt-display":   {protosmtp.DeliveryRequest{MailFrom: "n@a.test", RcptTo: "bob <bob@example.com>"}, protosmtp.DeliveryPermanent},
 		"rcpt-space":     {protosmtp.DeliveryRequest{MailFrom: "n@a.test", RcptTo: "bob@example.com foo"}, protosmtp.DeliveryPermanent},

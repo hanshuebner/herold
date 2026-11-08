@@ -92,3 +92,24 @@ func TestSendRaw_DestinationsAreBareAddrSpec(t *testing.T) {
 		t.Fatalf("garbage destination: status=%d calls=%d", res.StatusCode, len(h2.q.Calls()))
 	}
 }
+
+// TestSend_DuplicateRecipientsQueuedOnce: "bob@x" and "Bob <bob@x>" (and a
+// differently-cased domain) are one envelope recipient (re #562).
+func TestSend_DuplicateRecipientsQueuedOnce(t *testing.T) {
+	h := newSendHarness(t)
+	body := map[string]any{
+		"source": "alice@example.test",
+		"destination": map[string]any{
+			"toAddresses":  []string{"bob@dest.test", "Bob <bob@dest.test>"},
+			"bccAddresses": []string{"bob@DEST.test"},
+		},
+		"message": map[string]any{"subject": "Hello", "body": map[string]any{"text": "Hi"}},
+	}
+	res, buf := h.doRequest("POST", "/api/v1/mail/send", h.apiKey, body)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", res.StatusCode, buf)
+	}
+	if rc := h.q.Calls()[0].Recipients; len(rc) != 1 || rc[0] != "bob@dest.test" {
+		t.Fatalf("Recipients=%q; want one bob@dest.test", rc)
+	}
+}
