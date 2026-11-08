@@ -51,6 +51,7 @@ on:
 
 permissions:
   contents: read
+  issues: read
 
 concurrency:
   group: deploy-outpost
@@ -329,6 +330,9 @@ jobs:
           RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
           RELEASE_NOTES_API_KEY: ${{ secrets.RELEASE_NOTES_API_KEY }}
           RELEASE_NOTES_ADDRESS: ${{ secrets.RELEASE_NOTES_ADDRESS }}
+          # Ticket titles and labels for the notes: the job's own token
+          # reads this repository's issues.
+          ISSUES_TOKEN: ${{ github.token }}
           SEND_URL: https://mail.netzhansa.com/api/v1/mail/send
         run: |
           set -euo pipefail
@@ -360,7 +364,7 @@ jobs:
             exit 0
           fi
 
-          FORGEJO_API="${API}" FORGEJO_TOKEN="${RELEASE_TOKEN}" \
+          FORGEJO_API="${API}" FORGEJO_TOKEN="${ISSUES_TOKEN}" \
             ./scripts/release-notes.sh . "${from}" "${sha}" "${ref}" > notes.txt
           subject=$(head -n 1 notes.txt)
           body=$(tail -n +3 notes.txt)

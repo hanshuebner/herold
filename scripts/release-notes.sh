@@ -45,7 +45,8 @@ issue_json() {
     cat "${RELEASE_NOTES_ISSUES_DIR}/${n}.json" 2>/dev/null || true
   else
     curl -fsS -H "Authorization: token ${FORGEJO_TOKEN:-}" \
-      "${FORGEJO_API}/repos/herold/herold/issues/${n}" 2>/dev/null || true
+      "${FORGEJO_API}/repos/herold/herold/issues/${n}" \
+      || echo "release-notes: issue #${n} lookup failed; listing it by number" >&2
   fi
 }
 
