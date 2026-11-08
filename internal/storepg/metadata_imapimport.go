@@ -742,6 +742,45 @@ func (m *metadata) SetIMAPImportMessageStateIdentity(ctx context.Context, accoun
 	return applied, err
 }
 
+func (m *metadata) SetIMAPImportMessageStateFlags(ctx context.Context, accountID, upstreamFolder string, upstreamUID uint32, heroldMessageID store.MessageID, flags store.IMAPImportSyncedFlags) (bool, error) {
+	var applied bool
+	err := m.runTx(ctx, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx,
+			`UPDATE imapimport_message_state
+			    SET last_synced_flags = $1
+			  WHERE account_id = $2 AND upstream_folder = $3 AND upstream_uid = $4
+			    AND herold_message_id = $5`,
+			int32(flags), accountID, upstreamFolder, int64(upstreamUID), int64(heroldMessageID))
+		if err != nil {
+			return mapErr(err)
+		}
+		applied = tag.RowsAffected() > 0
+		return nil
+	})
+	return applied, err
+}
+
+func (m *metadata) MoveIMAPImportMessageStatePlacement(ctx context.Context, accountID, upstreamFolder string, upstreamUID uint32, heroldMessageID store.MessageID, fromMailboxID, toMailboxID, mappedIfUnset store.MailboxID, addFlags store.IMAPImportSyncedFlags) (bool, error) {
+	var applied bool
+	err := m.runTx(ctx, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx,
+			`UPDATE imapimport_message_state
+			    SET herold_mailbox_id = $1,
+			        mapped_mailbox_id = CASE WHEN mapped_mailbox_id = 0 THEN $2 ELSE mapped_mailbox_id END,
+			        last_synced_flags = last_synced_flags | $3
+			  WHERE account_id = $4 AND upstream_folder = $5 AND upstream_uid = $6
+			    AND herold_message_id = $7 AND herold_mailbox_id = $8`,
+			int64(toMailboxID), int64(mappedIfUnset), int32(addFlags),
+			accountID, upstreamFolder, int64(upstreamUID), int64(heroldMessageID), int64(fromMailboxID))
+		if err != nil {
+			return mapErr(err)
+		}
+		applied = tag.RowsAffected() > 0
+		return nil
+	})
+	return applied, err
+}
+
 func (m *metadata) DeleteIMAPImportMessageState(ctx context.Context, accountID, upstreamFolder string, upstreamUID uint32) error {
 	return m.runTx(ctx, func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx,

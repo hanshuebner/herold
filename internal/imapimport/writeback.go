@@ -477,7 +477,7 @@ func (w *accountWorker) reconcileMessageFlags(ctx context.Context, conn Conn, ms
 			continue
 		}
 		v.ms.LastSyncedFlags = heroldSynced
-		w.upsertMessageState(ctx, v.ms)
+		w.recordSyncedFlags(ctx, v.ms)
 		observe.IMAPImportFlagsPropagatedTotal.WithLabelValues(account.ID, "up").Inc()
 		// Mirror to live snapshot counter (REQ-IMAP-IMP-65).
 		w.status.incPropagated(1)
@@ -518,7 +518,7 @@ func (w *accountWorker) reconcileMessageFlags(ctx context.Context, conn Conn, ms
 	for _, i := range proposers {
 		v := &views[i]
 		v.ms.LastSyncedFlags = applied
-		w.upsertMessageState(ctx, v.ms)
+		w.recordSyncedFlags(ctx, v.ms)
 	}
 	observe.IMAPImportFlagsPropagatedTotal.WithLabelValues(account.ID, "down").Inc()
 	if sawConflict {
@@ -1015,10 +1015,15 @@ func (w *accountWorker) applyUpstreamFlagsToHerold(ctx context.Context, ms store
 	return upstreamSynced
 }
 
-// upsertMessageState updates the persisted message state.
-func (w *accountWorker) upsertMessageState(ctx context.Context, ms store.IMAPImportMessageState) {
-	if err := w.opts.store.Meta().UpsertIMAPImportMessageState(ctx, ms); err != nil && ctx.Err() == nil {
-		w.opts.log.Warn("imapimport: write-back: UpsertIMAPImportMessageState failed",
+// recordSyncedFlags persists ms.LastSyncedFlags on the row ms was read from.
+// The write touches that one column and applies only while the row still
+// exists and still names ms.HeroldMessageID, so a row the sync goroutine
+// deleted, an identity it recorded or a membership change made while the
+// write-back held ms across an upstream round trip is left as it is (re #563).
+func (w *accountWorker) recordSyncedFlags(ctx context.Context, ms store.IMAPImportMessageState) {
+	if _, err := w.opts.store.Meta().SetIMAPImportMessageStateFlags(ctx,
+		ms.AccountID, ms.UpstreamFolder, ms.UpstreamUID, ms.HeroldMessageID, ms.LastSyncedFlags); err != nil && ctx.Err() == nil {
+		w.opts.log.Warn("imapimport: write-back: SetIMAPImportMessageStateFlags failed",
 			slog.String("account_id", w.opts.account.ID),
 			slog.String("error", err.Error()),
 		)

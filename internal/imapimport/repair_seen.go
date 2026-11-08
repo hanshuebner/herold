@@ -115,13 +115,14 @@ func RepairSeen(ctx context.Context, st store.Store, pid store.PrincipalID, msgI
 			continue
 		}
 		s.LastSyncedFlags |= store.IMAPImportFlagSeen
-		if err := st.Meta().UpsertIMAPImportMessageState(ctx, s); err != nil {
+		if _, err := st.Meta().SetIMAPImportMessageStateFlags(ctx,
+			s.AccountID, s.UpstreamFolder, s.UpstreamUID, s.HeroldMessageID, s.LastSyncedFlags); err != nil {
 			// The message-side fix is already applied; a state row that
 			// fails to update here just means the fixed reconcile's next
 			// write-back tick sees this row as a fresh local-vs-baseline
 			// difference and pushes \Seen to it as normal -- not silent
 			// data loss, so this does not fail the repair.
-			res.Error = fmt.Sprintf("UpsertIMAPImportMessageState (uid %d): %v", s.UpstreamUID, err)
+			res.Error = fmt.Sprintf("SetIMAPImportMessageStateFlags (uid %d): %v", s.UpstreamUID, err)
 		}
 	}
 

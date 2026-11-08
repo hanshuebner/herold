@@ -3439,6 +3439,23 @@ type Metadata interface {
 	// (re #561).
 	SetIMAPImportMessageStateIdentity(ctx context.Context, accountID, upstreamFolder string, upstreamUID uint32, heroldMessageID MessageID, upstreamMessageID string, upstreamSize int64) (bool, error)
 
+	// SetIMAPImportMessageStateFlags records flags as the row's
+	// LastSyncedFlags, touching only that column. It applies only when the
+	// row still exists and still names heroldMessageID, and reports whether
+	// it applied. It never inserts and never rewrites any other column, so
+	// a flag write-back that raced a delete, an identity record or a
+	// membership change does not undo it (re #563).
+	SetIMAPImportMessageStateFlags(ctx context.Context, accountID, upstreamFolder string, upstreamUID uint32, heroldMessageID MessageID, flags IMAPImportSyncedFlags) (bool, error)
+
+	// MoveIMAPImportMessageStatePlacement re-points a row from the
+	// HeroldMailboxID fromMailboxID to toMailboxID, sets MappedMailboxID to
+	// mappedIfUnset when it is still zero, and ORs addFlags into
+	// LastSyncedFlags. It applies only when the row still exists, still
+	// names heroldMessageID and still sits at fromMailboxID, and reports
+	// whether it applied. It never inserts and touches no other column
+	// (re #563).
+	MoveIMAPImportMessageStatePlacement(ctx context.Context, accountID, upstreamFolder string, upstreamUID uint32, heroldMessageID MessageID, fromMailboxID, toMailboxID, mappedIfUnset MailboxID, addFlags IMAPImportSyncedFlags) (bool, error)
+
 	// -- Sub-account promotion (issue #227, REQ-SUBACCT-09) ------------
 	//
 	// SubAccountMigration row CRUD. Orchestration (creating the

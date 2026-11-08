@@ -137,8 +137,9 @@ func (w *accountWorker) seenBackfillOne(ctx context.Context, ms store.IMAPImport
 			ctx, account.ID, ms.UpstreamFolder, ms.UpstreamUID,
 		); gerr == nil && found && !s.LastSyncedFlags.HasSeen() {
 			s.LastSyncedFlags |= store.IMAPImportFlagSeen
-			if uerr := w.opts.store.Meta().UpsertIMAPImportMessageState(ctx, s); uerr != nil {
-				log.Warn("imapimport: seen backfill: UpsertIMAPImportMessageState failed",
+			if _, uerr := w.opts.store.Meta().SetIMAPImportMessageStateFlags(ctx,
+				s.AccountID, s.UpstreamFolder, s.UpstreamUID, s.HeroldMessageID, s.LastSyncedFlags); uerr != nil {
+				log.Warn("imapimport: seen backfill: SetIMAPImportMessageStateFlags failed",
 					slog.String("account_id", account.ID),
 					slog.Uint64("msg_id", uint64(msg.ID)),
 					slog.String("error", uerr.Error()))

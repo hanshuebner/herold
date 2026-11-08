@@ -969,6 +969,44 @@ func testIMAPImport_MessageStateUpsertAndLookups(t *testing.T, s store.Store) {
 		t.Errorf("row after SetIdentity = %+v", gl)
 	}
 
+	// SetIMAPImportMessageStateFlags / MoveIMAPImportMessageStatePlacement
+	// (re #563): column-scoped, never insert, guarded by the read
+	// herold_message_id (and, for the move, the read herold_mailbox_id).
+	if ok, err := s.Meta().SetIMAPImportMessageStateFlags(ctx, acc.ID, "INBOX", 44, 1002, store.IMAPImportFlagSeen); err != nil || ok {
+		t.Errorf("SetFlags on a missing row = (%v, %v); want (false, nil)", ok, err)
+	}
+	if _, found, _ := s.Meta().GetIMAPImportMessageState(ctx, acc.ID, "INBOX", 44); found {
+		t.Error("SetFlags inserted a row")
+	}
+	if ok, err := s.Meta().SetIMAPImportMessageStateFlags(ctx, acc.ID, "INBOX", 43, 9999, store.IMAPImportFlagSeen); err != nil || ok {
+		t.Errorf("SetFlags with a different herold message = (%v, %v); want (false, nil)", ok, err)
+	}
+	if ok, err := s.Meta().SetIMAPImportMessageStateFlags(ctx, acc.ID, "INBOX", 43, 1002, store.IMAPImportFlagSeen); err != nil || !ok {
+		t.Errorf("SetFlags = (%v, %v); want (true, nil)", ok, err)
+	}
+	gf, _, _ := s.Meta().GetIMAPImportMessageState(ctx, acc.ID, "INBOX", 43)
+	if gf.LastSyncedFlags != store.IMAPImportFlagSeen || gf.UpstreamMessageID != "x@example.test" || gf.UpstreamSize != 10 || gf.HeroldMailboxID != 2001 {
+		t.Errorf("row after SetFlags = %+v; want only LastSyncedFlags changed", gf)
+	}
+	if ok, err := s.Meta().MoveIMAPImportMessageStatePlacement(ctx, acc.ID, "INBOX", 43, 1002, 7777, 2002, 2001, store.IMAPImportFlagSeen); err != nil || ok {
+		t.Errorf("MovePlacement from a mailbox the row is not in = (%v, %v); want (false, nil)", ok, err)
+	}
+	if ok, err := s.Meta().MoveIMAPImportMessageStatePlacement(ctx, acc.ID, "INBOX", 44, 1002, 2001, 2002, 2001, store.IMAPImportFlagSeen); err != nil || ok {
+		t.Errorf("MovePlacement on a missing row = (%v, %v); want (false, nil)", ok, err)
+	}
+	if _, found, _ := s.Meta().GetIMAPImportMessageState(ctx, acc.ID, "INBOX", 44); found {
+		t.Error("MovePlacement inserted a row")
+	}
+	if ok, err := s.Meta().MoveIMAPImportMessageStatePlacement(ctx, acc.ID, "INBOX", 43, 1002, 2001, 2002, 2001, store.IMAPImportFlagFlagged); err != nil || !ok {
+		t.Errorf("MovePlacement = (%v, %v); want (true, nil)", ok, err)
+	}
+	gm, _, _ := s.Meta().GetIMAPImportMessageState(ctx, acc.ID, "INBOX", 43)
+	if gm.HeroldMailboxID != 2002 || gm.MappedMailboxID != 2001 ||
+		gm.LastSyncedFlags != store.IMAPImportFlagSeen|store.IMAPImportFlagFlagged ||
+		gm.UpstreamMessageID != "x@example.test" || gm.UpstreamSize != 10 {
+		t.Errorf("row after MovePlacement = %+v", gm)
+	}
+
 	// GetIMAPImportMessageStateByMessage with non-existent message id.
 	_, found, err = s.Meta().GetIMAPImportMessageStateByMessage(ctx, acc.ID, 9999)
 	if err != nil {

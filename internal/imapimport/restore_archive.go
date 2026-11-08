@@ -211,8 +211,7 @@ func RestoreArchivePlacement(ctx context.Context, st store.Store, pid store.Prin
 // as the last-known-synced baseline rather than a fresh herold-side change
 // to reconcile against the still-unseen upstream copy. Rows addressing a
 // different placement (already Archive, a different account's copy) are
-// left untouched. Best-effort: a store error is logged by the caller's
-// normal UpsertIMAPImportMessageState error path and does not fail the
+// left untouched. Best-effort: a store error does not fail the
 // repair -- the mailbox membership, which is authoritative for the
 // resurfacing symptom itself, is already fixed.
 func updateArchiveRestoreMessageState(ctx context.Context, st store.Store, msgID store.MessageID, inboxMBID, archiveMBID store.MailboxID) {
@@ -224,11 +223,8 @@ func updateArchiveRestoreMessageState(ctx context.Context, st store.Store, msgID
 		if ms.HeroldMailboxID != inboxMBID {
 			continue
 		}
-		ms.HeroldMailboxID = archiveMBID
-		if ms.MappedMailboxID == 0 {
-			ms.MappedMailboxID = inboxMBID
-		}
-		ms.LastSyncedFlags |= store.IMAPImportFlagSeen
-		_ = st.Meta().UpsertIMAPImportMessageState(ctx, ms)
+		_, _ = st.Meta().MoveIMAPImportMessageStatePlacement(ctx,
+			ms.AccountID, ms.UpstreamFolder, ms.UpstreamUID, ms.HeroldMessageID,
+			inboxMBID, archiveMBID, inboxMBID, store.IMAPImportFlagSeen)
 	}
 }
