@@ -227,6 +227,52 @@ func canonHeaderName(k string) string {
 	return string(b)
 }
 
+// validHeaderName reports whether s is a non-empty RFC 5322 field name:
+// printable ASCII excluding space and ':'.
+func validHeaderName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] <= ' ' || s[i] >= 0x7f || s[i] == ':' {
+			return false
+		}
+	}
+	return true
+}
+
+// crlfNormalise returns in with every bare LF and bare CR turned into
+// CRLF; existing CRLF pairs are kept. The input slice is returned
+// unchanged when it already is canonical.
+func crlfNormalise(in []byte) []byte {
+	clean := true
+	for i, c := range in {
+		if (c == '\n' && (i == 0 || in[i-1] != '\r')) ||
+			(c == '\r' && (i+1 >= len(in) || in[i+1] != '\n')) {
+			clean = false
+			break
+		}
+	}
+	if clean {
+		return in
+	}
+	out := make([]byte, 0, len(in)+len(in)/32+8)
+	for i := 0; i < len(in); i++ {
+		switch c := in[i]; c {
+		case '\r':
+			out = append(out, '\r', '\n')
+			if i+1 < len(in) && in[i+1] == '\n' {
+				i++
+			}
+		case '\n':
+			out = append(out, '\r', '\n')
+		default:
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
 // sanitizeHeaderName strips characters that are illegal in an HTTP /
 // RFC 5322 header field name (anything outside the printable ASCII
 // alnum + '-' set). Used for X-Herold-Tag-<name>.

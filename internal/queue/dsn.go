@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
+	"github.com/hanshuebner/herold/internal/mailhdr"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -129,6 +132,10 @@ func buildDSN(in dsnInput) ([]byte, error) {
 		}
 	}
 
+	// The diagnostic is the remote server's reply text; render it as a
+	// single bounded line of text.
+	in.DiagnosticCode = sanitizeDiagnostic(in.DiagnosticCode)
+
 	var buf bytes.Buffer
 	// Outer headers.
 	writeHeader(&buf, "From", in.From)
@@ -222,7 +229,7 @@ func buildDSN(in dsnInput) ([]byte, error) {
 		writeHeader(&buf, "Remote-MTA", in.RemoteMTA)
 	}
 	if in.DiagnosticCode != "" {
-		writeHeader(&buf, "Diagnostic-Code", in.DiagnosticCode)
+		buf.WriteString(mailhdr.Fold("Diagnostic-Code", in.DiagnosticCode))
 	}
 	if in.Kind == DSNKindDelay && !in.WillRetryUntil.IsZero() {
 		writeHeader(&buf, "Will-Retry-Until",
@@ -248,6 +255,27 @@ func buildDSN(in dsnInput) ([]byte, error) {
 
 	fmt.Fprintf(&buf, "--%s--\r\n", boundary)
 	return buf.Bytes(), nil
+}
+
+// maxDiagnosticLen bounds the diagnostic text in octets.
+const maxDiagnosticLen = 512
+
+// sanitizeDiagnostic turns s into a single line of text: every CR, LF and
+// other control character becomes a space, runs of whitespace collapse to
+// one space, and the result is cut to maxDiagnosticLen octets at a rune
+// boundary (marked with "...").
+func sanitizeDiagnostic(s string) string {
+	s = strings.Join(strings.FieldsFunc(s, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsControl(r)
+	}), " ")
+	if len(s) <= maxDiagnosticLen {
+		return s
+	}
+	cut := maxDiagnosticLen - 3
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "..."
 }
 
 // writeHeader writes a single "Name: value\r\n" header line. value is

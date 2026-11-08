@@ -262,6 +262,9 @@ func (s *Server) processSendRaw(ctx context.Context, r *http.Request, req sendRa
 		return nil, newProblem(r, http.StatusRequestEntityTooLarge, "payload-too-large",
 			"raw message exceeds size cap", "")
 	}
+	// The wire form is CRLF-only; uploaded LF-terminated text is
+	// normalised before it is parsed, signed and queued.
+	raw = crlfNormalise(raw)
 	// Parse for sanity (size + structural caps). We don't keep the
 	// parsed value; mailparse.Parse returns an error on cap breach.
 	if _, err := mailparse.Parse(bytes.NewReader(raw), mailparse.NewParseOptions()); err != nil {
@@ -358,6 +361,29 @@ func (s *Server) validateSendRequest(r *http.Request, req sendRequest) *problemD
 	if req.Message.Body.Text == "" && req.Message.Body.HTML == "" {
 		return newProblem(r, http.StatusBadRequest, "validation-failed",
 			"at least one of message.body.text or message.body.html is required", "")
+	}
+	// Caller-supplied text that is written into header fields must not
+	// carry a line break: it would split the field (header injection) or
+	// put a bare CR/LF on the wire.
+	for name, val := range req.Message.Body.Headers {
+		if !validHeaderName(name) {
+			return newProblem(r, http.StatusBadRequest, "validation-failed",
+				"message.body.headers contains an invalid header name", "")
+		}
+		if strings.ContainsAny(val, "\r\n") {
+			return newProblem(r, http.StatusBadRequest, "validation-failed",
+				"message.body.headers value must not contain CR or LF", name)
+		}
+	}
+	for _, t := range req.Tags {
+		if strings.ContainsAny(t.Value, "\r\n") {
+			return newProblem(r, http.StatusBadRequest, "validation-failed",
+				"tags value must not contain CR or LF", t.Name)
+		}
+	}
+	if strings.ContainsAny(req.ConfigurationSet, "\r\n") {
+		return newProblem(r, http.StatusBadRequest, "validation-failed",
+			"configurationSet must not contain CR or LF", "")
 	}
 	rcpts := allRecipients(req.Destination)
 	if len(rcpts) == 0 {
