@@ -719,6 +719,9 @@ func trimPayload(in sdk.SpamClassifyParams, maxBody int) map[string]any {
 	if in.AuthSummary != "" {
 		out["auth_summary"] = in.AuthSummary
 	}
+	if in.LocalSubmission {
+		out["local_submission"] = true
+	}
 	if len(in.OwnAddresses) > 0 {
 		out["own_addresses"] = in.OwnAddresses
 	}

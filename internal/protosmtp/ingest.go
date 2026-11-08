@@ -38,6 +38,14 @@ type IngestRequest struct {
 	// IngestSource is a short label embedded in Received: and audit rows
 	// (e.g. "ses_inbound").
 	IngestSource string
+	// LocalSubmission marks a message that an authenticated principal of
+	// this server submitted (or the server generated) and that reached
+	// the recipient over the in-process queue loopback. The inbound
+	// verifiers (DKIM/SPF/DMARC/ARC) are not run for it: the sender was
+	// authenticated at submission, and the unsigned local copy would
+	// otherwise be scored as an unauthenticated message from 127.0.0.1.
+	// Only in-process callers set it; no wire path can.
+	LocalSubmission bool
 }
 
 // IngestRecipient describes one resolved local recipient.
@@ -78,7 +86,10 @@ func (s *Server) IngestBytes(ctx context.Context, req IngestRequest) error {
 	// bytes.NewReader. The body is not held twice: each verifier streams the
 	// reader forward and does not buffer the body.
 	var authResults mailauth.AuthResults
-	if s.dkim != nil {
+	if req.LocalSubmission {
+		authResults.LocalSubmission = true
+	}
+	if s.dkim != nil && !req.LocalSubmission {
 		if dkimRes, err := s.dkim.Verify(ctx, bytes.NewReader(req.Body)); err == nil {
 			authResults.DKIM = dkimRes
 		} else {
@@ -88,7 +99,7 @@ func (s *Server) IngestBytes(ctx context.Context, req IngestRequest) error {
 				slog.String("err", err.Error()))
 		}
 	}
-	if s.spf != nil {
+	if s.spf != nil && !req.LocalSubmission {
 		// REQ-HOOK-SES-04: SPF uses the SES-reported source IP, not the
 		// IP the SNS notification arrived from.
 		if spfRes, err := s.spf.Check(ctx, req.MailFrom, "", req.SourceIP); err == nil {
@@ -100,7 +111,7 @@ func (s *Server) IngestBytes(ctx context.Context, req IngestRequest) error {
 				slog.String("err", err.Error()))
 		}
 	}
-	if s.dmarc != nil {
+	if s.dmarc != nil && !req.LocalSubmission {
 		headerFrom := extractHeaderFrom(req.Body)
 		if dres, err := s.dmarc.Evaluate(ctx, headerFrom, authResults.SPF, authResults.DKIM); err == nil {
 			authResults.DMARC = dres
@@ -111,7 +122,7 @@ func (s *Server) IngestBytes(ctx context.Context, req IngestRequest) error {
 				slog.String("err", err.Error()))
 		}
 	}
-	if s.arc != nil {
+	if s.arc != nil && !req.LocalSubmission {
 		if arcRes, err := s.arc.Verify(ctx, bytes.NewReader(req.Body)); err == nil {
 			authResults.ARC = arcRes
 		}

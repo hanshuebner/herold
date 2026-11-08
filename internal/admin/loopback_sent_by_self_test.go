@@ -45,6 +45,9 @@ func runLoopbackQueueSentBySelf(t *testing.T, st store.Store) {
 		if f.ing.calls != i+1 {
 			t.Fatalf("%s: IngestBytes calls = %d, want %d", c.name, f.ing.calls, i+1)
 		}
+		if !f.ing.last.LocalSubmission {
+			t.Errorf("%s: loopback ingest LocalSubmission = false, want true (re #559)", c.name)
+		}
 		if got := f.ing.last.Recipients[0].SentBySelf; got != c.want {
 			t.Errorf("%s: SentBySelf = %v, want %v", c.name, got, c.want)
 		}

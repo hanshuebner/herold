@@ -38,6 +38,12 @@
 //     path: the plugin answers spam.classify (verdict only, no
 //     category), the legacy TypeSpam contract, regardless of what the
 //     operator's system.toml [[plugin]] block says.
+//   - HEROLD_TEST_CLASSIFY_SIGNALS_ON_UNAUTH=1: reports the spam signals
+//     "dmarc_fail" and "unauthenticated_sender" (with a ham verdict, the
+//     shape of the production model's answer for an unsigned message)
+//     whenever the request carries neither a DMARC pass nor the
+//     local_submission flag -- the behaviour of a model told that the
+//     sender failed authentication.
 //   - HEROLD_TEST_CLASSIFY_CALL_LOG: when set, names a file this process
 //     appends one line to on every classify call (spam.classify or
 //     mail.classify) -- lets a test count real subprocess invocations by
@@ -130,11 +136,17 @@ func (h *handler) MailClassify(ctx context.Context, in sdk.MailClassifyParams) (
 	if category == "" && os.Getenv("HEROLD_TEST_CLASSIFY_CATEGORY_FROM_SET") == "1" && len(in.Context.Categories) > 0 {
 		category = in.Context.Categories[0].Name
 	}
+	var spamSignals []string
+	if os.Getenv("HEROLD_TEST_CLASSIFY_SIGNALS_ON_UNAUTH") == "1" &&
+		in.DMARC != "pass" && !in.LocalSubmission {
+		spamSignals = []string{"dmarc_fail", "unauthenticated_sender"}
+	}
 	return sdk.MailClassifyResult{
-		Verdict:    scriptedVerdict(),
-		Confidence: envFloat("HEROLD_TEST_CLASSIFY_SCORE", 0.1),
-		Reason:     os.Getenv("HEROLD_TEST_CLASSIFY_REASON"),
-		Category:   category,
+		Verdict:     scriptedVerdict(),
+		Confidence:  envFloat("HEROLD_TEST_CLASSIFY_SCORE", 0.1),
+		Reason:      os.Getenv("HEROLD_TEST_CLASSIFY_REASON"),
+		Category:    category,
+		SpamSignals: spamSignals,
 	}, nil
 }
 

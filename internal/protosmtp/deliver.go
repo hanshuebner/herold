@@ -1662,6 +1662,12 @@ func renderAuthResults(authservID string, r mailauth.AuthResults) string {
 	if r.ARC.Status != mailauth.AuthUnknown && r.ARC.Status != mailauth.AuthNone {
 		parts = append(parts, fmt.Sprintf("arc=%s", r.ARC.Status.String()))
 	}
+	// Authenticated local submission (RFC 8601 section 2.7.4 "auth"
+	// method): the sender logged in to this server, so the inbound
+	// verifiers above were not run.
+	if r.LocalSubmission {
+		parts = append(parts, "auth=pass smtp.auth=local")
+	}
 	// Spam classifier verdict. Per RFC 8601 §2.7 the "x-" prefix marks
 	// this as an experimental method; the rendered header therefore
 	// looks like "...; x-herold-spam=spam (score=0.90)".
