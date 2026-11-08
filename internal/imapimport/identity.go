@@ -26,15 +26,19 @@ import (
 const identityBackfillBatch = 100
 
 // upstreamIdentityOf returns the normalised Message-ID (empty when the
-// message has none) and the size of the upstream message whose bytes are
-// rfc822, exactly as an IMAP server reports them in ENVELOPE and
-// RFC822.SIZE.
-func upstreamIdentityOf(rfc822 []byte) (messageID string, size int64) {
-	hdr, err := textproto.NewReader(bufio.NewReader(bytes.NewReader(rfc822))).ReadMIMEHeader()
-	if hdr == nil && err != nil {
-		return "", int64(len(rfc822))
+// message has none) and the RFC822.SIZE of the fetched upstream message: the
+// size the server reported with the fetch (the body length when it reported
+// none), the same source write-back compares against.
+func upstreamIdentityOf(fm fetchedMessage) (messageID string, size int64) {
+	size = fm.Size
+	if size <= 0 {
+		size = int64(len(fm.RFC822))
 	}
-	return mailparse.NormalizeMessageID(hdr.Get("Message-Id")), int64(len(rfc822))
+	hdr, err := textproto.NewReader(bufio.NewReader(bytes.NewReader(fm.RFC822))).ReadMIMEHeader()
+	if hdr == nil && err != nil {
+		return "", size
+	}
+	return mailparse.NormalizeMessageID(hdr.Get("Message-Id")), size
 }
 
 // rowHasUpstreamIdentity reports whether ms carries a usable recorded
@@ -54,18 +58,30 @@ func rowMatchesUpstream(ms store.IMAPImportMessageState, env envelopeFetchResult
 
 // backfillUpstreamIdentity records the identity of rows that predate it. For
 // the folder selected on conn it fetches the envelope of each legacy row's
-// UID and records the upstream Message-ID and size only when the Message-ID
-// equals the one the row's herold message carries. A row whose UID names a
-// different message, or no message, is left without an identity and so is
-// never expunged through. Each row is tried once per worker lifetime; a
-// bounded batch runs per folder pass. Best-effort.
-func (w *accountWorker) backfillUpstreamIdentity(ctx context.Context, conn Conn, upstreamFolder string) {
+// UID and records the upstream Message-ID and RFC822.SIZE only when both
+// equal what the row's herold message carries: its Message-ID and its stored
+// size (the herold copy was mirrored from that upstream message, so a resend
+// with the same Message-ID but different content does not qualify). A row
+// whose UID names a different message, or no message, is left without an
+// identity and so is never expunged through. The pass is skipped when the
+// folder's UIDVALIDITY differs from the cursor's. Each row is tried once per
+// worker lifetime; a bounded batch runs per folder pass. The write is
+// column-scoped (SetIMAPImportMessageStateIdentity): it never rewrites or
+// re-inserts a row that write-back changed in the meantime. Best-effort.
+func (w *accountWorker) backfillUpstreamIdentity(ctx context.Context, conn Conn, upstreamFolder string, uidValidity uint32) {
 	account := w.opts.account
 	log := w.opts.log
 	meta := w.opts.store.Meta()
 
 	cur, found, err := meta.GetIMAPImportFolderCursor(ctx, account.ID, upstreamFolder)
 	if err != nil || !found || cur.UIDNext == 0 {
+		return
+	}
+	if cur.UIDValidity != uint64(uidValidity) {
+		log.Info("imapimport: identity backfill: UIDVALIDITY differs from the cursor; skipping folder",
+			slog.String("account_id", account.ID),
+			slog.String("upstream_folder", upstreamFolder),
+		)
 		return
 	}
 	states, err := meta.ListIMAPImportMessageStatesByFolder(ctx, account.ID, upstreamFolder)
@@ -115,6 +131,9 @@ func (w *accountWorker) backfillUpstreamIdentity(ctx context.Context, conn Conn,
 	for _, e := range envs {
 		byUID[e.UID] = e
 	}
+	if w.testBeforeIdentityWrite != nil {
+		w.testBeforeIdentityWrite()
+	}
 	recorded := 0
 	for _, ms := range todo {
 		if ctx.Err() != nil {
@@ -128,19 +147,20 @@ func (w *accountWorker) backfillUpstreamIdentity(ctx context.Context, conn Conn,
 		if gerr != nil {
 			continue
 		}
-		if mailparse.NormalizeMessageID(msg.Envelope.MessageID) != env.MessageID {
+		if mailparse.NormalizeMessageID(msg.Envelope.MessageID) != env.MessageID || msg.Size != env.Size {
 			continue
 		}
-		ms.UpstreamMessageID = env.MessageID
-		ms.UpstreamSize = env.Size
-		if uerr := meta.UpsertIMAPImportMessageState(ctx, ms); uerr != nil {
-			log.Warn("imapimport: identity backfill: upsert failed",
+		applied, uerr := meta.SetIMAPImportMessageStateIdentity(ctx, ms.AccountID, ms.UpstreamFolder, ms.UpstreamUID, ms.HeroldMessageID, env.MessageID, env.Size)
+		if uerr != nil {
+			log.Warn("imapimport: identity backfill: store write failed",
 				slog.String("account_id", account.ID),
 				slog.String("error", uerr.Error()),
 			)
 			continue
 		}
-		recorded++
+		if applied {
+			recorded++
+		}
 	}
 	if recorded > 0 {
 		log.Info("imapimport: identity backfill: recorded upstream identity",

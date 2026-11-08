@@ -705,6 +705,30 @@ func (m *metadata) ListIMAPImportMessageStatesByFolder(ctx context.Context, acco
 	return scanIMAPImportMessageStateRows(rows)
 }
 
+func (m *metadata) SetIMAPImportMessageStateIdentity(ctx context.Context, accountID, upstreamFolder string, upstreamUID uint32, heroldMessageID store.MessageID, upstreamMessageID string, upstreamSize int64) (bool, error) {
+	var applied bool
+	err := m.runTx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx,
+			`UPDATE imapimport_message_state
+			    SET upstream_message_id = ?, upstream_size = ?
+			  WHERE account_id = ? AND upstream_folder = ? AND upstream_uid = ?
+			    AND herold_message_id = ?
+			    AND upstream_message_id = '' AND upstream_size = 0`,
+			upstreamMessageID, upstreamSize,
+			accountID, upstreamFolder, int64(upstreamUID), int64(heroldMessageID))
+		if err != nil {
+			return mapErr(err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("storesqlite: SetIMAPImportMessageStateIdentity rows affected: %w", err)
+		}
+		applied = n > 0
+		return nil
+	})
+	return applied, err
+}
+
 func (m *metadata) DeleteIMAPImportMessageState(ctx context.Context, accountID, upstreamFolder string, upstreamUID uint32) error {
 	return m.runTx(ctx, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx,

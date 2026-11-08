@@ -254,6 +254,7 @@ func (c *prodConn) UIDFetch(_ context.Context, uids []imap.UID) ([]fetchedMessag
 	fetchOpts := &imap.FetchOptions{
 		Flags:        true,
 		InternalDate: true,
+		RFC822Size:   true,
 		BodySection: []*imap.FetchItemBodySection{
 			{Peek: true}, // BODY.PEEK[] — full RFC822, no \Seen side-effect
 		},
@@ -269,6 +270,7 @@ func (c *prodConn) UIDFetch(_ context.Context, uids []imap.UID) ([]fetchedMessag
 			UID:          buf.UID,
 			Flags:        buf.Flags,
 			InternalDate: buf.InternalDate,
+			Size:         buf.RFC822Size,
 		}
 		// Extract the body bytes from the first BODY.PEEK[] section.
 		for _, bs := range buf.BodySection {
@@ -297,6 +299,7 @@ func (c *prodConn) UIDFetchWithLabels(_ context.Context, uids []imap.UID) ([]fet
 		InternalDate: true,
 		UID:          true,
 		GmailLabels:  true, // X-GM-LABELS (X-GM-EXT-1)
+		RFC822Size:   true,
 		BodySection: []*imap.FetchItemBodySection{
 			{Peek: true}, // BODY.PEEK[] — full RFC822, no \Seen side-effect
 		},
@@ -312,6 +315,7 @@ func (c *prodConn) UIDFetchWithLabels(_ context.Context, uids []imap.UID) ([]fet
 			UID:          buf.UID,
 			Flags:        buf.Flags,
 			InternalDate: buf.InternalDate,
+			Size:         buf.RFC822Size,
 		}
 		for _, bs := range buf.BodySection {
 			fm.RFC822 = bs.Bytes

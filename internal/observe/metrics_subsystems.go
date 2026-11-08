@@ -1314,7 +1314,7 @@ func RegisterIMAPImportMetrics() {
 		}, []string{"account"})
 		IMAPImportWriteBackFailuresTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "herold_imapimport_writeback_failures_total",
-			Help: "Total write-back operations that failed permanently (need operator attention, e.g. the upstream target mailbox could not be created), by account and kind (move).",
+			Help: "Total write-back operations that failed permanently (need operator attention, e.g. the upstream target mailbox could not be created), by account and kind (move; identity_size_mismatch: an expunge or move skipped because the upstream size differs from the recorded identity).",
 		}, []string{"account", "kind"})
 		MustRegister(
 			IMAPImportMessagesFetchedTotal,

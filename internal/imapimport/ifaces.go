@@ -39,6 +39,9 @@ type fetchedMessage struct {
 	// RFC822 is the raw message bytes. Using BODY.PEEK[] so \Seen is
 	// NOT set upstream (REQ-IMAP-IMP-31 byte-fidelity + non-mutation).
 	RFC822 []byte
+	// Size is the upstream RFC822.SIZE fetched alongside the body; zero when
+	// the upstream did not report it.
+	Size int64
 }
 
 // fetchedMessageWithLabels is one message returned by UIDFetchWithLabels: a

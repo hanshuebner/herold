@@ -940,6 +940,35 @@ func testIMAPImport_MessageStateUpsertAndLookups(t *testing.T, s store.Store) {
 		t.Errorf("upstream identity after update = (%q, %d); want it preserved", got3.UpstreamMessageID, got3.UpstreamSize)
 	}
 
+	// SetIMAPImportMessageStateIdentity: column-scoped, never inserts, only
+	// fills an empty identity on a row that still names the herold message.
+	legacy := store.IMAPImportMessageState{
+		AccountID: acc.ID, UpstreamFolder: "INBOX", UpstreamUID: 43,
+		HeroldMessageID: 1002, HeroldMailboxID: 2001, LastSyncedFlags: store.IMAPImportFlagFlagged,
+	}
+	if err := s.Meta().UpsertIMAPImportMessageState(ctx, legacy); err != nil {
+		t.Fatalf("Upsert legacy: %v", err)
+	}
+	if ok, err := s.Meta().SetIMAPImportMessageStateIdentity(ctx, acc.ID, "INBOX", 44, 1002, "x@example.test", 10); err != nil || ok {
+		t.Errorf("SetIdentity on a missing row = (%v, %v); want (false, nil)", ok, err)
+	}
+	if _, found, _ := s.Meta().GetIMAPImportMessageState(ctx, acc.ID, "INBOX", 44); found {
+		t.Error("SetIdentity inserted a row")
+	}
+	if ok, err := s.Meta().SetIMAPImportMessageStateIdentity(ctx, acc.ID, "INBOX", 43, 9999, "x@example.test", 10); err != nil || ok {
+		t.Errorf("SetIdentity with a different herold message = (%v, %v); want (false, nil)", ok, err)
+	}
+	if ok, err := s.Meta().SetIMAPImportMessageStateIdentity(ctx, acc.ID, "INBOX", 43, 1002, "x@example.test", 10); err != nil || !ok {
+		t.Errorf("SetIdentity = (%v, %v); want (true, nil)", ok, err)
+	}
+	if ok, _ := s.Meta().SetIMAPImportMessageStateIdentity(ctx, acc.ID, "INBOX", 43, 1002, "y@example.test", 11); ok {
+		t.Error("SetIdentity overwrote an existing identity")
+	}
+	gl, _, _ := s.Meta().GetIMAPImportMessageState(ctx, acc.ID, "INBOX", 43)
+	if gl.UpstreamMessageID != "x@example.test" || gl.UpstreamSize != 10 || gl.LastSyncedFlags != store.IMAPImportFlagFlagged || gl.HeroldMailboxID != 2001 {
+		t.Errorf("row after SetIdentity = %+v", gl)
+	}
+
 	// GetIMAPImportMessageStateByMessage with non-existent message id.
 	_, found, err = s.Meta().GetIMAPImportMessageStateByMessage(ctx, acc.ID, 9999)
 	if err != nil {

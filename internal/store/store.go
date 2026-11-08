@@ -3430,6 +3430,15 @@ type Metadata interface {
 	// side junk-precedence membership removal (re #303).
 	DeleteIMAPImportMessageState(ctx context.Context, accountID, upstreamFolder string, upstreamUID uint32) error
 
+	// SetIMAPImportMessageStateIdentity records the upstream identity
+	// (Message-ID and RFC822 size) on an existing row, touching only those
+	// two columns. It applies only when the row still exists, still names
+	// heroldMessageID and has no identity recorded yet, and reports whether
+	// it applied. It never inserts and never rewrites any other column, so
+	// a concurrent write-back that moved or deleted the row is not undone
+	// (re #561).
+	SetIMAPImportMessageStateIdentity(ctx context.Context, accountID, upstreamFolder string, upstreamUID uint32, heroldMessageID MessageID, upstreamMessageID string, upstreamSize int64) (bool, error)
+
 	// -- Sub-account promotion (issue #227, REQ-SUBACCT-09) ------------
 	//
 	// SubAccountMigration row CRUD. Orchestration (creating the

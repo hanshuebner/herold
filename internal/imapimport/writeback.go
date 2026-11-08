@@ -620,6 +620,7 @@ func (w *accountWorker) writeBackMove(ctx context.Context, conn Conn, ms store.I
 		// Same Message-ID, different size: the row may still name this
 		// message (an upstream that reports sizes differently), so keep it
 		// and leave the message where it is.
+		observe.IMAPImportWriteBackFailuresTotal.WithLabelValues(account.ID, "identity_size_mismatch").Inc()
 		log.Warn("imapimport: write-back: move: upstream size differs from the recorded identity; skipping move",
 			slog.String("account_id", account.ID),
 			slog.Uint64("msg_id", uint64(msgID)),
@@ -757,11 +758,22 @@ func (w *accountWorker) writeBackDestroy(ctx context.Context, conn Conn, ms stor
 	}
 
 	// Select the upstream folder read-write.
-	if _, err := conn.SelectReadWrite(ctx, ms.UpstreamFolder); err != nil {
+	si, err := conn.SelectReadWrite(ctx, ms.UpstreamFolder)
+	if err != nil {
 		log.Warn("imapimport: write-back: destroy SelectReadWrite failed",
 			slog.String("account_id", account.ID),
 			slog.String("folder", ms.UpstreamFolder),
 			slog.String("error", err.Error()),
+		)
+		return
+	}
+	// UIDs are only meaningful within one UIDVALIDITY: after a rollover the
+	// row's UID names unrelated mail.
+	if cur.UIDValidity != uint64(si.UIDValidity) {
+		log.Warn("imapimport: write-back: destroy: folder UIDVALIDITY differs from the cursor; skipping expunge",
+			slog.String("account_id", account.ID),
+			slog.Uint64("msg_id", uint64(msgID)),
+			slog.String("folder", ms.UpstreamFolder),
 		)
 		return
 	}
@@ -794,6 +806,13 @@ func (w *accountWorker) writeBackDestroy(ctx context.Context, conn Conn, ms stor
 	}
 	if !present {
 		return // already gone upstream
+	}
+	if upMsgID == ms.UpstreamMessageID && upEnv.Size != ms.UpstreamSize {
+		// Same Message-ID, different size: possibly the same message seen
+		// through a server that reports sizes differently, possibly a resend.
+		// Either way nothing is expunged; count it so a propagation that is
+		// silently disabled for this reason shows up.
+		observe.IMAPImportWriteBackFailuresTotal.WithLabelValues(account.ID, "identity_size_mismatch").Inc()
 	}
 	if upMsgID == "" || !rowMatchesUpstream(ms, upEnv) {
 		log.Warn("imapimport: write-back: destroy: upstream message does not match the recorded identity; skipping expunge",

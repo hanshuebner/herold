@@ -144,6 +144,11 @@ type accountWorker struct {
 	// row that cannot be verified is not refetched every pass (re #561).
 	// Accessed only from the worker's supervising goroutine.
 	identityBackfillTried map[string]struct{}
+
+	// testBeforeIdentityWrite, when non-nil, runs in backfillUpstreamIdentity
+	// between the upstream fetch and the store write. Tests use it to
+	// interleave a concurrent write-back change.
+	testBeforeIdentityWrite func()
 }
 
 func newAccountWorker(opts accountWorkerOpts) *accountWorker {

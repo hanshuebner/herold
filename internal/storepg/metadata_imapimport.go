@@ -722,6 +722,26 @@ func (m *metadata) ListIMAPImportMessageStatesByFolder(ctx context.Context, acco
 	return collectIMAPImportMessageStateRowsPG(rows)
 }
 
+func (m *metadata) SetIMAPImportMessageStateIdentity(ctx context.Context, accountID, upstreamFolder string, upstreamUID uint32, heroldMessageID store.MessageID, upstreamMessageID string, upstreamSize int64) (bool, error) {
+	var applied bool
+	err := m.runTx(ctx, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx,
+			`UPDATE imapimport_message_state
+			    SET upstream_message_id = $1, upstream_size = $2
+			  WHERE account_id = $3 AND upstream_folder = $4 AND upstream_uid = $5
+			    AND herold_message_id = $6
+			    AND upstream_message_id = '' AND upstream_size = 0`,
+			upstreamMessageID, upstreamSize,
+			accountID, upstreamFolder, int64(upstreamUID), int64(heroldMessageID))
+		if err != nil {
+			return mapErr(err)
+		}
+		applied = tag.RowsAffected() > 0
+		return nil
+	})
+	return applied, err
+}
+
 func (m *metadata) DeleteIMAPImportMessageState(ctx context.Context, accountID, upstreamFolder string, upstreamUID uint32) error {
 	return m.runTx(ctx, func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx,
