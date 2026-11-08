@@ -372,20 +372,34 @@ func (s *Server) validateSendRequest(r *http.Request, req sendRequest) *problemD
 			return newProblem(r, http.StatusBadRequest, "validation-failed",
 				"message.body.headers contains an invalid header name", "")
 		}
-		if strings.ContainsAny(val, "\r\n") {
+		if why := checkHeaderText(name, val); why != "" {
 			return newProblem(r, http.StatusBadRequest, "validation-failed",
-				"message.body.headers value must not contain CR or LF", name)
+				"message.body.headers value "+why, name)
 		}
 	}
 	for _, t := range req.Tags {
-		if strings.ContainsAny(t.Value, "\r\n") {
+		if why := checkHeaderText("X-Herold-Tag-"+sanitizeHeaderName(t.Name), t.Value); why != "" {
 			return newProblem(r, http.StatusBadRequest, "validation-failed",
-				"tags value must not contain CR or LF", t.Name)
+				"tags value "+why, t.Name)
 		}
 	}
-	if strings.ContainsAny(req.ConfigurationSet, "\r\n") {
+	if why := checkHeaderText("X-Herold-Configuration-Set", req.ConfigurationSet); why != "" {
 		return newProblem(r, http.StatusBadRequest, "validation-failed",
-			"configurationSet must not contain CR or LF", "")
+			"configurationSet "+why, "")
+	}
+	if hasControlChars(req.Source, false) || tokenTooLong("From", req.Source) {
+		return newProblem(r, http.StatusBadRequest, "validation-failed",
+			"source contains control characters or is too long", "")
+	}
+	if tokenTooLong("Subject", req.Message.Subject) && !hasNonASCII(req.Message.Subject) {
+		return newProblem(r, http.StatusBadRequest, "validation-failed",
+			"message.subject contains a word too long for a header line", "")
+	}
+	for _, rcpt := range allRecipients(req.Destination) {
+		if hasControlChars(rcpt, false) || len(rcpt) > maxHeaderLine/2 {
+			return newProblem(r, http.StatusBadRequest, "validation-failed",
+				"destination address contains control characters or is too long", "")
+		}
 	}
 	rcpts := allRecipients(req.Destination)
 	if len(rcpts) == 0 {

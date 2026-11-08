@@ -200,9 +200,68 @@ func joinAddresses(addrs []string) string {
 		if a == "" {
 			continue
 		}
+		// Render from the parsed address so RFC 5322 comments and any
+		// other raw input text never reach the header.
+		if parsed, err := mail.ParseAddress(a); err == nil {
+			a = parsed.String()
+		}
 		out = append(out, a)
 	}
 	return strings.Join(out, ", ")
+}
+
+// maxHeaderLine is the RFC 5322 hard limit on a physical line, excluding
+// the CRLF.
+const maxHeaderLine = 998
+
+// hasControlChars reports whether s contains a C0 control character
+// (CR and LF included) or DEL. HTAB is allowed when allowTab is set.
+func hasControlChars(s string, allowTab bool) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '\t' && allowTab {
+			continue
+		}
+		if c < ' ' || c == 0x7f {
+			return true
+		}
+	}
+	return false
+}
+
+// hasNonASCII reports whether s contains a byte outside 7-bit ASCII; such
+// subjects are rendered as RFC 2047 encoded-words, which are short.
+func hasNonASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return true
+		}
+	}
+	return false
+}
+
+// tokenTooLong reports whether a token of value, which Fold cannot split,
+// would put more than maxHeaderLine octets on one line of the header
+// called name.
+func tokenTooLong(name, value string) bool {
+	for _, tok := range strings.FieldsFunc(value, func(r rune) bool { return r == ' ' || r == '\t' }) {
+		if len(name)+2+len(tok) > maxHeaderLine {
+			return true
+		}
+	}
+	return false
+}
+
+// checkHeaderText returns a description of why value cannot be written
+// as the body of the header called name, or "" when it can.
+func checkHeaderText(name, value string) string {
+	switch {
+	case hasControlChars(value, true):
+		return "must not contain control characters"
+	case tokenTooLong(name, value):
+		return "contains a word too long for a header line"
+	}
+	return ""
 }
 
 // encodeHeaderValue applies RFC 2047 encoded-word encoding (words of at
