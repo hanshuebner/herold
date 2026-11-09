@@ -13,6 +13,7 @@
  * a synchronous popup-write contract.
  */
 
+import { splitLinks } from './linkify';
 import type { Address } from './types';
 
 export interface PrintArgs {
@@ -40,7 +41,7 @@ export function buildPrintDocument(args: PrintArgs): string {
 
   const bodyHtml = args.html
     ? args.html
-    : `<pre class="text-body">${escapeHtml(args.text ?? '(no body)')}</pre>`;
+    : `<pre class="text-body">${renderTextWithLinks(args.text ?? '(no body)')}</pre>`;
 
   return `<!doctype html>
 <html>
@@ -103,6 +104,17 @@ function renderAddresses(addrs: readonly Address[]): string {
       return email;
     })
     .join(', ');
+}
+
+/** Escape every segment; links become anchors with an escaped href. */
+function renderTextWithLinks(text: string): string {
+  return splitLinks(text)
+    .map((seg) =>
+      seg.kind === 'link'
+        ? `<a href="${escapeHtml(seg.href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(seg.text)}</a>`
+        : escapeHtml(seg.text),
+    )
+    .join('');
 }
 
 function escapeHtml(s: string): string {

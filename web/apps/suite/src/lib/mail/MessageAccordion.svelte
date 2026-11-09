@@ -25,6 +25,7 @@
 
 <script lang="ts">
   import HtmlBody from './HtmlBody.svelte';
+  import TextBody from './TextBody.svelte';
   import AttachmentList from './AttachmentList.svelte';
   import Avatar from '../avatar/Avatar.svelte';
   import EmojiPicker from './EmojiPicker.svelte';
@@ -1102,11 +1103,11 @@
         />
       {:else if text && textSplit}
         {#if textSplit.head}
-          <pre class="text-body">{textSplit.head}</pre>
+          <TextBody text={textSplit.head} />
         {/if}
         {#if textSplit.collapsed}
           {#if quotedExpanded}
-            <pre class="text-body quoted">{textSplit.collapsed}</pre>
+            <TextBody text={textSplit.collapsed} quoted />
             <button
               type="button"
               class="quoted-toggle"
@@ -1126,7 +1127,7 @@
           {/if}
         {/if}
         {#if textSplit.tail}
-          <pre class="text-body">{textSplit.tail}</pre>
+          <TextBody text={textSplit.tail} />
         {/if}
       {:else}
         <p class="empty">(no body)</p>
@@ -1409,32 +1410,6 @@
      instead of the while-snoozed banner's label/cancel split. */
   .snooze-banner.woke {
     justify-content: flex-start;
-  }
-
-  /* Per re #233: plain-text and HTML messages must read as one coherent
-   * conversation, so the plain-text branch shares the HTML branch's
-   * proportional font and un-tinted background instead of presenting its
-   * own shaded monospace panel. `white-space: pre-wrap` is kept so
-   * authored hard line breaks and indentation (ASCII art, signature
-   * blocks, ordinary non-flowed text/plain) still render as authored;
-   * only the mono face and grey panel are dropped. `format=flowed`
-   * (RFC 3676) bodies arrive from the server already reflowed -- soft
-   * breaks joined, quote structure preserved as `> ` prefixes -- so
-   * `pre-wrap` on those simply lets the resulting prose rewrap to the
-   * pane width like ordinary flowing text (re #261). */
-  .text-body {
-    margin: 0;
-    white-space: pre-wrap;
-    word-break: break-word;
-    font-family: var(--font-sans);
-    font-size: var(--type-body-01-size);
-    line-height: var(--type-body-01-line);
-    color: var(--text-primary);
-    overflow: auto;
-  }
-  .text-body.quoted {
-    color: var(--text-helper);
-    margin-top: var(--spacing-03);
   }
   .quoted-toggle {
     display: inline-flex;
