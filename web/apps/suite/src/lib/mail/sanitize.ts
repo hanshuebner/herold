@@ -39,7 +39,7 @@ import {
   isInternalizePlaceholder,
 } from './internalize-placeholder';
 import { isAttributionLine, SIG_DELIM_RE } from './quoted';
-import { LINKIFY_RE, linkHref, trimTrailingPunctuation } from './linkify';
+import { LINKIFY_RE, isLinkable, linkHref,trimTrailingPunctuation } from './linkify';
 
 export interface SanitizeOptions {
   /** When true, http(s) <img src> rewrites through the image proxy. */
@@ -328,6 +328,9 @@ function linkifyOneTextNode(node: Text): void {
     const start = m.index;
     const raw = m[0];
     const { kept, dropped } = trimTrailingPunctuation(raw);
+    // A match reduced to a bare prefix stays text; lastIndex is left
+    // in place so the raw match is emitted with the surrounding text.
+    if (!isLinkable(kept)) continue;
     if (start > lastIndex) {
       frag.appendChild(document.createTextNode(text.slice(lastIndex, start)));
     }

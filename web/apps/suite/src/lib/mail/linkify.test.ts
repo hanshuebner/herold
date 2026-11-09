@@ -46,6 +46,17 @@ describe('splitLinks', () => {
   it('does not link ticket references or bare addresses', () => {
     expect(links('fixed #509 and bob@example.com')).toEqual([]);
   });
+  it('keeps a match reduced to a bare prefix as text', () => {
+    for (const s of ['trailing: www.,', 'www.)', 'https://', 'mailto:', 'https://.', 'x www. y']) {
+      expect(links(s)).toEqual([]);
+      expect(
+        splitLinks(s)
+          .map((x) => x.text)
+          .join(''),
+      ).toBe(s);
+    }
+    expect(links('www.a')).toEqual(['https://www.a']);
+  });
   it('round-trips the input exactly', () => {
     const s = 'x  https://a.example/p).\n\n  y www.b.example; z\n';
     expect(

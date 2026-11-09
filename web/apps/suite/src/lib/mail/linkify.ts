@@ -53,6 +53,17 @@ export function trimTrailingPunctuation(url: string): { kept: string; dropped: s
   return { kept, dropped };
 }
 
+const LINK_BODY_RE = /^(?:https?:\/\/|www\.|mailto:)./i;
+
+/**
+ * True when a trimmed match still has a scheme/www prefix followed by at
+ * least one more character. A bare "www" or "https://" left over after
+ * trimming stays text.
+ */
+export function isLinkable(kept: string): boolean {
+  return LINK_BODY_RE.test(kept);
+}
+
 /** The href for a trimmed match: bare "www." gains an https:// prefix. */
 export function linkHref(kept: string): string {
   return kept.toLowerCase().startsWith('www.') ? 'https://' + kept : kept;
@@ -77,10 +88,12 @@ export function splitLinks(text: string): TextSegment[] {
     if (!m) break;
     const { kept, dropped } = trimTrailingPunctuation(m[0]);
     pushText(text.slice(last, m.index));
-    if (kept) {
+    if (isLinkable(kept)) {
       out.push({ kind: 'link', text: kept, href: linkHref(kept) });
+      pushText(dropped);
+    } else {
+      pushText(m[0]);
     }
-    pushText(dropped);
     last = m.index + m[0].length;
   }
   pushText(text.slice(last));

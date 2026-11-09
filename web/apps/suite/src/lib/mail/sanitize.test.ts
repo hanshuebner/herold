@@ -852,6 +852,12 @@ describe('sanitizeHtml — linkify plain-text URLs (issue #103)', () => {
     expect(body).toContain('<a href="https://en.wikipedia.org/wiki/Foo_(disambiguation)"');
   });
 
+  it('leaves a match reduced to a bare prefix as text', () => {
+    const body = bodyOf(sanitizeHtml('<p>trailing: www., and (www.) and https:// and mailto: end</p>', { loadImages: false }));
+    expect(body).not.toContain('<a ');
+    expect(body).toContain('trailing: www., and (www.) and https:// and mailto: end');
+  });
+
   it('does not double-link a URL already inside an <a>', () => {
     const body = bodyOf(sanitizeHtml('<a href="https://x.test/">https://x.test/</a>', { loadImages: false }));
     expect((body.match(/<a /g) ?? []).length).toBe(1);
