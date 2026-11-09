@@ -970,7 +970,15 @@ const CurrentBackupVersion = 1
 //	Write-back expunges only an upstream message that matches it; ''/0
 //	mean not recorded and are never expunged through. No new table;
 //	IMAPImportMessageStateRow gains the two fields.
-const CurrentSchemaVersion = 121
+//
+// 122 — 0122_queue_interactive_submission.sql (issue #565). Adds
+//
+//	queue.interactive_submission (default false), set by the JMAP
+//	EmailSubmission and SMTP submission paths; the loopback deliverer
+//	delivers an interactive submission to the submitter's own mailbox
+//	as read and every other row unread. No new table; QueueRow gains
+//	the one field.
+const CurrentSchemaVersion = 122
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

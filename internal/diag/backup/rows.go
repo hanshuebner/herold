@@ -527,6 +527,10 @@ type QueueRow struct {
 	// #559): true for a row an authenticated principal submitted or the
 	// server generated, false for externally received bytes.
 	AuthenticatedLocal bool `json:"authenticated_local"`
+	// InteractiveSubmission is the migration-0122 marker (issue #565):
+	// true for a message the user sent themselves (JMAP EmailSubmission,
+	// SMTP submission), false for send-API and server-generated mail.
+	InteractiveSubmission bool `json:"interactive_submission"`
 }
 
 type DKIMKeyRow struct {

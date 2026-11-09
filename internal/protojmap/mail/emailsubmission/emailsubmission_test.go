@@ -569,6 +569,9 @@ func TestEmailSubmission_Set_DedupsEnvelopeRcptTo_SameCase(t *testing.T) {
 	if len(sub.calls[0].Recipients) != 1 {
 		t.Fatalf("expected 1 recipient, got %d: %v", len(sub.calls[0].Recipients), sub.calls[0].Recipients)
 	}
+	if !sub.calls[0].InteractiveSubmission {
+		t.Errorf("InteractiveSubmission = false on a JMAP EmailSubmission (re #565)")
+	}
 	// Exactly one queue row should exist.
 	rows, err := st.Meta().ListQueueItems(ctx, store.QueueFilter{EnvelopeID: sub.envs[0]})
 	if err != nil {

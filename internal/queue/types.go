@@ -110,6 +110,10 @@ type DeliveryRequest struct {
 	// or composed by it, as opposed to relayed externally received
 	// bytes.
 	AuthenticatedLocal bool
+	// InteractiveSubmission mirrors store.QueueItem.InteractiveSubmission:
+	// the user sent the message themselves, so a copy delivered to the
+	// submitter's own mailbox arrives read.
+	InteractiveSubmission bool
 	// PolicyHints carries pre-resolved MTA-STS / DANE hints. May be
 	// the zero value when no hints are available.
 	PolicyHints PolicyHints

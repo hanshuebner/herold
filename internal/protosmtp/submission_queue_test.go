@@ -45,6 +45,8 @@ func (f *fakeSubmissionQueue) Submit(_ context.Context, msg queue.Submission) (q
 		DSNEnvelopeID:  msg.DSNEnvelopeID,
 		IdempotencyKey: msg.IdempotencyKey,
 		REQUIRETLS:     msg.REQUIRETLS,
+
+		InteractiveSubmission: msg.InteractiveSubmission,
 	})
 	id := f.envID
 	if id == "" {
@@ -130,6 +132,9 @@ func TestSubmission_NonLocalRecipient_QueuesOutbound(t *testing.T) {
 	}
 	if !c.Sign {
 		t.Errorf("Sign should be true on submission path")
+	}
+	if !c.InteractiveSubmission {
+		t.Errorf("InteractiveSubmission = false on an SMTP submission (re #565)")
 	}
 	if c.SigningDomain != "example.test" {
 		t.Errorf("SigningDomain = %q, want example.test", c.SigningDomain)

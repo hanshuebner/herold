@@ -177,6 +177,7 @@ func Run(t *testing.T, f Factory) {
 		{"QueueEnqueueAndList", testQueueEnqueueAndList},
 		{"QueueHeaderOverlay_Roundtrip", testQueueHeaderOverlayRoundtrip},
 		{"QueueAuthenticatedLocal_Roundtrip", testQueueAuthenticatedLocalRoundtrip},
+		{"QueueInteractiveSubmission_Roundtrip", testQueueInteractiveSubmissionRoundtrip},
 		{"QueueIdempotency", testQueueIdempotency},
 		{"QueueClaimDueTransitionsState", testQueueClaimDueTransitionsState},
 		{"QueueCompleteSuccessVsFailure", testQueueCompleteSuccessVsFailure},

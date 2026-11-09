@@ -266,6 +266,13 @@ type QueueItem struct {
 	// inbound mail and keeps its mail-auth evaluation (migration 0120,
 	// issue #559). The zero value is the safe one.
 	AuthenticatedLocal bool
+	// InteractiveSubmission is true when the user sent the message
+	// themselves (JMAP EmailSubmission, SMTP submission) and false for
+	// HTTP send API mail, server-generated mail, and relayed bytes. The
+	// loopback deliverer delivers an interactive submission to the
+	// submitter's own mailbox as read; every other row arrives unread
+	// (migration 0122, issue #565). The zero value is the safe one.
+	InteractiveSubmission bool
 }
 
 // QueueFilter narrows a ListQueueItems read. Zero values mean "no

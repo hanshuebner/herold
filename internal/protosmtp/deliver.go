@@ -1946,12 +1946,13 @@ func (sess *session) queueOutboundFromSubmission(
 		SigningDomain: signingDomain,
 
 		// The submission listener required AUTH for this session.
-		AuthenticatedLocal: true,
-		DSNNotify:          parseDSNNotifyFlags(rc.notify),
-		DSNRet:             parseDSNRet(sess.envelope.mailFromParams.ret),
-		DSNEnvelopeID:      sess.envelope.mailFromParams.envid,
-		IdempotencyKey:     idemKey,
-		REQUIRETLS:         requireTLS,
+		AuthenticatedLocal:    true,
+		InteractiveSubmission: true,
+		DSNNotify:             parseDSNNotifyFlags(rc.notify),
+		DSNRet:                parseDSNRet(sess.envelope.mailFromParams.ret),
+		DSNEnvelopeID:         sess.envelope.mailFromParams.envid,
+		IdempotencyKey:        idemKey,
+		REQUIRETLS:            requireTLS,
 	})
 	if err != nil {
 		sess.log.WarnContext(ctx, "submission listener: queue.Submit failed",

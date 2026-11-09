@@ -135,6 +135,13 @@ type Submission struct {
 	// redirect, alias forwarding, mailing-list fan-out) leave it false;
 	// their loopback copies are ingested as inbound mail.
 	AuthenticatedLocal bool
+	// InteractiveSubmission marks a message the user sent themselves
+	// (JMAP EmailSubmission, SMTP submission). It is persisted on the
+	// queue row, and the loopback deliverer delivers such a message to
+	// the submitting principal's own mailbox as read. Submissions that
+	// automation makes (the HTTP send API) and server-generated mail
+	// leave it false and arrive unread.
+	InteractiveSubmission bool
 	// Sign requests DKIM/ARC signing on each delivery attempt. When
 	// false (forwarding path) the worker streams the body verbatim.
 	Sign bool
@@ -394,7 +401,8 @@ func (q *Queue) Submit(ctx context.Context, msg Submission) (EnvelopeID, error) 
 			HeaderOverlay:   string(msg.HeaderOverlay),
 			MessageID:       messageID,
 
-			AuthenticatedLocal: msg.AuthenticatedLocal,
+			AuthenticatedLocal:    msg.AuthenticatedLocal,
+			InteractiveSubmission: msg.InteractiveSubmission,
 		}
 		// Stash signing intent + REQUIRETLS in DSNOrcpt and Headers
 		// blob? No — both fields are typed and load-bearing. Use a
@@ -917,7 +925,8 @@ func (q *Queue) deliver(parentCtx context.Context, item store.QueueItem) {
 		Message:     messageReader,
 		REQUIRETLS:  intent.REQUIRETLS,
 
-		AuthenticatedLocal: item.AuthenticatedLocal,
+		AuthenticatedLocal:    item.AuthenticatedLocal,
+		InteractiveSubmission: item.InteractiveSubmission,
 	}
 
 	start := q.clk.Now()
