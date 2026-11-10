@@ -49,73 +49,11 @@ jobs:
             echo "should_run=true" >> "$GITHUB_OUTPUT"
           fi
 
-  fuzz-long:
-    name: fuzz (long)
-    needs: gate
-    if: needs.gate.outputs.should_run == 'true'
-    runs-on: [self-hosted, netzhansa, amd64]
-    timeout-minutes: 360
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-      # make fuzz-short runs EVERY registered fuzz target sequentially
-      # for FUZZTIME each. There are ~39 targets, so 39 * 5m = ~195m of
-      # work. FUZZTIME is sized so the pass reaches every target: the
-      # run is cancelled at the ceiling with no partial credit, and the
-      # targets it never got to are the ones that go unfuzzed, so
-      # finishing inside the budget buys more coverage than a longer
-      # per-target budget does. That budget must fit under THREE
-      # independent ceilings, the smallest of which wins:
-      #   - this job's timeout-minutes (360m / 6h, below);
-      #   - the runner's act_runner per-job timeout (6h, set in the
-      #     orchestrator cloud-init);
-      #   - Forgejo's server-side ENDLESS_TASK_TIMEOUT, which DEFAULTS TO
-      #     3h and silently force-stops any longer task regardless of the
-      #     two above. That default killed this job at ~3h every single
-      #     night (runs #118, #135, and every prior fuzz-long task) -- it
-      #     never once finished. Raised to 7h in the Forgejo app.ini
-      #     (netzhansa-infra roles/forgejo) so the 6h caps are the real
-      #     limit and the ~195m run completes.
-      # Each target's fuzzer already saturates the VM's cores, so raising
-      # FUZZTIME costs runner hours proportionally. If the target count
-      # grows past the budget, lower FUZZTIME again.
-      - name: run long fuzz on every registered fuzz target
-        run: make fuzz-short FUZZTIME=5m
-
-  load:
-    name: load (REQ-NFR-01 targets)
-    needs: gate
-    if: needs.gate.outputs.should_run == 'true'
-    runs-on: [self-hosted, netzhansa, amd64]
-    timeout-minutes: 180
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-      - name: run load scenarios
-        run: |
-          if [ -d test/load ]; then go test -count=1 -timeout=2h ./test/load/...; else
-            echo "test/load not yet populated"; fi
-
-  interop:
-    name: interop (third-party deliverability canary)
-    needs: gate
-    if: needs.gate.outputs.should_run == 'true'
-    runs-on: [self-hosted, netzhansa, amd64]
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-      - name: run interop canary
-        run: |
-          if [ -d test/interop-external ]; then go test -count=1 ./test/interop-external/...; else
-            echo "test/interop-external not yet populated"; fi
-
+  # The jobs below run one after another, short ones first and fuzz-long
+  # last. Each one finds the static runner on brick free, so the whole
+  # nightly runs there; the shared Hetzner pool only steps in when brick
+  # is down. A failing job does not stop the jobs after it (always()),
+  # and the gate's verdict still applies to every one of them.
   jmaptest-pin-check:
     name: jmaptest pin freshness
     needs: gate
@@ -159,10 +97,42 @@ jobs:
           fi
           echo "OK: pin matches upstream master."
 
+  interop:
+    name: interop (third-party deliverability canary)
+    needs: [gate, jmaptest-pin-check]
+    if: always() && needs.gate.outputs.should_run == 'true'
+    runs-on: [self-hosted, netzhansa, amd64]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: run interop canary
+        run: |
+          if [ -d test/interop-external ]; then go test -count=1 ./test/interop-external/...; else
+            echo "test/interop-external not yet populated"; fi
+
+  load:
+    name: load (REQ-NFR-01 targets)
+    needs: [gate, interop]
+    if: always() && needs.gate.outputs.should_run == 'true'
+    runs-on: [self-hosted, netzhansa, amd64]
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: run load scenarios
+        run: |
+          if [ -d test/load ]; then go test -count=1 -timeout=2h ./test/load/...; else
+            echo "test/load not yet populated"; fi
+
   sbom-diff:
     name: sbom diff
-    needs: gate
-    if: needs.gate.outputs.should_run == 'true'
+    needs: [gate, load]
+    if: always() && needs.gate.outputs.should_run == 'true'
     runs-on: [self-hosted, netzhansa, amd64]
     timeout-minutes: 20
     steps:
@@ -189,3 +159,38 @@ jobs:
           name: sbom
           path: sbom.cdx.json
           retention-days: 3
+
+  fuzz-long:
+    name: fuzz (long)
+    needs: [gate, sbom-diff]
+    if: always() && needs.gate.outputs.should_run == 'true'
+    runs-on: [self-hosted, netzhansa, amd64]
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      # make fuzz-short runs EVERY registered fuzz target sequentially
+      # for FUZZTIME each. There are ~39 targets, so 39 * 5m = ~195m of
+      # work. FUZZTIME is sized so the pass reaches every target: the
+      # run is cancelled at the ceiling with no partial credit, and the
+      # targets it never got to are the ones that go unfuzzed, so
+      # finishing inside the budget buys more coverage than a longer
+      # per-target budget does. That budget must fit under THREE
+      # independent ceilings, the smallest of which wins:
+      #   - this job's timeout-minutes (360m / 6h, below);
+      #   - the runner's act_runner per-job timeout (6h, set in the
+      #     orchestrator cloud-init);
+      #   - Forgejo's server-side ENDLESS_TASK_TIMEOUT, which DEFAULTS TO
+      #     3h and silently force-stops any longer task regardless of the
+      #     two above. That default killed this job at ~3h every single
+      #     night (runs #118, #135, and every prior fuzz-long task) -- it
+      #     never once finished. Raised to 7h in the Forgejo app.ini
+      #     (netzhansa-infra roles/forgejo) so the 6h caps are the real
+      #     limit and the ~195m run completes.
+      # Each target's fuzzer already saturates the VM's cores, so raising
+      # FUZZTIME costs runner hours proportionally. If the target count
+      # grows past the budget, lower FUZZTIME again.
+      - name: run long fuzz on every registered fuzz target
+        run: make fuzz-short FUZZTIME=5m
