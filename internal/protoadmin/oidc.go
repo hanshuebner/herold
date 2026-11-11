@@ -285,11 +285,12 @@ func (s *Server) handleBeginOIDCLink(w http.ResponseWriter, r *http.Request) {
 			"provider_id is required", "")
 		return
 	}
-	authURL, state, err := s.rp.BeginLink(r.Context(), pid, directoryoidc.ProviderID(req.ProviderID))
+	authURL, state, err := s.rp.BeginLinkAt(r.Context(), pid, directoryoidc.ProviderID(req.ProviderID), s.oidcCallbackURL(r))
 	if err != nil {
 		s.writeOIDCError(w, r, err)
 		return
 	}
+	s.setOIDCFlowCookie(w, state)
 	writeJSON(w, http.StatusOK, beginOIDCLinkResponse{AuthURL: authURL, State: state})
 }
 

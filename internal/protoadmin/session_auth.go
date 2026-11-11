@@ -286,91 +286,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		loginElevated = true
 	}
 
-	// Issue an end-user-scoped session. The admin scope is never baked
-	// into the cookie (REQ-AUTH-SCOPE-01, REQ-AUTH-SCOPE-03). Admin
-	// operations authorize off the elevation record, not the cookie's
-	// scope set; a TOTP-gated login has already created that record
-	// below (REQ-AUTH-74(a)) so no further step-up is required until it
-	// expires.
-	sessScopes := auth.NewScopeSet(auth.AllEndUserScopes...)
-
-	// Session lifetime: all sessions use the idle-only model. When
-	// Session.TTL=0 (no absolute cap), ExpiresAt is set to now+365d so
-	// DecodeSession never rejects the cookie on time; server-side
-	// LastSeenAt + Session.IdleTTL is the sole expiry mechanism
-	// (REQ-AUTH-72, REQ-AUTH-73, issue #78).
-	ttl := s.opts.Session.TTL
-	if ttl <= 0 {
-		ttl = 365 * 24 * time.Hour
-	}
-	sess := authsession.Session{
-		PrincipalID: pid,
-		ExpiresAt:   s.clk.Now().Add(ttl),
-		CSRFToken:   authsession.NewCSRFToken(),
-		Scopes:      sessScopes,
-	}
-
-	cfg := s.sessionConfig()
-	authsession.WriteSessionCookie(w, cfg, sess)
-
-	// Persist a session row so TelemetryGate.IsEnabled can answer
-	// without a principal lookup on the clientlog hot path (REQ-OPS-208),
-	// and to record device context (user-agent, login IP) for session
-	// listing and idle-gate enforcement (REQ-AUTH-72, issue #78, issue #80).
-	// The effective telemetry flag is resolved here and cached on the row.
-	// defaultTelemetryEnabled is true until task #8 wires the sysconfig block.
-	const defaultTelemetryEnabled = true
-	sessionRow := store.SessionRow{
-		SessionID:                 sess.CSRFToken,
-		PrincipalID:               pid,
-		CreatedAt:                 s.clk.Now(),
-		ExpiresAt:                 sess.ExpiresAt,
-		UserAgent:                 r.Header.Get("User-Agent"),
-		LastSeenIP:                remoteHost(r.RemoteAddr),
-		ClientlogTelemetryEnabled: directory.EffectiveTelemetry(p, defaultTelemetryEnabled),
-	}
-	if err := s.store.Meta().UpsertSession(ctx, sessionRow); err != nil {
-		// Non-fatal: log at warn and continue; the cookie is already set.
-		// The TelemetryGate will return ErrNotFound (treated as disabled)
-		// until the row is created on the next successful login.
-		s.loggerFrom(ctx).Warn("protoadmin.login.session_upsert_failed",
-			"activity", observe.ActivityInternal,
-			"principal_id", uint64(pid),
-			"err", err)
-	}
-
-	// A TOTP-gated login creates an initial elevation record so the fresh
-	// session starts elevated (REQ-AUTH-74(a)) -- the principal just
-	// proved possession of both factors, so a second immediate step-up
-	// prompt for the same window would be redundant. Depends on the
-	// session row above via the elevations table's session_id FK, so it
-	// must run after UpsertSession succeeds. Non-enrolled logins never
-	// reach here with loginElevated=true, so elevationExpiresAt stays nil.
-	var elevationExpiresAt *string
-	if loginElevated {
-		now := s.clk.Now()
-		idleTTL, absoluteTTL := s.elevationTTLs()
-		expiresAt := now.Add(idleTTL)
-		elev := store.ElevationRow{
-			SessionID:        sess.CSRFToken,
-			PrincipalID:      pid,
-			ElevatedAt:       now,
-			IdleDeadline:     expiresAt,
-			AbsoluteDeadline: now.Add(absoluteTTL),
-		}
-		if err := s.store.Meta().UpsertElevation(ctx, elev); err != nil {
-			// Non-fatal: log at warn and continue. The session is valid;
-			// the principal falls back to an explicit POST /auth/step-up
-			// for admin-gated endpoints, matching the non-elevated path.
-			s.loggerFrom(ctx).Warn("protoadmin.login.elevation_upsert_failed",
-				"activity", observe.ActivityInternal,
-				"principal_id", uint64(pid),
-				"err", err)
-		} else {
-			ts := effectiveElevationDeadline(elev).UTC().Format(time.RFC3339)
-			elevationExpiresAt = &ts
-		}
-	}
+	sess, sessScopes, elevationExpiresAt := s.startSession(ctx, w, r, p, loginElevated)
 
 	// Attach the just-authenticated principal to the audit context so
 	// the success record carries actor=principal/<id> rather than the
@@ -401,6 +317,102 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		SessionIdleDeadline: s.sessionIdleDeadlineStr(),
 		ElevationExpiresAt:  elevationExpiresAt,
 	})
+}
+
+// startSession issues an end-user session for p: it writes the session
+// and CSRF cookies, persists the session row, and, when elevated is true
+// (the caller verified a TOTP code), records an initial admin elevation.
+// Shared by the password+TOTP login (handleLogin) and the external-OIDC
+// browser sign-in (handleOIDCBrowserCallback) so both credential kinds
+// produce an identical session. Returns the session, its scopes, and the
+// elevation deadline (nil when not elevated).
+func (s *Server) startSession(ctx context.Context, w http.ResponseWriter, r *http.Request, p store.Principal, elevated bool) (authsession.Session, auth.ScopeSet, *string) {
+	// Issue an end-user-scoped session. The admin scope is never baked
+	// into the cookie (REQ-AUTH-SCOPE-01, REQ-AUTH-SCOPE-03). Admin
+	// operations authorize off the elevation record, not the cookie's
+	// scope set; a TOTP-gated login has already created that record
+	// below (REQ-AUTH-74(a)) so no further step-up is required until it
+	// expires.
+	sessScopes := auth.NewScopeSet(auth.AllEndUserScopes...)
+
+	// Session lifetime: all sessions use the idle-only model. When
+	// Session.TTL=0 (no absolute cap), ExpiresAt is set to now+365d so
+	// DecodeSession never rejects the cookie on time; server-side
+	// LastSeenAt + Session.IdleTTL is the sole expiry mechanism
+	// (REQ-AUTH-72, REQ-AUTH-73, issue #78).
+	ttl := s.opts.Session.TTL
+	if ttl <= 0 {
+		ttl = 365 * 24 * time.Hour
+	}
+	sess := authsession.Session{
+		PrincipalID: p.ID,
+		ExpiresAt:   s.clk.Now().Add(ttl),
+		CSRFToken:   authsession.NewCSRFToken(),
+		Scopes:      sessScopes,
+	}
+
+	cfg := s.sessionConfig()
+	authsession.WriteSessionCookie(w, cfg, sess)
+
+	// Persist a session row so TelemetryGate.IsEnabled can answer
+	// without a principal lookup on the clientlog hot path (REQ-OPS-208),
+	// and to record device context (user-agent, login IP) for session
+	// listing and idle-gate enforcement (REQ-AUTH-72, issue #78, issue #80).
+	// The effective telemetry flag is resolved here and cached on the row.
+	// defaultTelemetryEnabled is true until task #8 wires the sysconfig block.
+	const defaultTelemetryEnabled = true
+	sessionRow := store.SessionRow{
+		SessionID:                 sess.CSRFToken,
+		PrincipalID:               p.ID,
+		CreatedAt:                 s.clk.Now(),
+		ExpiresAt:                 sess.ExpiresAt,
+		UserAgent:                 r.Header.Get("User-Agent"),
+		LastSeenIP:                remoteHost(r.RemoteAddr),
+		ClientlogTelemetryEnabled: directory.EffectiveTelemetry(p, defaultTelemetryEnabled),
+	}
+	if err := s.store.Meta().UpsertSession(ctx, sessionRow); err != nil {
+		// Non-fatal: log at warn and continue; the cookie is already set.
+		// The TelemetryGate will return ErrNotFound (treated as disabled)
+		// until the row is created on the next successful login.
+		s.loggerFrom(ctx).Warn("protoadmin.login.session_upsert_failed",
+			"activity", observe.ActivityInternal,
+			"principal_id", uint64(p.ID),
+			"err", err)
+	}
+
+	// A TOTP-gated login creates an initial elevation record so the fresh
+	// session starts elevated (REQ-AUTH-74(a)) -- the principal just
+	// proved possession of both factors, so a second immediate step-up
+	// prompt for the same window would be redundant. Depends on the
+	// session row above via the elevations table's session_id FK, so it
+	// must run after UpsertSession succeeds. Non-enrolled logins never
+	// reach here with elevated=true, so elevationExpiresAt stays nil.
+	var elevationExpiresAt *string
+	if elevated {
+		now := s.clk.Now()
+		idleTTL, absoluteTTL := s.elevationTTLs()
+		expiresAt := now.Add(idleTTL)
+		elev := store.ElevationRow{
+			SessionID:        sess.CSRFToken,
+			PrincipalID:      p.ID,
+			ElevatedAt:       now,
+			IdleDeadline:     expiresAt,
+			AbsoluteDeadline: now.Add(absoluteTTL),
+		}
+		if err := s.store.Meta().UpsertElevation(ctx, elev); err != nil {
+			// Non-fatal: log at warn and continue. The session is valid;
+			// the principal falls back to an explicit POST /auth/step-up
+			// for admin-gated endpoints, matching the non-elevated path.
+			s.loggerFrom(ctx).Warn("protoadmin.login.elevation_upsert_failed",
+				"activity", observe.ActivityInternal,
+				"principal_id", uint64(p.ID),
+				"err", err)
+		} else {
+			ts := effectiveElevationDeadline(elev).UTC().Format(time.RFC3339)
+			elevationExpiresAt = &ts
+		}
+	}
+	return sess, sessScopes, elevationExpiresAt
 }
 
 // writeLoginStepUpRequired writes the 401 step_up_required problem body for

@@ -92,8 +92,15 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/auth/credentials", auth1(s.handleListCredentials))
 	mux.HandleFunc("DELETE /api/v1/auth/credentials/{kind}/{id}", auth1(s.handleRevokeCredential))
 
-	// OIDC callback (unauth).
+	// OIDC callback (unauth). POST completes a flow from a JSON client;
+	// GET is the browser redirect target registered at the provider for
+	// the Suite's sign-in and link flows (oidc_browser.go).
 	mux.HandleFunc("POST /api/v1/oidc/callback", s.handleOIDCCallback)
+	mux.HandleFunc("GET /api/v1/oidc/callback", s.handleOIDCBrowserCallback)
+	// Suite sign-in with an external OIDC provider (unauth, like login):
+	// the provider list for the sign-in page and the flow start.
+	mux.HandleFunc("GET /api/v1/auth/oidc/providers", s.handleListSignInProviders)
+	mux.HandleFunc("POST /api/v1/auth/oidc/begin", s.handleBeginOIDCSignIn)
 
 	// Principals.
 	mux.HandleFunc("GET /api/v1/principals", authAdmin(s.handleListPrincipals))
