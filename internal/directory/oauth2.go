@@ -256,7 +256,7 @@ func (d *Directory) IssueAuthorizationCodeWithVerifiedPassword(ctx context.Conte
 // already run internal/directoryoidc.RP.CompleteSignIn, whose provider
 // assertion is the credential for this leg. This matches the security
 // posture every other OIDC sign-in path in this codebase already has
-// (the admin/Suite JSON callback at POST /api/v1/oidc/callback does not
+// (the Suite callback at GET /api/v1/oidc/callback does not
 // ask for a local TOTP code either, re #228) -- the federated leg is not
 // a weaker path than password+TOTP, it is a differently-shaped one whose
 // second factor is the external IdP's own assertion rather than a local

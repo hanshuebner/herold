@@ -128,9 +128,8 @@ func TestSubPrincipal_APIKeyBearer_Rejected(t *testing.T) {
 
 // TestSubPrincipal_BeginOIDCLink_Returns400 asserts POST
 // /api/v1/principals/{pid}/oidc-links/begin refuses a sub-principal id
-// (REQ-SUBACCT-02 "no credential may be set on it"). The guard runs
-// before the provider_id is even validated, so no provider needs to be
-// registered for this test.
+// (REQ-SUBACCT-02 "no credential may be set on it"): an admin is refused
+// by the self-only rule before the sub-principal guard runs.
 func TestSubPrincipal_BeginOIDCLink_Returns400(t *testing.T) {
 	t.Parallel()
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
@@ -143,8 +142,10 @@ func TestSubPrincipal_BeginOIDCLink_Returns400(t *testing.T) {
 	res, buf := h.doRequest("POST", fmt.Sprintf("/api/v1/principals/%d/oidc-links/begin", sub.ID), adminKey, map[string]any{
 		"provider_id": "whatever",
 	})
-	if res.StatusCode != http.StatusBadRequest {
-		t.Fatalf("begin OIDC link for sub-principal id=%d: status=%d body=%s, want 400", sub.ID, res.StatusCode, buf)
+	// Starting a link is self-only, and a sub-principal cannot
+	// authenticate, so no caller reaches the 400 guard in the handler.
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("begin OIDC link for sub-principal id=%d: status=%d body=%s, want 403", sub.ID, res.StatusCode, buf)
 	}
 }
 

@@ -92,10 +92,10 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/auth/credentials", auth1(s.handleListCredentials))
 	mux.HandleFunc("DELETE /api/v1/auth/credentials/{kind}/{id}", auth1(s.handleRevokeCredential))
 
-	// OIDC callback (unauth). POST completes a flow from a JSON client;
-	// GET is the browser redirect target registered at the provider for
-	// the Suite's sign-in and link flows (oidc_browser.go).
-	mux.HandleFunc("POST /api/v1/oidc/callback", s.handleOIDCCallback)
+	// OIDC callback (unauth): the browser redirect target registered at
+	// the provider for the Suite's sign-in and link flows
+	// (oidc_browser.go). It only proceeds with the flow cookie that the
+	// flow's start set.
 	mux.HandleFunc("GET /api/v1/oidc/callback", s.handleOIDCBrowserCallback)
 	// Suite sign-in with an external OIDC provider (unauth, like login):
 	// the provider list for the sign-in page and the flow start.
@@ -307,7 +307,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// the request before any code exchange runs (re #95). Authorization
 	// comes solely from the opaque state token (CSPRNG, 128 bits,
 	// single-use, 5-min TTL, bound to a specific IdentityID) — the same
-	// trust model used by the OIDC callback at POST /api/v1/oidc/callback.
+	// trust model used by the OIDC callback at GET /api/v1/oidc/callback.
 	mux.HandleFunc("GET /api/v1/oauth/external-submission/callback", s.handleOAuthCallback)
 
 	// Identity verification (REQ-IDENT-40..43).

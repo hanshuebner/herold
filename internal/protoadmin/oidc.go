@@ -52,9 +52,15 @@ func (s *Server) handleListOIDCProviders(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, pageDTO[oidcProviderDTO]{Items: items, Next: nil})
 }
 
+// handleCreateOIDCProvider registers a provider. A provider is
+// deployment-wide: every principal can link it and, once enabled, sign in
+// with it, and client_secret_ref makes the server read a file or an
+// environment variable and send its content to the issuer's token
+// endpoint. Registering one therefore requires a server:superadmin
+// caller, the same bar as auto-provisioning.
 func (s *Server) handleCreateOIDCProvider(w http.ResponseWriter, r *http.Request) {
 	caller, _ := principalFrom(r.Context())
-	if !requireAdmin(w, r, caller) {
+	if !requireSuperAdmin(w, r, caller) {
 		return
 	}
 	var req createOIDCProviderRequest
@@ -103,9 +109,11 @@ func (s *Server) handleCreateOIDCProvider(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusCreated, toOIDCProviderDTO(got))
 }
 
+// handleDeleteOIDCProvider removes a deployment-wide provider and, with
+// it, every principal's link to it, so it requires server:superadmin.
 func (s *Server) handleDeleteOIDCProvider(w http.ResponseWriter, r *http.Request) {
 	caller, _ := principalFrom(r.Context())
-	if !requireAdmin(w, r, caller) {
+	if !requireSuperAdmin(w, r, caller) {
 		return
 	}
 	id := r.PathValue("id")
@@ -171,10 +179,10 @@ type patchOIDCProviderRequest struct {
 // endpoint can mutate is the REQ-AUTH-56 auto-provisioning opt-in
 // (issue #230), via RP.SetAutoProvision; enabling it requires a
 // server:superadmin caller for the same reason handleCreateOIDCProvider
-// does.
+// does; every patch of a provider does.
 func (s *Server) handlePatchOIDCProvider(w http.ResponseWriter, r *http.Request) {
 	caller, _ := principalFrom(r.Context())
-	if !requireAdmin(w, r, caller) {
+	if !requireSuperAdmin(w, r, caller) {
 		return
 	}
 	id := r.PathValue("id")
@@ -270,7 +278,11 @@ func (s *Server) handleBeginOIDCLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	caller, _ := principalFrom(r.Context())
-	if !requireSelfOrAdmin(w, r, caller, pid) {
+	// Only the principal itself may start a link: the flow attaches the
+	// identity of whoever signs in at the provider to pid, so an admin
+	// starting it for another principal could then sign in as that
+	// principal through their own provider account.
+	if !requireSelfOnly(w, r, caller, pid) {
 		return
 	}
 	if !s.requireNotSubPrincipal(w, r, pid) {
@@ -294,6 +306,10 @@ func (s *Server) handleBeginOIDCLink(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, beginOIDCLinkResponse{AuthURL: authURL, State: state})
 }
 
+// handleUnlinkOIDC removes a link. The principal may remove its own; an
+// admin may too (support case: a lost or compromised provider account).
+// Removing a link only narrows how the principal can sign in, so it needs
+// no further gate, and every removal is audited.
 func (s *Server) handleUnlinkOIDC(w http.ResponseWriter, r *http.Request) {
 	pid, ok := parsePID(w, r)
 	if !ok {
@@ -319,53 +335,6 @@ func (s *Server) handleUnlinkOIDC(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleOIDCCallback completes either a link or sign-in flow. The
-// endpoint is unauthenticated because it is reached by the user's
-// browser after the OIDC provider redirects; identity comes from the
-// state token.
-//
-// Wave 4 finding 10: classify the flow before consuming the state.
-// Peek the pending record's flow kind, then dispatch to the matching
-// completion. The completion path is the only place that calls
-// takePending (which removes the row), so an unknown state returns 400
-// without ever touching the persistent map and a state used twice
-// surfaces as ErrInvalidState the second time around.
-func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
-	state := r.URL.Query().Get("state")
-	code := r.URL.Query().Get("code")
-	if state == "" || code == "" {
-		writeProblem(w, r, http.StatusBadRequest, "validation_failed",
-			"state and code are required", "")
-		return
-	}
-	switch s.rp.PeekPendingFlow(state) {
-	case directoryoidc.FlowKindLink:
-		pid, err := s.rp.CompleteLink(r.Context(), state, code)
-		if err != nil {
-			s.writeOIDCError(w, r, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"outcome":      "linked",
-			"principal_id": uint64(pid),
-		})
-	case directoryoidc.FlowKindSignIn:
-		pid, err := s.rp.CompleteSignIn(r.Context(), state, code)
-		if err != nil {
-			s.writeOIDCError(w, r, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"outcome":      "signed_in",
-			"principal_id": uint64(pid),
-		})
-	default:
-		// Unknown / expired state — do not touch the persistent map.
-		writeProblem(w, r, http.StatusBadRequest, "invalid_state",
-			"state not recognised or already consumed", "")
-	}
-}
-
 // writeOIDCError maps a directoryoidc error to an HTTP problem.
 func (s *Server) writeOIDCError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
@@ -380,6 +349,8 @@ func (s *Server) writeOIDCError(w http.ResponseWriter, r *http.Request, err erro
 	case errors.Is(err, directoryoidc.ErrProviderDiscoveryFailed):
 		writeProblem(w, r, http.StatusBadRequest, "discovery_failed", err.Error(), "")
 	case errors.Is(err, directoryoidc.ErrInvalidSecretRef):
+		// err.Error() carries only the sanitised reason; the resolver's
+		// detail (paths, OS errors) stays in the server log.
 		writeProblem(w, r, http.StatusBadRequest, "invalid_client_secret_ref", err.Error(), "")
 	case errors.Is(err, directoryoidc.ErrProviderUnavailable):
 		writeProblem(w, r, http.StatusServiceUnavailable, "provider_unavailable", err.Error(), "")

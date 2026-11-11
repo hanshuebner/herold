@@ -20,6 +20,7 @@
 package fakeoidc
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -68,6 +69,23 @@ var defaultIdentity = Identity{
 	Name:          "Dev User",
 }
 
+// Fault makes the provider mint ID tokens a conforming relying party must
+// refuse. The zero value is a well-formed token.
+type Fault struct {
+	// WrongNonce replaces the nonce claim with a value the relying party
+	// never issued.
+	WrongNonce bool
+	// WrongAudience replaces the aud claim with another client's id.
+	WrongAudience bool
+	// WrongIssuer replaces the iss claim with another issuer URL.
+	WrongIssuer bool
+	// Alg, when set to "none" or "HS256", signs the token with that
+	// algorithm instead of RS256 ("none" carries an empty signature;
+	// "HS256" an HMAC keyed with the public modulus, the classic
+	// algorithm-confusion forgery).
+	Alg string
+}
+
 // Options configures a Server.
 type Options struct {
 	// ClientID is the OAuth client_id the provider expects. Defaults to
@@ -95,6 +113,7 @@ type Server struct {
 	mu       sync.Mutex
 	counter  int
 	def      Identity
+	fault    Fault
 	authReqs map[string]authRequest // code -> pending request
 }
 
@@ -173,6 +192,14 @@ func (s *Server) SetIdentity(id Identity) {
 	s.mu.Lock()
 	s.def = id
 	s.mu.Unlock()
+}
+
+// SetFault changes how subsequent ID tokens are malformed; the zero Fault
+// restores well-formed tokens.
+func (s *Server) SetFault(f Fault) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.fault = f
 }
 
 func (s *Server) handleDiscovery(w http.ResponseWriter, _ *http.Request) {
@@ -281,9 +308,6 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 	code := r.Form.Get("code")
 	s.mu.Lock()
 	req, ok := s.authReqs[code]
-	if ok {
-		delete(s.authReqs, code) // codes are single-use
-	}
 	s.mu.Unlock()
 	if !ok {
 		http.Error(w, "invalid_grant: unknown or used code", http.StatusBadRequest)
@@ -312,7 +336,11 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	idTok, err := s.signIDToken(req)
+	s.mu.Lock()
+	fault := s.fault
+	delete(s.authReqs, code) // a code that passed every check is single-use
+	s.mu.Unlock()
+	idTok, err := s.signIDToken(req, fault)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -326,9 +354,13 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) signIDToken(req authRequest) (string, error) {
+func (s *Server) signIDToken(req authRequest, fault Fault) (string, error) {
+	alg := "RS256"
+	if fault.Alg != "" {
+		alg = fault.Alg
+	}
 	header := map[string]any{
-		"alg": "RS256",
+		"alg": alg,
 		"kid": s.kid,
 		"typ": "JWT",
 	}
@@ -342,6 +374,15 @@ func (s *Server) signIDToken(req authRequest) (string, error) {
 		"nonce":          req.nonce,
 		"email":          req.identity.Email,
 		"email_verified": req.identity.EmailVerified,
+	}
+	if fault.WrongNonce {
+		payload["nonce"] = "not-the-nonce-the-rp-issued"
+	}
+	if fault.WrongAudience {
+		payload["aud"] = "some-other-client"
+	}
+	if fault.WrongIssuer {
+		payload["iss"] = "https://evil.example.test"
 	}
 	if req.identity.Name != "" {
 		payload["name"] = req.identity.Name
@@ -359,6 +400,14 @@ func (s *Server) signIDToken(req authRequest) (string, error) {
 	}
 	enc := func(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
 	signingInput := enc(hb) + "." + enc(pb)
+	switch alg {
+	case "none":
+		return signingInput + ".", nil
+	case "HS256":
+		mac := hmac.New(sha256.New, s.key.PublicKey.N.Bytes())
+		mac.Write([]byte(signingInput))
+		return signingInput + "." + enc(mac.Sum(nil)), nil
+	}
 	h := sha256.New()
 	h.Write([]byte(signingInput))
 	sig, err := rsa.SignPKCS1v15(rand.Reader, s.key, 5 /* crypto.SHA256 */, h.Sum(nil))

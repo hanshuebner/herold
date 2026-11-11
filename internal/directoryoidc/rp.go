@@ -268,7 +268,14 @@ func (r *RP) AddProvider(ctx context.Context, p ProviderConfig) (ProviderID, err
 		}
 		resolved, err := sysconfig.ResolveSecretStrict(p.ClientSecretRef)
 		if err != nil {
-			return "", fmt.Errorf("%w: %v", ErrInvalidSecretRef, err)
+			// The resolver's error names the path or variable and the OS
+			// failure; that detail goes to the log only, so a caller of
+			// the admin API cannot probe the host's files or environment.
+			r.logger.LogAttrs(ctx, slog.LevelWarn, "directoryoidc.provider.secret_ref_unresolved",
+				slog.String("activity", observe.ActivityInternal),
+				slog.String("provider", p.Name),
+				slog.String("err", err.Error()))
+			return "", fmt.Errorf("%w: the reference could not be resolved", ErrInvalidSecretRef)
 		}
 		secretRef = p.ClientSecretRef
 		p.ClientSecret = resolved

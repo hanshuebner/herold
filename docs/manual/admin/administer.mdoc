@@ -773,6 +773,24 @@ user first links the provider from their settings and can then sign in
 with it. The password keeps working; mail clients (IMAP/SMTP) are not
 affected.
 
+Two security properties follow from this design:
+
+- **The provider is the authenticator.** A sign-in through an external
+  provider does not ask for the herold TOTP code: the provider's own
+  authentication (including any second factor it enforces) takes its
+  place. The session it creates is an ordinary end-user session, so
+  admin operations still need the step-up (password and TOTP) before
+  they are accepted, exactly as after a password sign-in. Choose
+  providers whose account security you trust at least as much as a
+  herold password.
+- **Registering a provider is a superadmin action.** A provider is
+  deployment-wide and its `client_secret_ref` makes the server read a
+  file or environment variable and present it to the provider's token
+  endpoint, so creating, patching and removing providers
+  (`herold oidc provider add|remove`, `/api/v1/oidc/providers`)
+  requires a superadmin; an admin without the superadmin flag gets 403.
+  Listing and showing providers needs only admin rights.
+
 ### Register the client at the provider
 
 Create an OIDC client at the provider with:
@@ -810,7 +828,7 @@ herold oidc provider add PocketID \
   --scopes openid,email,profile
 ```
 
-The equivalent REST call (admin API key):
+The equivalent REST call (superadmin API key):
 
 ```bash
 curl -X POST https://mail.example.com/api/v1/oidc/providers \
@@ -862,7 +880,10 @@ then link again.
 
 Users link their own account in the Suite (*Settings > Security >
 Sign-in providers*); see the user manual chapter *Signing in with an
-external provider*. Operators can list and remove links:
+external provider*. Only the user can start a link, so that no operator
+can attach a provider identity to someone else's account and sign in as
+them. Operators can list and remove links (every removal is audited as
+`oidc.link.delete`):
 
 ```bash
 herold oidc link-list user@example.com

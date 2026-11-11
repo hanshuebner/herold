@@ -339,7 +339,7 @@ func exchangeCode(ctx context.Context, httpClient *http.Client, tokenURL, client
 //
 // Authorization comes from the opaque state token alone (CSPRNG, 128 bits,
 // single-use, 5-min TTL, bound to a specific IdentityID) — the same trust
-// model used by POST /api/v1/oidc/callback. The start endpoint
+// model used by GET /api/v1/oidc/callback. The start endpoint
 // (handleOAuthStart) retains its auth+requireSelfOnly gate, so only the
 // owning principal can ever generate a state token for a given identity.
 func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {

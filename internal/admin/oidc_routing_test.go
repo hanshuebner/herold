@@ -7,11 +7,12 @@ import (
 	"time"
 )
 
-// TestOIDCCallback_RoutesToPublicListener verifies that POST
+// TestOIDCCallback_RoutesToPublicListener verifies that GET
 // /api/v1/oidc/callback is reachable on the public listener (REQ-AUTH-51).
 // The external IdP redirects the user's browser to this URL; the public
-// listener must serve it. A 400 (missing state/code params) from the admin
-// handler proves the route is wired and not a 404.
+// listener must serve it. The handler answers a state-less request with a
+// redirect into the Suite (not a 404), which proves the route is wired. A
+// POST to the same path is not served: the callback has no JSON variant.
 func TestOIDCCallback_RoutesToPublicListener(t *testing.T) {
 	_, addrs, done, cancel := startTestServer(t)
 	t.Cleanup(func() {
@@ -26,17 +27,23 @@ func TestOIDCCallback_RoutesToPublicListener(t *testing.T) {
 	if publicAddr == "" {
 		t.Fatalf("public listener not bound; addrs=%+v", addrs)
 	}
-	// POST without state/code — the admin handler returns 400 (not 404).
-	// This proves the route is mounted; the 400 distinguishes "route
-	// reached the handler" from "route not found" (404).
-	resp, err := http.Post("http://"+publicAddr+"/api/v1/oidc/callback", "", nil)
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := client.Get("http://" + publicAddr + "/api/v1/oidc/callback")
+	if err != nil {
+		t.Fatalf("GET /api/v1/oidc/callback on public: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		body, _ := io.ReadAll(resp.Body)
+		t.Errorf("GET /api/v1/oidc/callback on public listener = %d, want 302 into the Suite; body: %s", resp.StatusCode, body)
+	}
+	post, err := http.Post("http://"+publicAddr+"/api/v1/oidc/callback?state=x&code=y", "", nil)
 	if err != nil {
 		t.Fatalf("POST /api/v1/oidc/callback on public: %v", err)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
-		body, _ := io.ReadAll(resp.Body)
-		t.Errorf("/api/v1/oidc/callback on public listener returned 404; want route to be mounted (expected 400 from handler)\nbody: %s", body)
+	defer post.Body.Close()
+	if post.StatusCode == http.StatusOK || post.StatusCode == http.StatusFound {
+		t.Errorf("POST /api/v1/oidc/callback = %d; the callback must be GET-only", post.StatusCode)
 	}
 }
 
