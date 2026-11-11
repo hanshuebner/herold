@@ -8,7 +8,7 @@
     },
     "forgejo": {
       "type": "stdio",
-      "command": "/Users/hans/Development/privat/forgejo-mcp/forgejo-mcp",
+      "command": "${HOME}/Development/privat/forgejo-mcp/forgejo-mcp",
       "args": [],
       "env": {
         "FORGEJO_HOST": "https://code.netzhansa.com",
