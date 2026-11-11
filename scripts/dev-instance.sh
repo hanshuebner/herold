@@ -219,6 +219,7 @@ hostname = "mail.example.local"
 data_dir = "$dir/data"
 shutdown_grace = "1s"
 port_report_file = "$dir/ports.toml"
+${PUBLIC_BASE_URL_LINE}
 
 [server.admin_tls]
 source = "file"
@@ -658,17 +659,13 @@ EOF
 # running server, unlike system.toml's [server.oauth_providers.*] blocks,
 # so this cannot happen before bootstrap the way heroldfakeidp's block does.
 #
-# There is currently no browser-reachable "begin OIDC sign-in" entry
-# point in the admin web UI or REST surface (BeginSignIn is called only
-# from Go: internal/protoadmin exposes begin-*link*, for an already-
-# authenticated principal attaching a provider, and the callback
-# endpoint, but nothing that starts an unauthenticated sign-in redirect).
-# Registering the provider here still gives an operator a real,
-# auto-provisioning-enabled provider row to inspect via
-# GET /api/v1/oidc/providers, and is what the CI end-to-end test
-# (test/e2e/oidc_autoprovision_test.go) exercises the RP layer against;
-# a click-through browser verification needs that entry point built
-# first.
+# The Suite sign-in page then offers "Sign in with fakeoidc", and
+# Settings > Security offers linking it; both redirect through
+# heroldfakeoidc's /authorize (which approves immediately, asserting its
+# default identity or the ?sub=&email= overrides) back to
+# <public_base_url>/api/v1/oidc/callback. cmd_start sets public_base_url
+# to the Vite origin when this flag is on so that callback is reachable.
+# web/apps/suite/tests/e2e-live/oidc-signin-link.spec.ts drives the flow.
 FAKEOIDC_PID=""
 FAKEOIDC_ISSUER_URL=""
 FAKEOIDC_CLIENT_ID=""
@@ -897,6 +894,17 @@ cmd_start() {
         >>"$dir/logs/cert.log" 2>&1 \
         || die "make-self-signed-cert.sh failed; see $dir/logs/cert.log"
 
+    # With the fake OIDC provider, the browser flows' redirect_uri is
+    # <public_base_url>/api/v1/oidc/callback, so public_base_url must be
+    # the origin the browser actually uses: the Vite dev server, whose
+    # port is therefore chosen here, before the config is written.
+    PUBLIC_BASE_URL_LINE=""
+    DEV_VITE_PORT=""
+    if [ -n "${HEROLD_DEV_OIDC_AUTOPROVISION:-}" ]; then
+        DEV_VITE_PORT=$(python3 -c "import socket; s=socket.socket(); s.bind(('127.0.0.1',0)); print(s.getsockname()[1]); s.close()") \
+            || die "failed to pick a free port for vite"
+        PUBLIC_BASE_URL_LINE="public_base_url = \"http://localhost:$DEV_VITE_PORT\""
+    fi
     write_system_toml "$dir" "$external_images_mode"
 
     # Deterministic classifier plugin (re #364): built and configured
@@ -1127,9 +1135,11 @@ EOF
     # Pick a free port for Vite by asking the kernel for one (small
     # TOCTOU window; vite --strictPort makes the bind fail fast if
     # somebody snipes it before we connect).
-    local vite_port
-    vite_port=$(python3 -c "import socket; s=socket.socket(); s.bind(('127.0.0.1',0)); print(s.getsockname()[1]); s.close()") \
-        || die "failed to pick a free port for vite"
+    local vite_port="$DEV_VITE_PORT"
+    if [ -z "$vite_port" ]; then
+        vite_port=$(python3 -c "import socket; s=socket.socket(); s.bind(('127.0.0.1',0)); print(s.getsockname()[1]); s.close()") \
+            || die "failed to pick a free port for vite"
+    fi
 
     # Start Vite for the suite SPA, pointed at the per-instance backend.
     # Bypass the `dev` script wrapper (which prepends `pnpm run

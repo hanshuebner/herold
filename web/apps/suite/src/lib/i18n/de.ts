@@ -1208,6 +1208,26 @@ export const de = {
   'settings.security.confirming': 'Wird bestätigt...',
   'settings.security.confirmEnroll': 'Bestätigen',
   'settings.security.twoFactorEnabledToast': 'Zwei-Faktor-Authentifizierung aktiviert.',
+  'settings.security.oidc.heading': 'Anmeldedienste',
+  'settings.security.oidc.intro':
+    'Verknüpfen Sie Ihr Konto mit einem externen Anmeldedienst, um sich darüber bei Herold anzumelden. Ihr Passwort funktioniert weiterhin. Mail-Programme (IMAP/SMTP) verwenden weiterhin Ihr Passwort oder App-Passwörter.',
+  'settings.security.oidc.linked': 'Verknüpft',
+  'settings.security.oidc.linkedAs': 'Verknüpft als {account}',
+  'settings.security.oidc.notLinked': 'Nicht verknüpft',
+  'settings.security.oidc.link': 'Verknüpfen',
+  'settings.security.oidc.redirecting': 'Weiterleitung...',
+  'settings.security.oidc.unlink': 'Verknüpfung lösen',
+  'settings.security.oidc.unlinkTitle': 'Verknüpfung mit {name} lösen?',
+  'settings.security.oidc.unlinkMessage': 'Sie können sich dann nicht mehr über {name} anmelden.',
+  'settings.security.oidc.unlinkedToast': 'Verknüpfung mit {name} gelöst.',
+  'settings.security.oidc.outcome.linked': 'Ihr Konto ist jetzt verknüpft. Sie können sich über den Anbieter anmelden.',
+  'settings.security.oidc.outcome.already_linked':
+    'Dieses Konto beim Anbieter ist bereits mit einem Herold-Konto verknüpft, oder Ihr Konto ist bereits mit diesem Anbieter verknüpft.',
+  'settings.security.oidc.outcome.expired': 'Die Verknüpfung hat zu lange gedauert oder wurde bereits abgeschlossen. Bitte versuchen Sie es erneut.',
+  'settings.security.oidc.outcome.browser_mismatch':
+    'Die Verknüpfung wurde in einem anderen Browser oder Tab begonnen. Bitte starten Sie sie hier erneut.',
+  'settings.security.oidc.outcome.cancelled': 'Die Verknüpfung wurde beim Anbieter abgebrochen.',
+  'settings.security.oidc.outcome.failed': 'Die Verknüpfung ist fehlgeschlagen. Bitte versuchen Sie es erneut.',
 
   // ── API-Schlüssel-Formular (re #97) ──────────────────────────────────
   'settings.apiKeys.intro1':
@@ -1289,6 +1309,16 @@ export const de = {
   'login.signingIn': 'Anmeldung läuft...',
   'login.signIn': 'Anmelden',
   'login.signInFailed': 'Anmeldung fehlgeschlagen.',
+  'login.oidc.or': 'oder',
+  'login.oidc.signInWith': 'Mit {name} anmelden',
+  'login.oidc.redirecting': 'Weiterleitung...',
+  'login.oidc.error.not_linked':
+    'Dieses Konto beim Anmeldedienst ist mit keinem Herold-Konto verknüpft. Melden Sie sich mit Ihrem Passwort an und verknüpfen Sie es unter Einstellungen > Sicherheit.',
+  'login.oidc.error.expired': 'Die Anmeldung hat zu lange gedauert oder wurde bereits verwendet. Bitte versuchen Sie es erneut.',
+  'login.oidc.error.browser_mismatch':
+    'Die Anmeldung wurde in einem anderen Browser oder Tab begonnen. Bitte starten Sie sie hier erneut.',
+  'login.oidc.error.cancelled': 'Die Anmeldung beim Anbieter wurde abgebrochen.',
+  'login.oidc.error.failed': 'Die Anmeldung über den Anbieter ist fehlgeschlagen. Bitte versuchen Sie es erneut.',
   'login.fieldsRequired': 'Bitte E-Mail-Adresse und Passwort eingeben.',
   'login.sessionExpired': 'Ihre Sitzung ist abgelaufen. Bitte melden Sie sich erneut an.',
   'login.sessionRevoked': 'Ihre Sitzung wurde auf einem anderen Gerät beendet. Bitte melden Sie sich erneut an.',

@@ -47,6 +47,15 @@ vi.mock('./auth.svelte', () => ({
   registerAccountResetCallback: vi.fn(),
 }));
 
+// The provider list is covered by LoginView.oidc.test.ts; here no
+// provider is configured so the password form is the whole page.
+vi.mock('./oidc', () => ({
+  listSignInProviders: vi.fn().mockResolvedValue([]),
+  beginSignIn: vi.fn(),
+  signInErrorKey: (r: string) => `login.oidc.error.${r}`,
+  takeSignInError: () => null,
+}));
+
 // ── i18n mock — return the key so assertions are stable ───────────────────
 
 vi.mock('../i18n/i18n.svelte', () => ({

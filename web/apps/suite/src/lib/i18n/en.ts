@@ -1194,6 +1194,26 @@ export const en = {
   'settings.security.confirming': 'Confirming...',
   'settings.security.confirmEnroll': 'Confirm',
   'settings.security.twoFactorEnabledToast': 'Two-factor authentication enabled.',
+  'settings.security.oidc.heading': 'Sign-in providers',
+  'settings.security.oidc.intro':
+    'Link your account to an external sign-in provider to sign in to Herold through it. Your password keeps working. Mail apps (IMAP/SMTP) continue to use your password or app passwords.',
+  'settings.security.oidc.linked': 'Linked',
+  'settings.security.oidc.linkedAs': 'Linked as {account}',
+  'settings.security.oidc.notLinked': 'Not linked',
+  'settings.security.oidc.link': 'Link',
+  'settings.security.oidc.redirecting': 'Redirecting...',
+  'settings.security.oidc.unlink': 'Unlink',
+  'settings.security.oidc.unlinkTitle': 'Unlink {name}?',
+  'settings.security.oidc.unlinkMessage': 'You will no longer be able to sign in with {name}.',
+  'settings.security.oidc.unlinkedToast': '{name} unlinked.',
+  'settings.security.oidc.outcome.linked': 'Your account is now linked. You can sign in with the provider.',
+  'settings.security.oidc.outcome.already_linked':
+    'This provider account is already linked to a Herold account, or yours is already linked to this provider.',
+  'settings.security.oidc.outcome.expired': 'Linking took too long or was already completed. Please try again.',
+  'settings.security.oidc.outcome.browser_mismatch':
+    'Linking was started in a different browser or tab. Please start it again here.',
+  'settings.security.oidc.outcome.cancelled': 'Linking was cancelled at the provider.',
+  'settings.security.oidc.outcome.failed': 'Linking failed. Please try again.',
 
   // ── API keys form (re #97) ──────────────────────────────────────────
   'settings.apiKeys.intro1':
@@ -1272,6 +1292,16 @@ export const en = {
   'login.signingIn': 'Signing in...',
   'login.signIn': 'Sign in',
   'login.signInFailed': 'Sign-in failed.',
+  'login.oidc.or': 'or',
+  'login.oidc.signInWith': 'Sign in with {name}',
+  'login.oidc.redirecting': 'Redirecting...',
+  'login.oidc.error.not_linked':
+    'This account at the sign-in provider is not linked to a Herold account. Sign in with your password and link it under Settings > Security.',
+  'login.oidc.error.expired': 'The sign-in took too long or was already used. Please try again.',
+  'login.oidc.error.browser_mismatch':
+    'The sign-in was started in a different browser or tab. Please start it again here.',
+  'login.oidc.error.cancelled': 'Sign-in at the provider was cancelled.',
+  'login.oidc.error.failed': 'Sign-in with the provider failed. Please try again.',
   'login.fieldsRequired': 'Please enter your e-mail address and password.',
   /** REQ-AS-13: forced-login copy for idle expiry. */
   'login.sessionExpired': 'Your session has expired. Please sign in to continue.',

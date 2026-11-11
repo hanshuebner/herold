@@ -5,6 +5,9 @@
    * Three subsections:
    *   1. Change password  -- PUT /api/v1/principals/{pid}/password
    *   2. TOTP             -- POST/DELETE /api/v1/principals/{pid}/totp/...
+   *   3. Sign-in providers -- link / unlink external OIDC identities
+   *      (GET/DELETE /api/v1/principals/{pid}/oidc-links, POST .../begin);
+   *      shown only when the operator configured a provider or a link exists.
    *
    * The principal object (which carries totp_enabled) is fetched once on
    * mount via GET /api/v1/principals/{pid} so the TOTP section renders
@@ -17,6 +20,14 @@
   import { confirm } from '../../lib/dialog/confirm.svelte';
   import { get, put, post, del, ApiError, UnauthenticatedError } from '../../lib/api/client';
   import { t } from '../../lib/i18n/i18n.svelte';
+  import { router } from '../../lib/router/router.svelte';
+  import {
+    beginLink,
+    linkOutcomeKey,
+    listSignInProviders,
+    type OidcLink,
+    type SignInProvider,
+  } from '../../lib/auth/oidc';
   import Button from '@herold/design-system/Button.svelte';
 
   // --- Principal fetch ---
@@ -220,6 +231,99 @@
       totpDisableError = errorMessage(err);
     } finally {
       totpLoading = false;
+    }
+  }
+
+  // --- Sign-in providers (external OIDC) ---
+
+  let oidcProviders = $state<SignInProvider[]>([]);
+  let oidcLinks = $state<OidcLink[]>([]);
+  let oidcBusy = $state<string | null>(null);
+  let oidcError = $state<string | null>(null);
+  /** Outcome reported by the link callback, shown once. */
+  let oidcOutcome = $state<{ ok: boolean; message: string } | null>(null);
+
+  interface OidcRow {
+    id: string;
+    name: string;
+    link: OidcLink | null;
+  }
+
+  /** Every configured provider plus any linked provider no longer offered. */
+  let oidcRows = $derived.by((): OidcRow[] => {
+    const rows: OidcRow[] = oidcProviders.map((p) => ({
+      id: p.id,
+      name: p.name,
+      link: oidcLinks.find((l) => l.provider_id === p.id) ?? null,
+    }));
+    for (const l of oidcLinks) {
+      if (!rows.some((r) => r.id === l.provider_id)) {
+        rows.push({ id: l.provider_id, name: l.provider_id, link: l });
+      }
+    }
+    return rows;
+  });
+
+  async function loadOidc(pid: string): Promise<void> {
+    oidcProviders = await listSignInProviders();
+    try {
+      const res = await get<{ items?: OidcLink[] }>(`/api/v1/principals/${pid}/oidc-links`);
+      oidcLinks = res?.items ?? [];
+    } catch (err) {
+      oidcError = errorMessage(err);
+    }
+  }
+
+  $effect(() => {
+    const pid = auth.principalId;
+    if (!pid) return;
+    void loadOidc(pid);
+  });
+
+  // The link callback lands on #/settings/security?oidc_link=<outcome>.
+  $effect(() => {
+    const outcome = router.getParam('oidc_link');
+    if (outcome === null) return;
+    oidcOutcome = { ok: outcome === 'linked', message: t(linkOutcomeKey(outcome)) };
+    router.replace('/settings/security');
+  });
+
+  async function linkProvider(row: OidcRow): Promise<void> {
+    const pid = auth.principalId;
+    if (!pid || oidcBusy) return;
+    oidcBusy = row.id;
+    oidcError = null;
+    oidcOutcome = null;
+    try {
+      window.location.assign(await beginLink(pid, row.id));
+    } catch (err) {
+      oidcError = errorMessage(err);
+      oidcBusy = null;
+    }
+  }
+
+  async function unlinkProvider(row: OidcRow): Promise<void> {
+    const pid = auth.principalId;
+    if (!pid || oidcBusy) return;
+    const ok = await confirm.ask({
+      title: t('settings.security.oidc.unlinkTitle', { name: row.name }),
+      message: t('settings.security.oidc.unlinkMessage', { name: row.name }),
+      confirmLabel: t('settings.security.oidc.unlink'),
+      cancelLabel: t('common.cancel'),
+      kind: 'danger',
+    });
+    if (!ok) return;
+    oidcBusy = row.id;
+    oidcError = null;
+    oidcOutcome = null;
+    try {
+      await del<void>(`/api/v1/principals/${pid}/oidc-links/${encodeURIComponent(row.id)}`);
+      oidcLinks = oidcLinks.filter((l) => l.provider_id !== row.id);
+      toast.show({ message: t('settings.security.oidc.unlinkedToast', { name: row.name }), timeoutMs: 4000 });
+    } catch (err) {
+      oidcError = errorMessage(err);
+    } finally {
+      oidcBusy = null;
     }
   }
 
@@ -442,6 +546,63 @@
     {/if}
   {/if}
 
+  {#if oidcRows.length > 0}
+    <h3>{t('settings.security.oidc.heading')}</h3>
+    <p class="hint oidc-hint">{t('settings.security.oidc.intro')}</p>
+
+    {#if oidcOutcome}
+      <p
+        class={oidcOutcome.ok ? 'oidc-outcome' : 'form-error'}
+        role={oidcOutcome.ok ? 'status' : 'alert'}
+        data-testid="oidc-link-outcome"
+      >
+        {oidcOutcome.message}
+      </p>
+    {/if}
+
+    <ul class="oidc-list" data-testid="oidc-provider-list">
+      {#each oidcRows as row (row.id)}
+        <li class="oidc-row">
+          <div class="oidc-info">
+            <span class="oidc-name">{row.name}</span>
+            <span class="oidc-state">
+              {#if row.link}
+                {row.link.email_at_provider
+                  ? t('settings.security.oidc.linkedAs', { account: row.link.email_at_provider })
+                  : t('settings.security.oidc.linked')}
+              {:else}
+                {t('settings.security.oidc.notLinked')}
+              {/if}
+            </span>
+          </div>
+          {#if row.link}
+            <Button
+              variant="danger"
+              onclick={() => void unlinkProvider(row)}
+              disabled={oidcBusy !== null}
+            >
+              {t('settings.security.oidc.unlink')}
+            </Button>
+          {:else}
+            <Button
+              variant="primary"
+              onclick={() => void linkProvider(row)}
+              disabled={oidcBusy !== null}
+            >
+              {oidcBusy === row.id
+                ? t('settings.security.oidc.redirecting')
+                : t('settings.security.oidc.link')}
+            </Button>
+          {/if}
+        </li>
+      {/each}
+    </ul>
+
+    {#if oidcError}
+      <p class="form-error" role="alert">{oidcError}</p>
+    {/if}
+  {/if}
+
 {/if}
 
 <style>
@@ -619,6 +780,61 @@
     color: var(--text-helper);
     font-size: var(--type-body-compact-01-size);
     margin: 0;
+  }
+
+  .oidc-hint {
+    max-width: 720px;
+    margin-bottom: var(--spacing-04);
+  }
+
+  .oidc-outcome {
+    max-width: 720px;
+    font-size: var(--type-body-compact-01-size);
+    color: var(--support-success);
+    margin: 0 0 var(--spacing-04);
+    padding: var(--spacing-03) var(--spacing-04);
+    background: color-mix(in srgb, var(--support-success) 8%, transparent);
+    border-radius: var(--radius-md);
+    border-left: 3px solid var(--support-success);
+  }
+
+  .oidc-list {
+    list-style: none;
+    margin: 0 0 var(--spacing-04);
+    padding: 0;
+    max-width: 720px;
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-03);
+  }
+
+  .oidc-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--spacing-04);
+    padding: var(--spacing-03) var(--spacing-04);
+    background: var(--layer-01);
+    border: 1px solid var(--border-subtle-01);
+    border-radius: var(--radius-md);
+  }
+
+  .oidc-info {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-01);
+    min-width: 0;
+  }
+
+  .oidc-name {
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .oidc-state {
+    font-size: var(--type-body-compact-01-size);
+    color: var(--text-secondary);
+    overflow-wrap: anywhere;
   }
 
   .sr-only {

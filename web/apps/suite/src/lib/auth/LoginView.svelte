@@ -1,7 +1,14 @@
 <script lang="ts">
-  import { tick } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { auth } from './auth.svelte';
   import { t } from '../i18n/i18n.svelte';
+  import {
+    beginSignIn,
+    listSignInProviders,
+    signInErrorKey,
+    takeSignInError,
+    type SignInProvider,
+  } from './oidc';
 
   let email = $state('');
   let password = $state('');
@@ -10,6 +17,32 @@
   let errorMessage = $state<string | null>(null);
   /** Ref to the TOTP input so we can refocus it after a wrong code (re #29). */
   let totpInputEl = $state<HTMLInputElement | null>(null);
+
+  /** External OIDC providers offered as "Sign in with ..." buttons. */
+  let providers = $state<SignInProvider[]>([]);
+  /** Provider whose sign-in is being started (disables the buttons). */
+  let redirectingTo = $state<string | null>(null);
+
+  onMount(() => {
+    // A failed provider sign-in lands here with ?oidc_error=<reason>.
+    const reason = takeSignInError();
+    if (reason !== null) errorMessage = t(signInErrorKey(reason));
+    void listSignInProviders().then((list) => {
+      providers = list;
+    });
+  });
+
+  async function signInWith(provider: SignInProvider): Promise<void> {
+    if (redirectingTo !== null) return;
+    redirectingTo = provider.id;
+    errorMessage = null;
+    try {
+      window.location.assign(await beginSignIn(provider.id));
+    } catch (err) {
+      errorMessage = err instanceof Error && err.message ? err.message : t('login.oidc.error.failed');
+      redirectingTo = null;
+    }
+  }
 
   /** Core login action shared by the form submit and the auto-submit path. */
   async function doLogin(): Promise<void> {
@@ -159,6 +192,24 @@
         {submitting ? t('login.signingIn') : t('login.signIn')}
       </button>
     </form>
+
+    {#if providers.length > 0 && !auth.needsStepUp}
+      <div class="oidc" data-testid="oidc-providers">
+        <p class="oidc-divider"><span>{t('login.oidc.or')}</span></p>
+        {#each providers as provider (provider.id)}
+          <button
+            type="button"
+            class="oidc-btn"
+            disabled={submitting || redirectingTo !== null}
+            onclick={() => void signInWith(provider)}
+          >
+            {redirectingTo === provider.id
+              ? t('login.oidc.redirecting')
+              : t('login.oidc.signInWith', { name: provider.name })}
+          </button>
+        {/each}
+      </div>
+    {/if}
   </div>
 </div>
 
@@ -278,6 +329,53 @@
     filter: brightness(1.1);
   }
   .submit-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .oidc {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-03);
+    margin-top: var(--spacing-06);
+  }
+
+  .oidc-divider {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-04);
+    margin: 0 0 var(--spacing-02);
+    color: var(--text-helper);
+    font-size: var(--type-body-compact-01-size);
+  }
+  .oidc-divider::before,
+  .oidc-divider::after {
+    content: '';
+    flex: 1;
+    border-top: 1px solid var(--border-subtle-01);
+  }
+
+  .oidc-btn {
+    width: 100%;
+    padding: var(--spacing-04) var(--spacing-05);
+    background: var(--layer-01);
+    color: var(--text-primary);
+    border: 1px solid var(--border-subtle-01);
+    border-radius: var(--radius-md);
+    font-family: var(--font-sans);
+    font-size: var(--type-body-01-size);
+    font-weight: 600;
+    min-height: var(--touch-min);
+    transition: background var(--duration-fast-02) var(--easing-productive-enter);
+  }
+  .oidc-btn:hover:not(:disabled) {
+    background: var(--layer-02);
+  }
+  .oidc-btn:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: -2px;
+  }
+  .oidc-btn:disabled {
     opacity: 0.6;
     cursor: not-allowed;
   }
