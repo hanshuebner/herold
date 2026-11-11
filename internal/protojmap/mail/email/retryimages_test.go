@@ -7,7 +7,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -21,7 +20,6 @@ import (
 	"github.com/hanshuebner/herold/internal/protojmap/mail/mailbox"
 	"github.com/hanshuebner/herold/internal/protojmap/mail/thread"
 	"github.com/hanshuebner/herold/internal/store"
-	"github.com/hanshuebner/herold/internal/storesqlite"
 	"github.com/hanshuebner/herold/internal/testharness"
 )
 
@@ -33,12 +31,7 @@ import (
 func setupRetryFixture(t *testing.T, cfg extimg.Config) *fixture {
 	t.Helper()
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	dbPath := filepath.Join(t.TempDir(), "test.db")
-	st, err := storesqlite.Open(context.Background(), dbPath, nil, clk)
-	if err != nil {
-		t.Fatalf("storesqlite.Open: %v", err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
+	st := email.OpenSQLiteStore(t, clk)
 	srv, _ := testharness.Start(t, testharness.Options{
 		Store:     st,
 		Clock:     clk,

@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -25,7 +24,6 @@ import (
 	"github.com/hanshuebner/herold/internal/protojmap/mail/thread"
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/storepg"
-	"github.com/hanshuebner/herold/internal/storesqlite"
 	"github.com/hanshuebner/herold/internal/testharness"
 )
 
@@ -48,12 +46,7 @@ func setupFixture(t *testing.T) *fixture {
 	// hid this regression for months; the email package is too close to
 	// the persistence layer to tolerate that.
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	dbPath := filepath.Join(t.TempDir(), "test.db")
-	st, err := storesqlite.Open(context.Background(), dbPath, nil, clk)
-	if err != nil {
-		t.Fatalf("storesqlite.Open: %v", err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
+	st := email.OpenSQLiteStore(t, clk)
 	return setupFixtureWithStore(t, st, clk, "alice@example.test")
 }
 
@@ -1491,33 +1484,39 @@ func TestEmail_Import_FromUploadedBlob(t *testing.T) {
 // triggered the bug in single-pass relink).
 func TestEmail_Import_ThreeMessageChain_StableThread(t *testing.T) {
 	const iters = 30
+	// One fixture serves all iterations; each iteration imports a chain with
+	// its own Message-IDs and subject so the chains stay independent threads.
+	f := setupFixture(t)
 	for i := 0; i < iters; i++ {
 		t.Run(fmt.Sprintf("iter-%d", i), func(t *testing.T) {
-			f := setupFixture(t)
 			receivedAt := time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC).Format(time.RFC3339)
 
 			starter := "From: a@example.test\r\n" +
 				"To: b@example.test\r\n" +
 				"Subject: Project Alpha\r\n" +
-				"Message-ID: <chain-001@test>\r\n" +
+				"Message-ID: <chain-001-ITER@test>\r\n" +
 				"Date: Tue, 01 Apr 2026 10:00:00 +0000\r\n" +
 				"\r\nstarter body"
 			reply1 := "From: b@example.test\r\n" +
 				"To: a@example.test\r\n" +
 				"Subject: Re: Project Alpha\r\n" +
-				"Message-ID: <chain-002@test>\r\n" +
-				"In-Reply-To: <chain-001@test>\r\n" +
-				"References: <chain-001@test>\r\n" +
+				"Message-ID: <chain-002-ITER@test>\r\n" +
+				"In-Reply-To: <chain-001-ITER@test>\r\n" +
+				"References: <chain-001-ITER@test>\r\n" +
 				"Date: Tue, 01 Apr 2026 11:00:00 +0000\r\n" +
 				"\r\nfirst reply"
 			reply2 := "From: a@example.test\r\n" +
 				"To: b@example.test\r\n" +
 				"Subject: Re: Project Alpha\r\n" +
-				"Message-ID: <chain-003@test>\r\n" +
-				"In-Reply-To: <chain-002@test>\r\n" +
-				"References: <chain-001@test> <chain-002@test>\r\n" +
+				"Message-ID: <chain-003-ITER@test>\r\n" +
+				"In-Reply-To: <chain-002-ITER@test>\r\n" +
+				"References: <chain-001-ITER@test> <chain-002-ITER@test>\r\n" +
 				"Date: Tue, 01 Apr 2026 12:00:00 +0000\r\n" +
 				"\r\nsecond reply"
+			iter := strconv.Itoa(i)
+			starter = strings.ReplaceAll(starter, "ITER", iter)
+			reply1 = strings.ReplaceAll(reply1, "ITER", iter)
+			reply2 = strings.ReplaceAll(reply2, "ITER", iter)
 
 			refStarter := f.putBlob(t, starter)
 			refReply1 := f.putBlob(t, reply1)

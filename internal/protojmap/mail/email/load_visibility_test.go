@@ -4,14 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/storepg"
-	"github.com/hanshuebner/herold/internal/storesqlite"
 )
 
 // TestLoadMessageForPrincipal_VisibleThroughNonCanonicalMembership covers
@@ -27,12 +25,7 @@ import (
 // the message.
 func TestLoadMessageForPrincipal_VisibleThroughNonCanonicalMembership(t *testing.T) {
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	dbPath := filepath.Join(t.TempDir(), "test.db")
-	st, err := storesqlite.Open(context.Background(), dbPath, nil, clk)
-	if err != nil {
-		t.Fatalf("storesqlite.Open: %v", err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
+	st := OpenSQLiteStore(t, clk)
 	testLoadMessageForPrincipalVisibleThroughNonCanonicalMembership(t, st, clk)
 }
 
