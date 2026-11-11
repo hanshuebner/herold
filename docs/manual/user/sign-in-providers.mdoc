@@ -1,0 +1,45 @@
+---
+title: Signing in with an external provider
+slug: sign-in-providers
+audience: user
+---
+
+# Signing in with an external provider
+
+If your Herold deployment is connected to an external sign-in provider
+(for example Pocket ID), you can sign in to the web interface through it
+instead of typing your password. Your password keeps working, and mail
+apps (IMAP/SMTP) continue to use your password or app passwords.
+
+## Link your account
+
+Before the provider can sign you in, link it to your Herold account once:
+
+1. Sign in with your email address and password.
+2. Open *Settings > Security*. The section *Sign-in providers* lists the
+   providers your administrator has set up.
+3. Click *Link* next to the provider. Your browser goes to the provider;
+   sign in there and approve the request.
+4. You return to *Settings > Security* with the message "Your account is
+   now linked", and the provider shows *Linked as* followed by the account
+   you used there.
+
+The link is to that particular account at the provider, not to an email
+address: the provider account's email does not have to match your Herold
+address.
+
+## Sign in
+
+On the sign-in page, click *Sign in with* followed by the provider's name.
+After you sign in at the provider you are taken straight to your mail.
+
+If the sign-in page reports that the provider account is not linked to a
+Herold account, sign in with your password and link it as described above.
+If it reports that the sign-in was started in a different browser or tab,
+start it again from the sign-in page in the browser you are using.
+
+## Unlink
+
+In *Settings > Security*, click *Unlink* next to the provider and confirm.
+The provider can then no longer sign you in. Signing out of Herold does not
+sign you out of the provider.

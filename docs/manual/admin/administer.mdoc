@@ -316,19 +316,16 @@ password as a deliberate footgun guard - admins included.
 
 ### Link OIDC provider
 
-Linking a principal to an external OIDC provider is a user-flow (the
-user signs in via Google / Okta / etc., and herold matches the
-external `sub` to the principal's OIDC link table).
-
-Operator-side commands today:
+Users link their own account to an external OIDC provider from the
+Suite (*Settings > Security > Sign-in providers*); herold stores the
+provider's `sub` for the principal. Operators list and remove links:
 
 ```bash
 herold oidc link-list user@example.com
-herold oidc link-delete user@example.com google
+herold oidc link-delete user@example.com PocketID
 ```
 
-The link-create path is the user-facing OIDC sign-in flow per
-`docs/design/server/requirements/02-identity-and-auth.md`.
+Provider registration is described under *OIDC RP federation* below.
 
 ### Grant / revoke admin
 
@@ -767,60 +764,114 @@ is append-only and downgrades are forbidden by REQ-OPS-130.
 
 ## OIDC RP federation
 
-Per-user OIDC linkage gives a principal a "Sign in with Google /
-Okta / GitHub" path on top of the local password (REQ-AUTH-*).
-Herold is a **relying party only** - never an issuer (NG11).
+Users of the Suite can sign in through an external OpenID Connect
+provider (Pocket ID, Keycloak, Authentik, Google, ...) in addition to
+their password (REQ-AUTH-50..58). Herold is a **relying party only** -
+never an issuer (NG11). A provider identity is matched to a herold
+account by the provider's `sub` claim, never by email address, so a
+user first links the provider from their settings and can then sign in
+with it. The password keeps working; mail clients (IMAP/SMTP) are not
+affected.
 
-### Register a provider
+### Register the client at the provider
 
-Not yet wired; the CLI flag mapping does not match the protoadmin
-schema (CLI sends `issuer_url`, server expects something else).
-Tracked under the protoadmin admin REST surface.
+Create an OIDC client at the provider with:
+
+- **Redirect URI:** `<public_base_url>/api/v1/oidc/callback`, where
+  `<public_base_url>` is `[server] public_base_url` (default
+  `https://<server.hostname>`). This one URI serves both the Suite
+  sign-in and account linking; it is matched exactly, so it must use the
+  origin users load the Suite from. For a deployment at
+  `https://mail.example.com` it is
+  `https://mail.example.com/api/v1/oidc/callback`.
+- If the Android app's "Sign in with ..." button should work too, also
+  allow `<public_base_url>/oauth2/authorize/federated/callback`.
+- Grant type authorization code; scopes `openid email profile`. Herold
+  always sends a PKCE S256 challenge, so a client with PKCE enforced
+  works.
+- A confidential client (with a client secret).
+
+For Pocket ID: *OIDC Clients > Add OIDC Client*, enter the callback URL(s)
+above, leave *Public Client* off, and copy the client ID and secret.
+
+### Register the provider at herold
+
+Store the client secret in a file readable by the herold service user
+and register the provider with a reference to it:
 
 ```bash
-herold oidc provider add google \
-  --issuer https://accounts.google.com \
-  --client-id <id> \
-  --client-secret <secret>
+install -m 0640 -o root -g herold /dev/null /etc/herold/oidc-pocketid.secret
+printf '%s' '<client secret>' > /etc/herold/oidc-pocketid.secret
+
+herold oidc provider add PocketID \
+  --issuer https://login.example.com \
+  --client-id <client id> \
+  --client-secret-ref file:/etc/herold/oidc-pocketid.secret \
+  --scopes openid,email,profile
 ```
 
-Once protoadmin's secret-env shape is in place, prefer:
+The equivalent REST call (admin API key):
 
 ```bash
-herold oidc provider update google --client-secret-env=$GOOGLE_OIDC_SECRET
+curl -X POST https://mail.example.com/api/v1/oidc/providers \
+  -H "Authorization: Bearer $HEROLD_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "PocketID",
+       "issuer": "https://login.example.com",
+       "client_id": "<client id>",
+       "client_secret_ref": "file:/etc/herold/oidc-pocketid.secret",
+       "scopes": ["openid", "email", "profile"]}'
 ```
 
-so the secret never lands in shell history.
+- `name` is the provider's identifier and the label of the Suite's
+  "Sign in with PocketID" button.
+- `issuer` must be the provider's issuer exactly; herold runs discovery
+  at `<issuer>/.well-known/openid-configuration` while registering and
+  refuses the provider if that fails.
+- `client_secret_ref` is `file:/path` or `$ENV_VAR`. It is resolved at
+  registration (a reference that does not resolve is rejected) and
+  again when the provider is first used after a restart. A secret passed
+  inline (`--client-secret` / `client_secret`) is held in memory only:
+  after a restart such a provider disappears from the sign-in page and
+  its flows answer 503 until it is registered again with a reference.
+- `redirect_url` is not needed for the Suite; herold derives the
+  redirect URI from `public_base_url`.
+- `auto_provision` / `auto_provision_domain` (off by default, superadmin
+  only) create a local account on the first sign-in of an unlinked
+  identity with a verified email; leave them off to admit only linked
+  accounts.
 
 ### Inspect
 
 ```bash
 herold oidc provider list
-herold oidc provider show google                # client_secret omitted.
+herold oidc provider show PocketID              # client secret omitted.
 ```
 
-### Update / remove
+### Remove
 
 ```bash
-herold oidc provider update google --client-secret-env=$NEW_VAR
-herold oidc provider remove google
+herold oidc provider remove PocketID
 ```
+
+Removing a provider deletes every link to it. To change the issuer,
+client ID or secret reference, remove and re-add the provider; users
+then link again.
 
 ### Link / unlink (operator side)
 
-The link-creation path is a user sign-in flow: the user clicks "Sign
-in with Google", herold redirects to the provider, the provider
-redirects back, herold matches the external `sub` to a local
-principal (or claims the account on first link). Operator-side, only
-list and delete are exposed:
+Users link their own account in the Suite (*Settings > Security >
+Sign-in providers*); see the user manual chapter *Signing in with an
+external provider*. Operators can list and remove links:
 
 ```bash
 herold oidc link-list user@example.com
-herold oidc link-delete user@example.com google
+herold oidc link-delete user@example.com PocketID
 ```
 
-The detailed flow lives in
-`docs/design/server/requirements/02-identity-and-auth.md`.
+Sign-ins, links and refused callbacks are recorded in the audit log
+(`auth.login` with `method=oidc`, `oidc.link.create`,
+`auth.oidc.callback`).
 
 ## Chat / calendar / contacts admin (Phase 2)
 

@@ -617,46 +617,31 @@ Herold authenticates principals against:
 2. **External OIDC providers** the operator registers - herold is a
    relying party only, never an issuer (NG11).
 
-Per-user federation: a principal can link to one or more external
-OIDC providers (Google, Microsoft, GitHub, corporate Okta, etc.), and
-the external email need not match the local canonical email.
+Per-user federation: a principal links one or more providers from the
+Suite's security settings and can then sign in with them; the provider
+identity is matched by its `sub` claim, so the external email need not
+match the local address. Registration (redirect URI
+`<public_base_url>/api/v1/oidc/callback`, `herold oidc provider add ...
+--client-secret-ref file:/path`) is described in the administration
+chapter under *OIDC RP federation*.
 
-### Register a provider
+Operational notes:
 
-```bash
-herold oidc provider add google \
-  --issuer https://accounts.google.com \
-  --client-id <id> \
-  --client-secret <secret>
-```
-
-(The CLI accepts `--client-secret` for now; once protoadmin's
-secret-env shape is in place, prefer
-`herold oidc provider update <name> --client-secret-env=$VAR` so the
-secret never lands in shell history.)
-
-### List / show / update / remove
+- The provider's client secret is read from its `client_secret_ref`
+  when the provider is first used after a start. If the file or
+  environment variable is missing, the provider is left off the sign-in
+  page and the server logs `directoryoidc.provider.unavailable`.
+- Discovery and token requests to the provider time out after 10 s.
+  An unreachable provider fails only its own sign-ins; password sign-in
+  is unaffected.
+- Pending sign-in and link flows live in memory for 5 minutes; a
+  restart in between makes the user start again.
 
 ```bash
 herold oidc provider list
-herold oidc provider show google
-herold oidc provider update google --client-secret-env=$GOOGLE_OIDC_SECRET
-herold oidc provider remove google
-```
-
-### Link / unlink a principal
-
-The operator-side commands are:
-
-```bash
 herold oidc link-list user@example.com
-herold oidc link-delete user@example.com google
+herold oidc link-delete user@example.com PocketID
 ```
-
-The link-*creation* path (a user signs in via Google, herold matches
-or claims the account) is a Phase-2 user-flow, not an operator CLI
-command. See `docs/design/server/requirements/02-identity-and-auth.md`
-for the registered-user OIDC sign-in flow.
 
 ## Common operational issues
 

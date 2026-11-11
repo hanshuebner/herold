@@ -11,6 +11,11 @@ home = "index"
   file  = "user/quickstart.mdoc"
   title = "Quickstart"
 
+  [[user.chapters]]
+  slug  = "sign-in-providers"
+  file  = "user/sign-in-providers.mdoc"
+  title = "Signing in with an External Provider"
+
 [admin]
 home = "index"
 
