@@ -24,21 +24,42 @@ func newOIDCCmd() *cobra.Command {
 	addCmd := &cobra.Command{
 		Use:   "add <name>",
 		Short: "register a new OIDC provider",
-		Args:  cobra.ExactArgs(1),
+		Long: "Register an external OpenID Connect provider for per-user sign-in and\n" +
+			"account linking. The provider must allow the redirect URI\n" +
+			"<public_base_url>/api/v1/oidc/callback. Pass the client secret as a\n" +
+			"reference with --client-secret-ref (\"file:/path\" or \"$VAR\", resolved\n" +
+			"by the server) so the provider keeps working across restarts.",
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			g := globals(cmd.Context())
-			client, err := clientFromGlobals(g)
-			if err != nil {
-				return err
-			}
 			issuer, _ := cmd.Flags().GetString("issuer")
 			clientID, _ := cmd.Flags().GetString("client-id")
 			clientSecret, _ := cmd.Flags().GetString("client-secret")
+			clientSecretRef, _ := cmd.Flags().GetString("client-secret-ref")
+			redirectURL, _ := cmd.Flags().GetString("redirect-url")
+			scopes, _ := cmd.Flags().GetStringSlice("scopes")
+			if (clientSecret == "") == (clientSecretRef == "") {
+				return errors.New("oidc provider add: exactly one of --client-secret-ref or --client-secret is required")
+			}
 			body := map[string]any{
-				"name":          args[0],
-				"issuer_url":    issuer,
-				"client_id":     clientID,
-				"client_secret": clientSecret,
+				"name":      args[0],
+				"issuer":    issuer,
+				"client_id": clientID,
+			}
+			if clientSecretRef != "" {
+				body["client_secret_ref"] = clientSecretRef
+			} else {
+				body["client_secret"] = clientSecret
+			}
+			if redirectURL != "" {
+				body["redirect_url"] = redirectURL
+			}
+			if len(scopes) > 0 {
+				body["scopes"] = scopes
+			}
+			client, err := clientFromGlobals(g)
+			if err != nil {
+				return err
 			}
 			err = client.do(cmd.Context(), "POST", "/api/v1/oidc/providers", body, nil)
 			if err != nil {
@@ -48,12 +69,14 @@ func newOIDCCmd() *cobra.Command {
 			return nil
 		},
 	}
-	addCmd.Flags().String("issuer", "", "OIDC issuer URL")
+	addCmd.Flags().String("issuer", "", "OIDC issuer URL (discovery at <issuer>/.well-known/openid-configuration)")
 	addCmd.Flags().String("client-id", "", "OAuth2 client ID")
-	addCmd.Flags().String("client-secret", "", "OAuth2 client secret")
+	addCmd.Flags().String("client-secret-ref", "", "client secret reference resolved by the server: \"file:/path\" or \"$VAR\"")
+	addCmd.Flags().String("client-secret", "", "OAuth2 client secret (held in server memory only; lost on restart)")
+	addCmd.Flags().String("redirect-url", "", "redirect URI for flows started through the API without one")
+	addCmd.Flags().StringSlice("scopes", nil, "OAuth2 scopes in addition to openid (e.g. email,profile)")
 	_ = addCmd.MarkFlagRequired("issuer")
 	_ = addCmd.MarkFlagRequired("client-id")
-	_ = addCmd.MarkFlagRequired("client-secret")
 	prov.AddCommand(addCmd)
 
 	prov.AddCommand(&cobra.Command{

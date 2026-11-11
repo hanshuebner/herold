@@ -3,11 +3,14 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/hanshuebner/herold/internal/store"
+	"github.com/hanshuebner/herold/internal/testfakes/fakeoidc"
 )
 
 // seedOIDCProviderRow inserts a minimal provider row directly into the
@@ -202,5 +205,56 @@ func TestCLIOIDCClaimMappingRule_RejectsServerKind(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "400") && !strings.Contains(err.Error(), "validation_failed") {
 		t.Fatalf("expected 400/validation_failed; got %v", err)
+	}
+}
+
+// TestCLIOIDCProviderAdd_SecretRef runs the provider registration command
+// documented in docs/manual/admin/administer.mdoc against a live issuer
+// (the in-tree fake) and checks the stored row: the secret is kept as a
+// reference, and the requested scopes are recorded.
+func TestCLIOIDCProviderAdd_SecretRef(t *testing.T) {
+	env := newCLITestEnv(t, nil)
+	stub := fakeoidc.New(t, fakeoidc.Options{ClientID: "herold-mail", ClientSecret: "pocket-id-secret"})
+	secretFile := filepath.Join(t.TempDir(), "pocketid-client-secret")
+	if err := os.WriteFile(secretFile, []byte("pocket-id-secret\n"), 0o600); err != nil {
+		t.Fatalf("write secret: %v", err)
+	}
+	if _, _, err := env.run("oidc", "provider", "add", "PocketID",
+		"--issuer", stub.IssuerURL(),
+		"--client-id", "herold-mail",
+		"--client-secret-ref", "file:"+secretFile,
+		"--scopes", "openid,email,profile"); err != nil {
+		t.Fatalf("oidc provider add: %v", err)
+	}
+	got, err := env.store.Meta().GetOIDCProvider(context.Background(), "PocketID")
+	if err != nil {
+		t.Fatalf("GetOIDCProvider: %v", err)
+	}
+	if got.ClientSecretRef != "file:"+secretFile {
+		t.Fatalf("ClientSecretRef = %q, want the file reference", got.ClientSecretRef)
+	}
+	if strings.Join(got.Scopes, " ") != "openid email profile" {
+		t.Fatalf("Scopes = %v", got.Scopes)
+	}
+	if got.IssuerURL != stub.IssuerURL() || got.ClientID != "herold-mail" {
+		t.Fatalf("row = %+v", got)
+	}
+}
+
+func TestCLIOIDCProviderAdd_RequiresOneSecretForm(t *testing.T) {
+	env := newCLITestEnv(t, nil)
+	_, _, err := env.run("oidc", "provider", "add", "x", "--issuer", "https://idp.example", "--client-id", "c")
+	if err == nil || !strings.Contains(err.Error(), "client-secret") {
+		t.Fatalf("expected a missing-secret error, got %v", err)
+	}
+}
+
+func TestCLIOIDCProviderAdd_UnresolvableSecretRefRejected(t *testing.T) {
+	env := newCLITestEnv(t, nil)
+	stub := fakeoidc.New(t, fakeoidc.Options{})
+	_, _, err := env.run("oidc", "provider", "add", "x", "--issuer", stub.IssuerURL(), "--client-id", "c",
+		"--client-secret-ref", "file:"+filepath.Join(t.TempDir(), "missing"))
+	if err == nil || !strings.Contains(err.Error(), "invalid client secret reference") {
+		t.Fatalf("expected an invalid client secret reference error, got %v", err)
 	}
 }
