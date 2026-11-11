@@ -2,6 +2,8 @@ package fakeoidc_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/url"
@@ -68,6 +70,7 @@ func TestDiscoveryAndVerify(t *testing.T) {
 		"code":          {code},
 		"client_id":     {"herold-client"},
 		"client_secret": {"s3cr3t"},
+		"redirect_uri":  {"http://localhost/cb"},
 	}
 	tok, err := postFormJSON(srv.IssuerURL()+"/token", tokReq)
 	if err != nil {
@@ -138,6 +141,7 @@ func TestAuthorizeQueryOverride(t *testing.T) {
 		"code":          {code},
 		"client_id":     {srv.ClientID()},
 		"client_secret": {srv.ClientSecret()},
+		"redirect_uri":  {"http://localhost/cb"},
 	})
 	if err != nil {
 		t.Fatalf("token exchange: %v", err)
@@ -165,6 +169,7 @@ func TestAuthorizeQueryOverride(t *testing.T) {
 		"code":          {code2},
 		"client_id":     {srv.ClientID()},
 		"client_secret": {srv.ClientSecret()},
+		"redirect_uri":  {"http://localhost/cb"},
 	})
 	if err != nil {
 		t.Fatalf("token exchange 2: %v", err)
@@ -176,5 +181,93 @@ func TestAuthorizeQueryOverride(t *testing.T) {
 	}
 	if idTok2.Subject != "default-sub" {
 		t.Fatalf("subject 2 = %q, want default-sub (SetIdentity default must survive the override request)", idTok2.Subject)
+	}
+}
+
+// tokenStatus POSTs a token request and returns only the HTTP status, for
+// the refusal cases whose bodies are plain-text errors.
+func tokenStatus(t *testing.T, u string, form url.Values) int {
+	t.Helper()
+	resp, err := http.PostForm(u, form)
+	if err != nil {
+		t.Fatalf("token request: %v", err)
+	}
+	resp.Body.Close()
+	return resp.StatusCode
+}
+
+// TestTokenEnforcesPKCEAndRedirectURI pins the checks a real IdP applies
+// at the token endpoint and that herold's relying party must satisfy:
+// the code_verifier must hash to the authorization request's S256
+// challenge, and redirect_uri must repeat the authorization request's.
+func TestTokenEnforcesPKCEAndRedirectURI(t *testing.T) {
+	srv := fakeoidc.New(t, fakeoidc.Options{ClientID: "c", ClientSecret: "s", RequirePKCE: true})
+	verifier := "0123456789abcdefghijklmnopqrstuvwxyzABCDEFG"
+	sum := sha256.Sum256([]byte(verifier))
+	challenge := base64.RawURLEncoding.EncodeToString(sum[:])
+
+	authorize := func(withChallenge bool) (string, int) {
+		q := url.Values{
+			"response_type": {"code"},
+			"client_id":     {"c"},
+			"redirect_uri":  {"http://localhost/cb"},
+			"state":         {"st"},
+		}
+		if withChallenge {
+			q.Set("code_challenge", challenge)
+			q.Set("code_challenge_method", "S256")
+		}
+		client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+		resp, err := client.Get(srv.IssuerURL() + "/authorize?" + q.Encode())
+		if err != nil {
+			t.Fatalf("authorize: %v", err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusFound {
+			return "", resp.StatusCode
+		}
+		loc, _ := resp.Location()
+		return loc.Query().Get("code"), resp.StatusCode
+	}
+
+	if _, status := authorize(false); status != http.StatusBadRequest {
+		t.Fatalf("authorize without challenge under RequirePKCE: status %d, want 400", status)
+	}
+
+	base := func(code string) url.Values {
+		return url.Values{
+			"grant_type":    {"authorization_code"},
+			"code":          {code},
+			"client_id":     {"c"},
+			"client_secret": {"s"},
+			"redirect_uri":  {"http://localhost/cb"},
+			"code_verifier": {verifier},
+		}
+	}
+
+	code, _ := authorize(true)
+	form := base(code)
+	form.Set("code_verifier", "wrong-verifier-wrong-verifier-wrong-verifier")
+	if got := tokenStatus(t, srv.IssuerURL()+"/token", form); got != http.StatusBadRequest {
+		t.Fatalf("wrong verifier: status %d, want 400", got)
+	}
+
+	code, _ = authorize(true)
+	form = base(code)
+	form.Set("redirect_uri", "http://localhost/other")
+	if got := tokenStatus(t, srv.IssuerURL()+"/token", form); got != http.StatusBadRequest {
+		t.Fatalf("mismatched redirect_uri: status %d, want 400", got)
+	}
+
+	code, _ = authorize(true)
+	form = base(code)
+	form.Set("client_secret", "nope")
+	if got := tokenStatus(t, srv.IssuerURL()+"/token", form); got != http.StatusUnauthorized {
+		t.Fatalf("wrong client secret: status %d, want 401", got)
+	}
+
+	code, _ = authorize(true)
+	if got := tokenStatus(t, srv.IssuerURL()+"/token", base(code)); got != http.StatusOK {
+		t.Fatalf("valid exchange: status %d, want 200", got)
 	}
 }

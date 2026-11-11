@@ -20,6 +20,7 @@ import (
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
+	"github.com/hanshuebner/herold/internal/sysconfig"
 )
 
 // PrincipalID re-exports store.PrincipalID for callers that only need
@@ -42,6 +43,11 @@ type Provider struct {
 	Scopes              []string
 	AutoProvision       bool
 	AutoProvisionDomain string
+	// Available reports whether the RP can start a flow against this
+	// provider: it is loaded in memory, or its stored client-secret
+	// reference resolves. A provider registered with an inline secret
+	// is unavailable after a restart until it is re-registered.
+	Available bool
 }
 
 // ProviderConfig is the registration payload accepted by AddProvider.
@@ -54,6 +60,12 @@ type ProviderConfig struct {
 	// ClientID / ClientSecret are the OAuth2 credentials.
 	ClientID     string
 	ClientSecret string
+	// ClientSecretRef is a secret reference ("$VAR" or "file:/path")
+	// resolved at registration and again whenever the provider is loaded
+	// from the store (after a restart). It is persisted; ClientSecret is
+	// not, so a provider registered with only ClientSecret works until the
+	// process restarts. When both are set, ClientSecretRef wins.
+	ClientSecretRef string
 	// RedirectURL is the redirect_uri registered with the provider.
 	RedirectURL string
 	// Scopes is the OAuth2 scope list; "openid" is always included.
@@ -85,6 +97,13 @@ var (
 	ErrConflict                = errors.New("directoryoidc: conflict")
 	ErrInvalidState            = errors.New("directoryoidc: invalid state")
 	ErrProviderDiscoveryFailed = errors.New("directoryoidc: provider discovery failed")
+	// ErrProviderUnavailable is returned when a registered provider cannot
+	// be loaded because its client-secret reference does not resolve
+	// (e.g. it was registered with an inline secret before a restart).
+	ErrProviderUnavailable = errors.New("directoryoidc: provider unavailable")
+	// ErrInvalidSecretRef is returned by AddProvider when ClientSecretRef
+	// is malformed or does not resolve.
+	ErrInvalidSecretRef = errors.New("directoryoidc: invalid client secret reference")
 
 	// ErrAutoProvisionRefused is returned by CompleteSignIn when a first
 	// login for an unlinked sub is eligible for auto-provisioning
@@ -140,6 +159,10 @@ type pendingAuth struct {
 	// endpoint -- providers that enforce exact-match redirect_uri
 	// consistency (most do) reject the exchange otherwise.
 	redirectOverride string
+	// pkceVerifier is the RFC 7636 code_verifier whose S256 challenge
+	// went out on the authorization request; the token request sends it
+	// back so a stolen authorization code is useless on its own.
+	pkceVerifier string
 }
 
 // FlowKind reports whether a pending state was opened by BeginLink or
@@ -238,6 +261,18 @@ func (r *RP) AddProvider(ctx context.Context, p ProviderConfig) (ProviderID, err
 	if p.Name == "" || p.IssuerURL == "" || p.ClientID == "" {
 		return "", fmt.Errorf("directoryoidc: missing required fields")
 	}
+	secretRef := "inline:" + p.Name
+	if p.ClientSecretRef != "" {
+		if !sysconfig.IsSecretReference(p.ClientSecretRef) {
+			return "", fmt.Errorf("%w: must be \"$VAR\" or \"file:/path\"", ErrInvalidSecretRef)
+		}
+		resolved, err := sysconfig.ResolveSecretStrict(p.ClientSecretRef)
+		if err != nil {
+			return "", fmt.Errorf("%w: %v", ErrInvalidSecretRef, err)
+		}
+		secretRef = p.ClientSecretRef
+		p.ClientSecret = resolved
+	}
 	dctx, cancel := context.WithTimeout(oidc.ClientContext(ctx, r.http), defaultTimeout)
 	defer cancel()
 	prov, err := oidc.NewProvider(dctx, p.IssuerURL)
@@ -248,7 +283,7 @@ func (r *RP) AddProvider(ctx context.Context, p ProviderConfig) (ProviderID, err
 		Name:                p.Name,
 		IssuerURL:           p.IssuerURL,
 		ClientID:            p.ClientID,
-		ClientSecretRef:     "inline:" + p.Name,
+		ClientSecretRef:     secretRef,
 		Scopes:              scopesWithOpenID(p.Scopes),
 		AutoProvision:       p.AutoProvision,
 		AutoProvisionDomain: p.AutoProvisionDomain,
@@ -289,6 +324,7 @@ func (r *RP) ListProviders(ctx context.Context) ([]Provider, error) {
 	for _, row := range rows {
 		id := ProviderID(row.Name)
 		cfg := r.configs[id]
+		_, loaded := r.discover[id]
 		out = append(out, Provider{
 			ID:                  id,
 			Name:                row.Name,
@@ -298,6 +334,7 @@ func (r *RP) ListProviders(ctx context.Context) ([]Provider, error) {
 			Scopes:              scopesWithOpenID(row.Scopes),
 			AutoProvision:       row.AutoProvision,
 			AutoProvisionDomain: row.AutoProvisionDomain,
+			Available:           loaded || sysconfig.IsSecretReference(row.ClientSecretRef),
 		})
 	}
 	return out, nil
@@ -328,28 +365,52 @@ func (r *RP) DeleteProvider(ctx context.Context, id ProviderID) error {
 // The returned authURL is the OAuth2 redirect; the caller hands the
 // state back on CompleteLink.
 func (r *RP) BeginLink(ctx context.Context, pid PrincipalID, providerID ProviderID) (authURL, state string, err error) {
+	return r.beginLink(ctx, pid, providerID, "")
+}
+
+// BeginLinkAt is BeginLink with the provider's configured RedirectURL
+// overridden for this one flow; the Suite's browser callback
+// (GET /api/v1/oidc/callback) uses it so the redirect_uri is derived
+// from the server's public origin.
+func (r *RP) BeginLinkAt(ctx context.Context, pid PrincipalID, providerID ProviderID, redirectURL string) (authURL, state string, err error) {
+	if redirectURL == "" {
+		return "", "", fmt.Errorf("%w: redirectURL required", ErrInvalidState)
+	}
+	return r.beginLink(ctx, pid, providerID, redirectURL)
+}
+
+func (r *RP) beginLink(ctx context.Context, pid PrincipalID, providerID ProviderID, redirectOverride string) (authURL, state string, err error) {
 	if err := ctx.Err(); err != nil {
 		return "", "", err
 	}
-	prov, cfg, secret, ok := r.lookupProvider(providerID)
-	if !ok {
-		return "", "", fmt.Errorf("%w: provider %s", ErrNotFound, providerID)
+	if pid == 0 {
+		return "", "", fmt.Errorf("%w: principal required", ErrInvalidState)
+	}
+	prov, cfg, secret, err := r.lookupProvider(ctx, providerID)
+	if err != nil {
+		return "", "", err
+	}
+	if redirectOverride != "" {
+		cfg.RedirectURL = redirectOverride
 	}
 	st, nonce, err := r.newStateAndNonce()
 	if err != nil {
 		return "", "", err
 	}
+	verifier := oauth2.GenerateVerifier()
 	r.mu.Lock()
 	r.gcExpiredLocked()
 	r.pending[st] = pendingAuth{
-		providerID:  providerID,
-		principalID: pid,
-		nonce:       nonce,
-		createdAt:   r.clk.Now(),
+		providerID:       providerID,
+		principalID:      pid,
+		nonce:            nonce,
+		createdAt:        r.clk.Now(),
+		redirectOverride: redirectOverride,
+		pkceVerifier:     verifier,
 	}
 	r.mu.Unlock()
 	oauthCfg := oauth2Config(prov, cfg, secret)
-	authURL = oauthCfg.AuthCodeURL(st, oidc.Nonce(nonce))
+	authURL = oauthCfg.AuthCodeURL(st, oidc.Nonce(nonce), oauth2.S256ChallengeOption(verifier))
 	r.logger.LogAttrs(ctx, slog.LevelInfo, "directoryoidc.redirect",
 		slog.String("activity", observe.ActivityAudit),
 		slog.String("flow", "link"),
@@ -386,9 +447,9 @@ func (r *RP) beginSignIn(ctx context.Context, providerID ProviderID, redirectOve
 	if err := ctx.Err(); err != nil {
 		return "", "", err
 	}
-	prov, cfg, secret, ok := r.lookupProvider(providerID)
-	if !ok {
-		return "", "", fmt.Errorf("%w: provider %s", ErrNotFound, providerID)
+	prov, cfg, secret, err := r.lookupProvider(ctx, providerID)
+	if err != nil {
+		return "", "", err
 	}
 	if redirectOverride != "" {
 		cfg.RedirectURL = redirectOverride
@@ -397,6 +458,7 @@ func (r *RP) beginSignIn(ctx context.Context, providerID ProviderID, redirectOve
 	if err != nil {
 		return "", "", err
 	}
+	verifier := oauth2.GenerateVerifier()
 	r.mu.Lock()
 	r.gcExpiredLocked()
 	r.pending[st] = pendingAuth{
@@ -404,10 +466,11 @@ func (r *RP) beginSignIn(ctx context.Context, providerID ProviderID, redirectOve
 		nonce:            nonce,
 		createdAt:        r.clk.Now(),
 		redirectOverride: redirectOverride,
+		pkceVerifier:     verifier,
 	}
 	r.mu.Unlock()
 	oauthCfg := oauth2Config(prov, cfg, secret)
-	authURL = oauthCfg.AuthCodeURL(st, oidc.Nonce(nonce))
+	authURL = oauthCfg.AuthCodeURL(st, oidc.Nonce(nonce), oauth2.S256ChallengeOption(verifier))
 	r.logger.LogAttrs(ctx, slog.LevelInfo, "directoryoidc.redirect",
 		slog.String("activity", observe.ActivityAudit),
 		slog.String("flow", "sign-in"),
@@ -440,7 +503,7 @@ func (r *RP) CompleteLink(ctx context.Context, state, code string) (PrincipalID,
 		slog.String("provider", string(pending.providerID)),
 		slog.Uint64("principal_id", uint64(pending.principalID)),
 	)
-	sub, _, err := r.exchangeAndVerify(ctx, pending, code)
+	sub, claims, err := r.exchangeAndVerify(ctx, pending, code)
 	if err != nil {
 		r.logger.LogAttrs(ctx, slog.LevelWarn, "directoryoidc.callback.failed",
 			slog.String("activity", observe.ActivityAudit),
@@ -451,10 +514,12 @@ func (r *RP) CompleteLink(ctx context.Context, state, code string) (PrincipalID,
 		)
 		return 0, err
 	}
+	emailAtProvider, _ := claims["email"].(string)
 	if err := r.meta.LinkOIDC(ctx, store.OIDCLink{
-		PrincipalID:  pending.principalID,
-		ProviderName: string(pending.providerID),
-		Subject:      sub,
+		PrincipalID:     pending.principalID,
+		ProviderName:    string(pending.providerID),
+		Subject:         sub,
+		EmailAtProvider: emailAtProvider,
 	}); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			return 0, fmt.Errorf("%w: already linked", ErrConflict)
@@ -836,9 +901,9 @@ func (r *RP) VerifyAccessToken(ctx context.Context, providerID, token string) (P
 		return 0, fmt.Errorf("%w: provider hint required", ErrInvalidState)
 	}
 	id := ProviderID(providerID)
-	prov, cfg, _, ok := r.lookupProvider(id)
-	if !ok {
-		return 0, fmt.Errorf("%w: provider %s", ErrNotFound, providerID)
+	prov, cfg, _, err := r.lookupProvider(ctx, id)
+	if err != nil {
+		return 0, err
 	}
 	verifier := prov.Verifier(&oidc.Config{ClientID: cfg.ClientID})
 	idTok, err := verifier.Verify(oidc.ClientContext(ctx, r.http), token)
@@ -888,18 +953,77 @@ func audMatchesClientID(aud []string, clientID string) bool {
 }
 
 // lookupProvider returns the go-oidc Provider, the registered config,
-// and the (in-memory) client secret for id. ok is false when the
-// provider is not registered.
-func (r *RP) lookupProvider(id ProviderID) (*oidc.Provider, ProviderConfig, string, bool) {
+// and the client secret for id. A provider registered in the store but
+// not yet in memory (the process restarted since AddProvider) is loaded
+// on first use: its secret reference is resolved and discovery runs
+// once, then the result is cached. Returns ErrNotFound for an
+// unregistered provider, ErrProviderUnavailable when the stored secret
+// reference does not resolve, and ErrProviderDiscoveryFailed when the
+// issuer cannot be reached.
+func (r *RP) lookupProvider(ctx context.Context, id ProviderID) (*oidc.Provider, ProviderConfig, string, error) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	prov, ok := r.discover[id]
-	if !ok {
-		return nil, ProviderConfig{}, "", false
-	}
 	cfg := r.configs[id]
 	secret := r.secrets[id]
-	return prov, cfg, secret, true
+	r.mu.Unlock()
+	if ok {
+		return prov, cfg, secret, nil
+	}
+	return r.loadProvider(ctx, id)
+}
+
+// loadProvider builds the in-memory handles for a provider from its
+// store row. Discovery runs without holding r.mu; two concurrent loads
+// of the same provider both succeed and the later one's handles win,
+// which is harmless because they are equivalent.
+func (r *RP) loadProvider(ctx context.Context, id ProviderID) (*oidc.Provider, ProviderConfig, string, error) {
+	row, err := r.meta.GetOIDCProvider(ctx, string(id))
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, ProviderConfig{}, "", fmt.Errorf("%w: provider %s", ErrNotFound, id)
+		}
+		return nil, ProviderConfig{}, "", fmt.Errorf("directoryoidc: load provider: %w", err)
+	}
+	if !sysconfig.IsSecretReference(row.ClientSecretRef) {
+		r.logger.LogAttrs(ctx, slog.LevelWarn, "directoryoidc.provider.unavailable",
+			slog.String("activity", observe.ActivitySystem),
+			slog.String("provider", string(id)),
+			slog.String("reason", "client secret is not a resolvable reference; re-register the provider with client_secret_ref"))
+		return nil, ProviderConfig{}, "", fmt.Errorf("%w: provider %s has no resolvable client secret", ErrProviderUnavailable, id)
+	}
+	secret, err := sysconfig.ResolveSecretStrict(row.ClientSecretRef)
+	if err != nil {
+		r.logger.LogAttrs(ctx, slog.LevelWarn, "directoryoidc.provider.unavailable",
+			slog.String("activity", observe.ActivitySystem),
+			slog.String("provider", string(id)),
+			slog.String("reason", err.Error()))
+		return nil, ProviderConfig{}, "", fmt.Errorf("%w: provider %s: %v", ErrProviderUnavailable, id, err)
+	}
+	dctx, cancel := context.WithTimeout(oidc.ClientContext(ctx, r.http), defaultTimeout)
+	defer cancel()
+	prov, err := oidc.NewProvider(dctx, row.IssuerURL)
+	if err != nil {
+		return nil, ProviderConfig{}, "", fmt.Errorf("%w: %v", ErrProviderDiscoveryFailed, err)
+	}
+	cfg := ProviderConfig{
+		Name:                row.Name,
+		IssuerURL:           row.IssuerURL,
+		ClientID:            row.ClientID,
+		ClientSecretRef:     row.ClientSecretRef,
+		Scopes:              row.Scopes,
+		AutoProvision:       row.AutoProvision,
+		AutoProvisionDomain: row.AutoProvisionDomain,
+	}
+	r.mu.Lock()
+	r.discover[id] = prov
+	r.secrets[id] = secret
+	r.configs[id] = cfg
+	r.mu.Unlock()
+	r.logger.LogAttrs(ctx, slog.LevelInfo, "directoryoidc.provider.load",
+		slog.String("activity", observe.ActivitySystem),
+		slog.String("provider", string(id)),
+		slog.String("issuer", row.IssuerURL))
+	return prov, cfg, secret, nil
 }
 
 // takePending removes and returns the pending-auth entry for state.
@@ -951,9 +1075,9 @@ func (r *RP) gcExpiredLocked() {
 // group/role claim-mapping evaluation, epic #188 -- can look up any claim
 // name without this package needing to know it in advance).
 func (r *RP) exchangeAndVerify(ctx context.Context, p pendingAuth, code string) (sub string, claims map[string]any, err error) {
-	prov, cfg, secret, ok := r.lookupProvider(p.providerID)
-	if !ok {
-		return "", nil, fmt.Errorf("%w: provider %s", ErrNotFound, p.providerID)
+	prov, cfg, secret, err := r.lookupProvider(ctx, p.providerID)
+	if err != nil {
+		return "", nil, err
 	}
 	if p.redirectOverride != "" {
 		cfg.RedirectURL = p.redirectOverride
@@ -961,7 +1085,11 @@ func (r *RP) exchangeAndVerify(ctx context.Context, p pendingAuth, code string) 
 	exCtx, cancel := context.WithTimeout(oidc.ClientContext(ctx, r.http), defaultTimeout)
 	defer cancel()
 	oauthCfg := oauth2Config(prov, cfg, secret)
-	tok, err := oauthCfg.Exchange(exCtx, code)
+	var exOpts []oauth2.AuthCodeOption
+	if p.pkceVerifier != "" {
+		exOpts = append(exOpts, oauth2.VerifierOption(p.pkceVerifier))
+	}
+	tok, err := oauthCfg.Exchange(exCtx, code, exOpts...)
 	if err != nil {
 		return "", nil, fmt.Errorf("directoryoidc: exchange: %w", err)
 	}

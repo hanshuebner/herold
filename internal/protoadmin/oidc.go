@@ -10,12 +10,20 @@ import (
 )
 
 type createOIDCProviderRequest struct {
-	Name         string   `json:"name"`
-	Issuer       string   `json:"issuer"`
-	ClientID     string   `json:"client_id"`
-	ClientSecret string   `json:"client_secret"`
-	RedirectURL  string   `json:"redirect_url,omitempty"`
-	Scopes       []string `json:"scopes,omitempty"`
+	Name         string `json:"name"`
+	Issuer       string `json:"issuer"`
+	ClientID     string `json:"client_id"`
+	ClientSecret string `json:"client_secret"`
+	// ClientSecretRef is a secret reference ("$VAR" or "file:/path"),
+	// persisted and resolved again whenever the provider is loaded after a
+	// restart. Preferred over ClientSecret, which lives in process memory
+	// only.
+	ClientSecretRef string `json:"client_secret_ref,omitempty"`
+	// RedirectURL is the redirect_uri for flows started through the Go
+	// API without an explicit one. The Suite's browser flows always use
+	// <public origin>/api/v1/oidc/callback.
+	RedirectURL string   `json:"redirect_url,omitempty"`
+	Scopes      []string `json:"scopes,omitempty"`
 	// AutoProvision / AutoProvisionDomain opt this provider into
 	// REQ-AUTH-56 first-login auto-provisioning (issue #230). Setting
 	// AutoProvision true requires a server:superadmin caller: it lets
@@ -73,6 +81,7 @@ func (s *Server) handleCreateOIDCProvider(w http.ResponseWriter, r *http.Request
 		IssuerURL:           req.Issuer,
 		ClientID:            req.ClientID,
 		ClientSecret:        req.ClientSecret,
+		ClientSecretRef:     req.ClientSecretRef,
 		RedirectURL:         req.RedirectURL,
 		Scopes:              req.Scopes,
 		AutoProvision:       req.AutoProvision,
@@ -369,6 +378,10 @@ func (s *Server) writeOIDCError(w http.ResponseWriter, r *http.Request, err erro
 		writeProblem(w, r, http.StatusBadRequest, "invalid_state", err.Error(), "")
 	case errors.Is(err, directoryoidc.ErrProviderDiscoveryFailed):
 		writeProblem(w, r, http.StatusBadRequest, "discovery_failed", err.Error(), "")
+	case errors.Is(err, directoryoidc.ErrInvalidSecretRef):
+		writeProblem(w, r, http.StatusBadRequest, "invalid_client_secret_ref", err.Error(), "")
+	case errors.Is(err, directoryoidc.ErrProviderUnavailable):
+		writeProblem(w, r, http.StatusServiceUnavailable, "provider_unavailable", err.Error(), "")
 	default:
 		s.writeStoreError(w, r, err)
 	}

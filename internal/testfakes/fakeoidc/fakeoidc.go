@@ -76,6 +76,10 @@ type Options struct {
 	// ClientSecret is the OAuth client_secret the provider expects on
 	// the token endpoint. Defaults to "fakeoidc-secret".
 	ClientSecret string
+	// RequirePKCE makes /authorize refuse a request without an S256
+	// code_challenge, the way Pocket ID treats a client with PKCE
+	// enabled. A challenge that is present is always enforced at /token.
+	RequirePKCE bool
 }
 
 // Server is a running fake OIDC provider backed by httptest.
@@ -83,6 +87,7 @@ type Server struct {
 	ts           *httptest.Server
 	clientID     string
 	clientSecret string
+	requirePKCE  bool
 	key          *rsa.PrivateKey
 	kid          string
 	issuer       string
@@ -96,9 +101,10 @@ type Server struct {
 // authRequest is the state captured at /authorize time and consumed at
 // /token time.
 type authRequest struct {
-	redirectURI string
-	nonce       string
-	identity    Identity
+	redirectURI   string
+	nonce         string
+	codeChallenge string
+	identity      Identity
 }
 
 // NewServer starts a fake OIDC provider and returns it. The server is
@@ -118,6 +124,7 @@ func NewServer(opts Options) *Server {
 	s := &Server{
 		clientID:     opts.ClientID,
 		clientSecret: opts.ClientSecret,
+		requirePKCE:  opts.RequirePKCE,
 		key:          key,
 		kid:          "fakeoidc-key",
 		def:          defaultIdentity,
@@ -177,6 +184,7 @@ func (s *Server) handleDiscovery(w http.ResponseWriter, _ *http.Request) {
 		"response_types_supported":              []string{"code"},
 		"subject_types_supported":               []string{"public"},
 		"id_token_signing_alg_values_supported": []string{"RS256"},
+		"code_challenge_methods_supported":      []string{"S256"},
 	})
 }
 
@@ -220,6 +228,15 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid_request: bad redirect_uri", http.StatusBadRequest)
 		return
 	}
+	challenge := q.Get("code_challenge")
+	if challenge != "" && q.Get("code_challenge_method") != "S256" {
+		http.Error(w, "invalid_request: only S256 code_challenge_method is supported", http.StatusBadRequest)
+		return
+	}
+	if s.requirePKCE && challenge == "" {
+		http.Error(w, "invalid_request: code_challenge required", http.StatusBadRequest)
+		return
+	}
 
 	s.mu.Lock()
 	id := s.def
@@ -238,9 +255,10 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	s.counter++
 	code := "code-" + strconv.Itoa(s.counter)
 	s.authReqs[code] = authRequest{
-		redirectURI: redirectURI,
-		nonce:       q.Get("nonce"),
-		identity:    id,
+		redirectURI:   redirectURI,
+		nonce:         q.Get("nonce"),
+		codeChallenge: challenge,
+		identity:      id,
 	}
 	s.mu.Unlock()
 
@@ -270,6 +288,28 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		http.Error(w, "invalid_grant: unknown or used code", http.StatusBadRequest)
 		return
+	}
+	clientID, clientSecret, basic := r.BasicAuth()
+	if basic {
+		clientID, _ = url.QueryUnescape(clientID)
+		clientSecret, _ = url.QueryUnescape(clientSecret)
+	} else {
+		clientID, clientSecret = r.Form.Get("client_id"), r.Form.Get("client_secret")
+	}
+	if clientID != s.clientID || clientSecret != s.clientSecret {
+		http.Error(w, "invalid_client", http.StatusUnauthorized)
+		return
+	}
+	if r.Form.Get("redirect_uri") != req.redirectURI {
+		http.Error(w, "invalid_grant: redirect_uri does not match the authorization request", http.StatusBadRequest)
+		return
+	}
+	if req.codeChallenge != "" {
+		sum := sha256.Sum256([]byte(r.Form.Get("code_verifier")))
+		if base64.RawURLEncoding.EncodeToString(sum[:]) != req.codeChallenge {
+			http.Error(w, "invalid_grant: code_verifier does not match code_challenge", http.StatusBadRequest)
+			return
+		}
 	}
 
 	idTok, err := s.signIDToken(req)
@@ -335,6 +375,18 @@ func (s *Server) signIDToken(req authRequest) (string, error) {
 // callers that know their own redirect_uri).
 func FollowAuthorize(t testing.TB, authURL, redirectPrefix string) (code, state string) {
 	t.Helper()
+	loc := FollowAuthorizeURL(t, authURL)
+	if redirectPrefix != "" && !strings.HasPrefix(loc.String(), redirectPrefix) {
+		t.Fatalf("fakeoidc: unexpected redirect target: %s", loc)
+	}
+	return loc.Query().Get("code"), loc.Query().Get("state")
+}
+
+// FollowAuthorizeURL simulates a user-agent approving at the provider's
+// /authorize URL and returns the full redirect target (the relying
+// party's redirect_uri with ?code= and ?state= appended).
+func FollowAuthorizeURL(t testing.TB, authURL string) *url.URL {
+	t.Helper()
 	client := &http.Client{
 		Timeout: 5 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error {
@@ -350,8 +402,5 @@ func FollowAuthorize(t testing.TB, authURL, redirectPrefix string) (code, state 
 	if err != nil {
 		t.Fatalf("fakeoidc: no redirect (status=%d): %v", resp.StatusCode, err)
 	}
-	if redirectPrefix != "" && !strings.HasPrefix(loc.String(), redirectPrefix) {
-		t.Fatalf("fakeoidc: unexpected redirect target: %s", loc)
-	}
-	return loc.Query().Get("code"), loc.Query().Get("state")
+	return loc
 }
