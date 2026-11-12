@@ -312,7 +312,24 @@ path = "/usr/lib/herold/plugins/herold-dns-cloudflare"
 type = "dns"
 lifecycle = "long-running"
 options.api_token_env = "$CF_API_TOKEN"
+
+[[plugin]]
+name = "hetzner"
+path = "/usr/lib/herold/plugins/herold-dns-hetzner"
+type = "dns"
+lifecycle = "long-running"
+options.api_token_env = "$HCLOUD_TOKEN"        # Hetzner Cloud API token, read+write
+options.zone_id = "example.com"                # optional: zone id or name
 ```
+
+`herold-dns-hetzner` manages records in Hetzner Cloud DNS zones
+(Hetzner Console, `api.hetzner.cloud`). The token is a Hetzner Cloud
+project API token with read and write permission. Without `zone_id`
+the plugin finds the zone by name, starting at the requested domain
+and walking up to its parent domains. Optional tuning:
+`propagation_wait_seconds` (default 60), `default_ttl` (default 300,
+minimum 60), `request_timeout_seconds` (default 30), `retry_attempts`
+(default 3).
 
 Secret-bearing option keys (containing `secret`, `token`, `password`,
 `api_key`, `apikey`, `credential`) must reference an env var
