@@ -12,3 +12,6 @@ var SeedFromAddressForTest = seedFromAddress
 // the outbound_session_test package can verify byte-exact streaming
 // dot-stuffing against reference inputs.
 var WriteDotStuffedForTest = writeDotStuffed
+
+// MaxSessionAttemptsPerMXForTest exposes the per-MX session cap.
+const MaxSessionAttemptsPerMXForTest = maxSessionAttemptsPerMX

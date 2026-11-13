@@ -98,10 +98,12 @@ type ClientOptions struct {
 	DANE bool
 	// TLSRPTReporter receives per-failure TLS-RPT entries. Optional.
 	TLSRPTReporter TLSRPTReporter
-	// DialFunc, when non-nil, replaces the default TCP dialer. The
-	// address passed is "host:25" with host as the resolved MX name.
-	// Production callers leave this nil; tests inject a router that
-	// maps MX hostnames to in-process listeners.
+	// DialFunc, when non-nil, replaces the default TCP dialer. For
+	// direct-MX delivery the address passed is "ip:25" for one address
+	// the Resolver returned for the MX host (the per-address loop runs
+	// unchanged); for smart-host delivery it is the configured
+	// "host:port". Production callers leave this nil; tests inject a
+	// router that maps addresses to in-process listeners.
 	DialFunc func(ctx context.Context, network, address string) (net.Conn, error)
 	// SmartHost is the operator's [smart_host] block (REQ-FLOW-
 	// SMARTHOST-01..08). Defaults to the disabled zero shape, in

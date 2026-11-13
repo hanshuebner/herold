@@ -245,9 +245,27 @@ func (s *outboundSession) close(ctx context.Context) {
 	_ = s.conn.Close()
 }
 
-// deliverToMX is the per-candidate workhorse: dial, greet, EHLO, optional
-// STARTTLS + EHLO, MAIL/RCPT/DATA. Outcome and policy are populated on
-// every return path so the caller never sees a zero-value Status.
+// maxSessionAttemptsPerMX bounds how many addresses of one MX host get an
+// SMTP session within a single delivery attempt. Large providers publish
+// several addresses per family (Exchange Online lists 4 A and 4 AAAA) and
+// shed load per connection, so a second or third address usually
+// accepts; the cap keeps a host that refuses everything from consuming
+// the whole attempt and from being hammered by one queue row.
+const maxSessionAttemptsPerMX = 4
+
+// deliverToMX is the per-candidate workhorse. It walks the MX host's
+// addresses (families interleaved, capped at maxSessionAttemptsPerMX
+// sessions) and runs deliverOnConn on each. A transient failure that
+// happens before the remote accepted MAIL FROM moves on to the next
+// address; a success, a permanent verdict, or any failure once MAIL FROM
+// was accepted ends the attempt for this host.
+//
+// Failures after MAIL FROM acceptance are not retried on another
+// address: the RCPT, DATA and end-of-data replies are the host's verdict
+// about this message (greylisting, recipient or policy deferrals), and
+// the body may already be in flight, so a second transmission risks
+// duplicate delivery. Outcome and policy are populated on every return
+// path so the caller never sees a zero-value Status.
 func (c *Client) deliverToMX(
 	ctx context.Context,
 	req DeliveryRequest,
@@ -260,15 +278,77 @@ func (c *Client) deliverToMX(
 		MXHost:      cand.host,
 		AttemptedAt: startedAt,
 	}
-
-	// Dial with a per-candidate deadline.
-	dialCtx, cancel := context.WithTimeout(ctx, c.dialTimeout)
-	defer cancel()
-	conn, derr := c.dialMX(dialCtx, cand.host)
-	if derr != nil {
+	ips, err := c.mxAddresses(ctx, cand.host)
+	if err != nil {
 		out.Status = DeliveryTransient
-		out.Diagnostic = fmt.Sprintf("dial %s: %s", cand.host, derr.Error())
+		out.Diagnostic = fmt.Sprintf("dial %s: %s", cand.host, err.Error())
 		return out
+	}
+	var last DeliveryOutcome
+	sessions := 0
+	for _, ip := range ips {
+		if sessions >= maxSessionAttemptsPerMX || ctx.Err() != nil {
+			break
+		}
+		addr := net.JoinHostPort(ip.String(), "25")
+		dialCtx, cancel := context.WithTimeout(ctx, c.dialTimeout)
+		conn, derr := c.dialAddr(dialCtx, addr)
+		cancel()
+		if derr != nil {
+			if sessions == 0 {
+				out.Status = DeliveryTransient
+				out.Diagnostic = fmt.Sprintf("dial %s: %s", cand.host, derr.Error())
+				last = out
+			}
+			c.log.InfoContext(ctx, "outbound: address dial failed; trying next address",
+				slog.String("activity", observe.ActivitySystem),
+				slog.String("domain", domain),
+				slog.String("mx", cand.host),
+				slog.String("addr", addr),
+				slog.String("err", derr.Error()))
+			continue
+		}
+		sessions++
+		mailAccepted := false
+		res := c.deliverOnConn(ctx, req, domain, cand, policy, startedAt, conn, &mailAccepted)
+		if res.Status != DeliveryTransient || mailAccepted {
+			return res
+		}
+		last = res
+		c.log.InfoContext(ctx, "outbound: address transient before MAIL; trying next address",
+			slog.String("activity", observe.ActivitySystem),
+			slog.String("domain", domain),
+			slog.String("mx", cand.host),
+			slog.String("addr", addr),
+			slog.Int("smtp_code", res.SMTPCode),
+			slog.String("diag", res.Diagnostic))
+	}
+	if last.Status == DeliveryUnknown {
+		out.Status = DeliveryTransient
+		out.Diagnostic = fmt.Sprintf("dial %s: no addresses", cand.host)
+		return out
+	}
+	return last
+}
+
+// deliverOnConn runs one SMTP session on an established conn: greet,
+// EHLO, optional STARTTLS + EHLO, MAIL/RCPT/DATA. The conn is closed
+// (QUIT, then close) before it returns. *mailAccepted is set once the
+// remote accepted MAIL FROM, which is the point after which the caller
+// does not move on to another address.
+func (c *Client) deliverOnConn(
+	ctx context.Context,
+	req DeliveryRequest,
+	domain string,
+	cand mxCandidate,
+	policy *MTASTSPolicy,
+	startedAt time.Time,
+	conn net.Conn,
+	mailAccepted *bool,
+) DeliveryOutcome {
+	out := DeliveryOutcome{
+		MXHost:      cand.host,
+		AttemptedAt: startedAt,
 	}
 	// Apply the session-wide deadline; every read/write inherits it.
 	deadline := c.clk.Now().Add(c.sessionTimeout)
@@ -401,6 +481,7 @@ func (c *Client) deliverToMX(
 		if mc/100 != 2 {
 			return mapReplyOutcome(out, mc, me, mt, "mail from")
 		}
+		*mailAccepted = true
 		rc, re, rt, err := sess.readReply(ctx)
 		if err != nil {
 			out.Status = DeliveryTransient
@@ -434,6 +515,7 @@ func (c *Client) deliverToMX(
 		if mc/100 != 2 {
 			return mapReplyOutcome(out, mc, me, mt, "mail from")
 		}
+		*mailAccepted = true
 		if err := sess.command(ctx, rcptLine); err != nil {
 			out.Status = DeliveryTransient
 			out.Diagnostic = fmt.Sprintf("rcpt write: %s", err.Error())
@@ -512,34 +594,59 @@ func (c *Client) deliverToMX(
 	return mapReplyOutcome(out, fc, fe, ft, "data final")
 }
 
-// dialMX dials the SMTP service on host (port 25). When dialFunc is set
-// (tests), it is called directly with "host:25" and is expected to do
-// its own IP resolution / mapping. In production, we resolve A/AAAA via
-// the Resolver and dial each address until one succeeds; the Resolver
-// call is the only DNS step (REQ-PROTO: never call net.Lookup* directly).
-func (c *Client) dialMX(ctx context.Context, host string) (net.Conn, error) {
+// dialAddr opens a TCP connection to addr ("ip:25"). When dialFunc is set
+// (tests) it replaces the default dialer; it receives the same per-address
+// string the production dialer does.
+func (c *Client) dialAddr(ctx context.Context, addr string) (net.Conn, error) {
 	if c.dialFunc != nil {
-		return c.dialFunc(ctx, "tcp", net.JoinHostPort(host, "25"))
+		return c.dialFunc(ctx, "tcp", addr)
 	}
+	return c.dialer.DialContext(ctx, "tcp", addr)
+}
+
+// mxAddresses resolves host through the Resolver (the only DNS step;
+// never net.Lookup* directly) and returns its addresses in dial order:
+// families alternate, each family keeps the resolver's order, and the
+// family the resolver lists first leads.
+func (c *Client) mxAddresses(ctx context.Context, host string) ([]net.IP, error) {
 	ips, err := c.resolver.IPLookup(ctx, host)
 	if err != nil {
-		// No address records — surface as a dial-shaped error so the
+		// No address records surface as a dial-shaped error so the
 		// caller maps it to Transient (next-MX fallback).
 		return nil, fmt.Errorf("ip lookup %s: %w", host, err)
 	}
-	var lastErr error
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("no addresses for %s", host)
+	}
+	return interleaveFamilies(ips), nil
+}
+
+// interleaveFamilies alternates IPv4 and IPv6 addresses, starting with the
+// family of ips[0] and keeping the input order within each family. Once one
+// family is exhausted the remainder of the other follows.
+func interleaveFamilies(ips []net.IP) []net.IP {
+	var v4, v6 []net.IP
 	for _, ip := range ips {
-		addr := net.JoinHostPort(ip.String(), "25")
-		conn, derr := c.dialer.DialContext(ctx, "tcp", addr)
-		if derr == nil {
-			return conn, nil
+		if ip.To4() != nil {
+			v4 = append(v4, ip)
+		} else {
+			v6 = append(v6, ip)
 		}
-		lastErr = derr
 	}
-	if lastErr == nil {
-		lastErr = fmt.Errorf("no addresses for %s", host)
+	first, second := v4, v6
+	if ips[0].To4() == nil {
+		first, second = v6, v4
 	}
-	return nil, lastErr
+	out := make([]net.IP, 0, len(ips))
+	for i := 0; i < len(first) || i < len(second); i++ {
+		if i < len(first) {
+			out = append(out, first[i])
+		}
+		if i < len(second) {
+			out = append(out, second[i])
+		}
+	}
+	return out
 }
 
 // mapReplyOutcome maps a non-2xx SMTP reply onto a DeliveryOutcome.
