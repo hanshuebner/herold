@@ -73,7 +73,9 @@ func orderedEnv(t *testing.T, order []string, scripts map[string]addrScript) *fa
 		HostName: "client.test",
 		Resolver: fallbackResolver{ips: ips},
 		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Clock:    clock.NewFake(time.Date(2026, 11, 13, 10, 0, 0, 0, time.UTC)),
+		// The session deadline is set on the conn from this clock, and
+		// net.Pipe enforces it against wall time, so the clock is real.
+		Clock: clock.NewReal(),
 		DialFunc: func(_ context.Context, _, address string) (net.Conn, error) {
 			env.mu.Lock()
 			env.dialed = append(env.dialed, address)
