@@ -26,6 +26,11 @@ type addrScript struct {
 	mail           string // default "250 2.1.0 ok"
 	rcpt           string // default "250 2.1.5 ok"
 	final          string // default "250 2.0.0 queued"
+	// starttls scripts the reply to STARTTLS: "drop" closes the
+	// connection without replying; a "220 ..." reply is followed by an
+	// immediate close, so the TLS handshake fails; anything else is sent
+	// as the reply. Empty leaves STARTTLS unknown (500).
+	starttls string
 }
 
 func (s addrScript) or(v, def string) string {
@@ -117,6 +122,14 @@ func (e *fallbackEnv) serve(addr string, sc addrScript, conn net.Conn) {
 			w(sc.or(sc.mail, "250 2.1.0 ok"))
 		case strings.HasPrefix(cmd, "RCPT"):
 			w(sc.or(sc.rcpt, "250 2.1.5 ok"))
+		case cmd == "STARTTLS" && sc.starttls != "":
+			if sc.starttls == "drop" {
+				return
+			}
+			w(sc.starttls)
+			if replyCode(sc.starttls) == 220 {
+				return
+			}
 		case cmd == "DATA":
 			e.mu.Lock()
 			e.dataStarted[addr] = true
@@ -224,6 +237,49 @@ func TestMXAddressFallback_PreMailTransientTriesNextAddress(t *testing.T) {
 			}
 			if got, want := env.dialedAddrs(), []string{a25(v6a), a25(v4a)}; !eqStrings(got, want) {
 				t.Fatalf("dialed %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+// A STARTTLS or TLS handshake failure on the first address is a pre-MAIL
+// transient failure and moves on to the next address. The client has no
+// MTA-STS/DANE policy and the message does not carry REQUIRETLS, so TLS is
+// opportunistic: a clean 454 refusal falls back to plaintext on the same
+// connection (covered by the last case), while a connection that dies at
+// STARTTLS or mid-handshake leaves nothing to continue on, the session
+// ends before MAIL was accepted, and the next address is tried.
+func TestMXAddressFallback_StartTLSFailureTriesNextAddress(t *testing.T) {
+	const ehloTLS = "250-mx.test\r\n250 STARTTLS"
+	cases := []struct {
+		name      string
+		first     addrScript
+		wantDialN int
+	}{
+		{"connection_dropped_at_starttls", addrScript{ehlo: ehloTLS, starttls: "drop"}, 2},
+		{"reset_mid_handshake", addrScript{ehlo: ehloTLS, starttls: "220 2.0.0 go ahead"}, 2},
+		{"454_falls_back_to_plaintext_same_address", addrScript{ehlo: ehloTLS, starttls: "454 4.7.0 TLS not available"}, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := orderedEnv(t, []string{v6a, v4a}, map[string]addrScript{
+				a25(v6a): tc.first,
+				a25(v4a): {},
+			})
+			out := env.deliver(t)
+			if out.Status != protosmtp.DeliverySuccess {
+				t.Fatalf("status = %v diag=%q, want success", out.Status, out.Diagnostic)
+			}
+			want := []string{a25(v6a), a25(v4a)}[:tc.wantDialN]
+			if got := env.dialedAddrs(); !eqStrings(got, want) {
+				t.Fatalf("dialed %v, want %v", got, want)
+			}
+			delivered := a25(v4a)
+			if tc.wantDialN == 1 {
+				delivered = a25(v6a)
+			}
+			if !env.gotData(delivered) {
+				t.Fatalf("message did not reach %s", delivered)
 			}
 		})
 	}
