@@ -509,6 +509,7 @@ class MailStore {
     this.listHiddenJunkTrashCount = null;
     this.threadLoadStatus = new Map();
     this.#threadFetchApplied = new Map();
+    this.#emailWriteSeq = new Map();
     this.threadLoadError = new Map();
     this.openThreadId = null;
     this.pendingArrivals = new Map();
@@ -1213,6 +1214,7 @@ class MailStore {
       // Email/setByQuery to this same filter.
       this.#searchScopedFilter = scopedFilter;
 
+      const fetchSeq = this.#nextThreadFetchSeq();
       const { responses } = await jmap.batch((b) => {
         const q = b.call(
           'Email/query',
@@ -1269,8 +1271,8 @@ class MailStore {
       const memberGetResult = invocationArgs<{ list: Email[] }>(responses[3]);
 
       const next = new Map(this.emails);
-      for (const e of getResult.list) next.set(e.id, mergeEmailListFetch(next.get(e.id), e));
-      for (const e of memberGetResult.list) next.set(e.id, mergeEmailListFetch(next.get(e.id), e));
+      this.#writeListEmails(next, getResult.list, fetchSeq);
+      this.#writeListEmails(next, memberGetResult.list, fetchSeq);
       this.emails = next;
 
       const nextThreads = new Map(this.threads);
@@ -2212,6 +2214,7 @@ class MailStore {
         if (folder === 'sent' || folder === 'drafts') sortProperty = 'sentAt';
       }
 
+      const fetchSeq = this.#nextThreadFetchSeq();
       const { responses } = await jmap.batch((b) => {
         const q = b.call(
           'Email/query',
@@ -2296,11 +2299,11 @@ class MailStore {
         : null;
 
       const next = new Map(this.emails);
-      for (const e of getResult.list) next.set(e.id, mergeEmailListFetch(next.get(e.id), e));
+      this.#writeListEmails(next, getResult.list, fetchSeq);
       // Merge thread member emails (non-representative members from other
       // mailboxes) into the cache so threadDedupeCount can deduplicate by
       // Message-ID without a separate round-trip (re #88).
-      for (const e of memberGetResult.list) next.set(e.id, mergeEmailListFetch(next.get(e.id), e));
+      this.#writeListEmails(next, memberGetResult.list, fetchSeq);
       this.emails = next;
       // Snoozed is soonest-wake-first, not receivedAt order (re #471) --
       // see sortIdsBySnoozedUntilAscending's docstring for the server-
@@ -2595,6 +2598,7 @@ class MailStore {
       // to the first FOLDER_PAGE_SIZE rows.
       const requestedLimit = Math.max(this.listEmailIds.length, FOLDER_PAGE_SIZE);
 
+      const fetchSeq = this.#nextThreadFetchSeq();
       const { responses } = await jmap.batch((b) => {
         const q = b.call(
           'Email/query',
@@ -2678,9 +2682,9 @@ class MailStore {
         : null;
 
       const next = new Map(this.emails);
-      for (const e of getResult.list) next.set(e.id, mergeEmailListFetch(next.get(e.id), e));
+      this.#writeListEmails(next, getResult.list, fetchSeq);
       // Merge thread member emails (re #88).
-      for (const e of memberGetResult.list) next.set(e.id, mergeEmailListFetch(next.get(e.id), e));
+      this.#writeListEmails(next, memberGetResult.list, fetchSeq);
 
       // Atomic swap: all three cells update together; the list never
       // sees a partial state where listEmailIds refers to email ids that
@@ -2747,6 +2751,7 @@ class MailStore {
 
     this.listLoadingMore = true;
     try {
+      const fetchSeq = this.#nextThreadFetchSeq();
       const { responses } = await jmap.batch((b) => {
         const q = b.call(
           'Email/query',
@@ -2801,8 +2806,8 @@ class MailStore {
       const memberGetResult = invocationArgs<{ list: Email[] }>(responses[3]);
 
       const next = new Map(this.emails);
-      for (const e of getResult.list) next.set(e.id, mergeEmailListFetch(next.get(e.id), e));
-      for (const e of memberGetResult.list) next.set(e.id, mergeEmailListFetch(next.get(e.id), e));
+      this.#writeListEmails(next, getResult.list, fetchSeq);
+      this.#writeListEmails(next, memberGetResult.list, fetchSeq);
       this.emails = next;
 
       const { items, hasMore } = appendPage(this.listEmailIds, queryResult.ids, {
@@ -2866,6 +2871,7 @@ class MailStore {
 
     this.searchLoadingMore = true;
     try {
+      const fetchSeq = this.#nextThreadFetchSeq();
       const { responses } = await jmap.batch((b) => {
         const q = b.call(
           'Email/query',
@@ -2919,8 +2925,8 @@ class MailStore {
       const memberGetResult = invocationArgs<{ list: Email[] }>(responses[3]);
 
       const next = new Map(this.emails);
-      for (const e of getResult.list) next.set(e.id, mergeEmailListFetch(next.get(e.id), e));
-      for (const e of memberGetResult.list) next.set(e.id, mergeEmailListFetch(next.get(e.id), e));
+      this.#writeListEmails(next, getResult.list, fetchSeq);
+      this.#writeListEmails(next, memberGetResult.list, fetchSeq);
       this.emails = next;
 
       const { items, hasMore } = appendPage(this.searchEmailIds, queryResult.ids, {
@@ -3023,6 +3029,42 @@ class MailStore {
    * response is applied only when no later-issued fetch of the same thread
    * has been applied already.
    */
+  /**
+   * Sequence of the newest fetch whose response wrote each cached email.
+   * List fetches (folder load/refresh, search, ...) and thread fetches
+   * share one counter; a response that was issued before the fetch which
+   * last wrote an email id must not overwrite that entry (re #570).
+   */
+  #emailWriteSeq = new Map<string, number>();
+
+  /**
+   * Writes a list fetch's emails into `next`, skipping entries a later-
+   * issued fetch already wrote, and merging with the cached body-complete
+   * copy via mergeEmailListFetch. When the merge had to drop a stale
+   * cached body (the list properties show the message changed), the
+   * affected ready threads are refetched so their readers do not stay
+   * body-less.
+   */
+  #writeListEmails(next: Map<string, Email>, list: Email[], seq: number): void {
+    const refetch = new Set<string>();
+    for (const e of list) {
+      if (seq < (this.#emailWriteSeq.get(e.id) ?? 0)) continue;
+      const existing = next.get(e.id);
+      const merged = mergeEmailListFetch(existing, e);
+      if (existing?.bodyValues !== undefined && merged.bodyValues === undefined) {
+        refetch.add(e.threadId);
+      }
+      next.set(e.id, merged);
+      this.#emailWriteSeq.set(e.id, seq);
+    }
+    for (const tid of refetch) {
+      if (this.threadLoadStatus.get(tid) !== 'ready') continue;
+      void this.refreshThread(tid).catch((err) => {
+        console.error('thread refresh after stale body drop failed', err);
+      });
+    }
+  }
+
   #threadFetchIssued = 0;
   #threadFetchApplied = new Map<string, number>();
 
@@ -3086,7 +3128,10 @@ class MailStore {
       this.threads = nextThreads;
 
       const nextEmails = new Map(this.emails);
-      for (const e of emailResult.list) nextEmails.set(e.id, e);
+      for (const e of emailResult.list) {
+        nextEmails.set(e.id, e);
+        this.#emailWriteSeq.set(e.id, fetchSeq);
+      }
       this.emails = nextEmails;
       this.#reconcileInboxRows();
 
@@ -3271,7 +3316,10 @@ class MailStore {
     this.threads = nextThreads;
 
     const nextEmails = new Map(this.emails);
-    for (const e of emailResult.list) nextEmails.set(e.id, e);
+    for (const e of emailResult.list) {
+      nextEmails.set(e.id, e);
+      this.#emailWriteSeq.set(e.id, fetchSeq);
+    }
     this.emails = nextEmails;
     this.#reconcileInboxRows();
   }
@@ -6150,9 +6198,27 @@ function wokeClearPatch(email: Email, seen: boolean, patch: Partial<Email>): Par
   return { ...patch, snoozeWokeAt: null, snoozeWokeFor: null };
 }
 
+/**
+ * Reports whether a cached body-complete email disagrees with fresh list
+ * properties on facts the body determines: whether it has a real
+ * (non-inline) attachment, or whether it is still a draft.
+ */
+export function emailBodyLooksStale(existing: Email, incoming: Email): boolean {
+  if (existing.attachments !== undefined) {
+    const cachedHasAttachment = existing.attachments.some((p) => p.disposition !== 'inline');
+    if (cachedHasAttachment !== incoming.hasAttachment) return true;
+  }
+  return !!existing.keywords.$draft !== !!incoming.keywords.$draft;
+}
+
 export function mergeEmailListFetch(existing: Email | undefined, incoming: Email): Email {
   if (incoming.bodyValues !== undefined) return incoming;
   if (existing?.bodyValues === undefined) return incoming;
+  // The cached body-complete copy is stale when the list properties show a
+  // message that changed in place: a draft sent with an attachment added
+  // keeps its id, so hasAttachment flips, or $draft is cleared (re #570).
+  // Keep only the incoming list properties; the caller refetches the body.
+  if (emailBodyLooksStale(existing, incoming)) return incoming;
   return {
     ...incoming,
     cc: existing.cc,
