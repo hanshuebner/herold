@@ -508,6 +508,7 @@ class MailStore {
     this.listUnfiltered = false;
     this.listHiddenJunkTrashCount = null;
     this.threadLoadStatus = new Map();
+    this.#threadFetchApplied = new Map();
     this.threadLoadError = new Map();
     this.openThreadId = null;
     this.pendingArrivals = new Map();
@@ -3012,11 +3013,35 @@ class MailStore {
     return this.mailAccountId ?? '';
   }
 
+  /**
+   * Thread fetches (loadThread / refreshThread) carry body properties and
+   * replace the cached Email objects wholesale. Responses can arrive out of
+   * order (an autosave-triggered refresh read before a send commits may
+   * land after the refresh the send triggered), and applying the older one
+   * would roll a sent message back to its draft-time attachments and
+   * keywords (re #570). Each fetch takes a sequence number when issued; a
+   * response is applied only when no later-issued fetch of the same thread
+   * has been applied already.
+   */
+  #threadFetchIssued = 0;
+  #threadFetchApplied = new Map<string, number>();
+
+  #nextThreadFetchSeq(): number {
+    return ++this.#threadFetchIssued;
+  }
+
+  #claimThreadFetch(threadId: string, seq: number): boolean {
+    if (seq < (this.#threadFetchApplied.get(threadId) ?? 0)) return false;
+    this.#threadFetchApplied.set(threadId, seq);
+    return true;
+  }
+
   async loadThread(threadId: string): Promise<void> {
     const status = this.threadStatus(threadId);
     if (status === 'loading' || status === 'ready') return;
     this.#setThreadStatus(threadId, 'loading');
     this.#clearThreadError(threadId);
+    const fetchSeq = this.#nextThreadFetchSeq();
     try {
       const accountId = this.#resolveThreadAccountId(threadId);
       if (!accountId) throw new Error('No Mail account on this session');
@@ -3045,6 +3070,12 @@ class MailStore {
       const emailResult = invocationArgs<{ list: Email[]; state: string }>(
         responses[1],
       );
+      // A newer fetch of this thread already landed; this response was read
+      // from an older server state, so applying it would roll the cache back.
+      if (!this.#claimThreadFetch(threadId, fetchSeq)) {
+        this.#setThreadStatus(threadId, 'ready');
+        return;
+      }
       if (typeof emailResult.state === 'string') this.emailState = emailResult.state;
 
       const thread = threadResult.list.find((t) => t.id === threadId);
@@ -3204,6 +3235,7 @@ class MailStore {
   async refreshThread(threadId: string): Promise<void> {
     const accountId = this.#resolveThreadAccountId(threadId);
     if (!accountId) return;
+    const fetchSeq = this.#nextThreadFetchSeq();
     const { responses } = await jmap.batch((b) => {
       const t = b.call(
         'Thread/get',
@@ -3228,6 +3260,8 @@ class MailStore {
     const emailResult = invocationArgs<{ list: Email[]; state: string }>(
       responses[1],
     );
+    // Discard a response that a newer fetch of this thread has overtaken.
+    if (!this.#claimThreadFetch(threadId, fetchSeq)) return;
     if (typeof emailResult.state === 'string') this.emailState = emailResult.state;
 
     const thread = threadResult.list.find((t) => t.id === threadId);
